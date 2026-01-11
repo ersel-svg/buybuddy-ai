@@ -1,0 +1,23 @@
+# Runpod
+runpod>=1.6.0
+
+# Deep Learning
+torch>=2.0.0
+torchvision
+numpy>=2.0.0
+
+# Image/Video Processing
+opencv-python-headless
+pillow
+tqdm
+
+# APIs
+requests
+google-generativeai
+huggingface_hub
+
+# Storage
+supabase
+
+# Utilities
+python-dotenv

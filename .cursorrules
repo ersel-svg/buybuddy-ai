@@ -1,0 +1,193 @@
+# Cursor AI Rules for Buybuddy AI Platform
+
+## Project Overview
+
+Bu proje sahadan gelen ürün videolarını işleyip AI training data ve product directory oluşturan bir internal tool. 
+
+Stack: Runpod Serverless (GPU worker) + Supabase (DB/Storage) + NiceGUI (Python UI)
+
+## Key Files to Reference
+
+1. `CONTEXT.md` - Tüm proje context'i, API'ler, credentials, schema
+2. `PROJECT_PLAN.md` - Detaylı yapılacaklar listesi
+3. `notebooks/pipeline_prototype.ipynb` - Çalışan pipeline kodu
+
+## Code Style
+
+### Python
+- Python 3.10+
+- Type hints kullan
+- Pydantic models for data validation
+- async/await for I/O operations
+- f-strings for formatting
+- pathlib.Path for file paths
+
+### Naming
+- snake_case for functions and variables
+- PascalCase for classes
+- UPPER_CASE for constants
+
+### Error Handling
+- Specific exceptions, not generic Exception
+- Logging with proper levels (info, warning, error)
+- User-friendly error messages in UI
+
+## Architecture Decisions
+
+### Worker (Runpod Serverless)
+- Stateless - her request bağımsız
+- Cold start ~30s (model loading)
+- Pipeline singleton pattern (model bir kez yükle)
+- Webhook ile completion bildirimi
+
+### Database (Supabase)
+- PostgreSQL with JSONB for flexible fields
+- No RLS (internal tool)
+- Realtime subscriptions for live updates
+
+### UI (NiceGUI)
+- Single page app feel
+- Responsive sidebar navigation
+- Cards for data display
+- Forms for data entry
+- Toast notifications for feedback
+
+## API Integration Patterns
+
+### Buybuddy API
+```python
+# Always refresh token before requests
+async def get_products():
+    token = await get_fresh_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    response = await client.get("/ai/product", headers=headers)
+    return response.json()["data"]
+```
+
+### Runpod
+```python
+# Async job submission
+async def submit_job(video_url: str, barcode: str):
+    response = await runpod.run(
+        endpoint_id=ENDPOINT_ID,
+        input={"video_url": video_url, "barcode": barcode}
+    )
+    return response["id"]
+```
+
+### Supabase
+```python
+# Use supabase-py client
+from supabase import create_client
+client = create_client(url, key)
+
+# Realtime subscription
+client.table("jobs").on("UPDATE", callback).subscribe()
+```
+
+## Common Tasks
+
+### Adding a new page
+1. Create `app/pages/new_page.py`
+2. Define page function with `@ui.page('/path')`
+3. Add to sidebar in `app/components/sidebar.py`
+
+### Adding a new API endpoint
+1. Add to appropriate service in `app/services/`
+2. Add Pydantic model if needed in `shared/models.py`
+3. Handle errors gracefully
+
+### Modifying pipeline
+1. Update `worker/src/pipeline.py`
+2. Test locally with Docker
+3. Rebuild and push image
+4. Update Runpod endpoint
+
+## Do's and Don'ts
+
+### Do:
+- Read CONTEXT.md and PROJECT_PLAN.md first
+- Check existing code patterns before writing new code
+- Use environment variables for secrets
+- Add proper error handling
+- Write descriptive commit messages
+
+### Don't:
+- Hardcode credentials
+- Skip error handling
+- Create circular imports
+- Use blocking I/O in async functions
+- Ignore type hints
+
+## Testing
+
+### Local Worker Test
+```bash
+cd worker
+docker build -t buybuddy-worker .
+docker run --gpus all -e GEMINI_API_KEY=... -e HF_TOKEN=... buybuddy-worker
+```
+
+### Local UI Test
+```bash
+cd app
+python main.py
+# Open http://localhost:8080
+```
+
+## Debugging Tips
+
+### Worker Issues
+- Check CUDA availability: `torch.cuda.is_available()`
+- Check model loading logs
+- Verify video URL is accessible
+- Check Gemini API quota
+
+### UI Issues
+- Check browser console for errors
+- Check Supabase connection
+- Verify environment variables
+
+### Integration Issues
+- Check Runpod job status
+- Verify webhook URL is correct
+- Check Supabase realtime connection
+
+## File Templates
+
+### New Page Template
+```python
+from nicegui import ui
+from app.components.header import header
+from app.components.sidebar import sidebar
+
+@ui.page('/new-page')
+async def new_page():
+    header()
+    with ui.row().classes('w-full'):
+        sidebar()
+        with ui.column().classes('flex-1 p-4'):
+            ui.label('New Page').classes('text-2xl font-bold')
+            # Page content here
+```
+
+### New Service Template
+```python
+from typing import Optional
+from pydantic import BaseModel
+
+class MyInput(BaseModel):
+    field: str
+
+class MyOutput(BaseModel):
+    result: str
+
+async def my_function(input: MyInput) -> MyOutput:
+    """Description of what this does."""
+    try:
+        # Implementation
+        return MyOutput(result="success")
+    except Exception as e:
+        logger.error(f"Error in my_function: {e}")
+        raise
+```
