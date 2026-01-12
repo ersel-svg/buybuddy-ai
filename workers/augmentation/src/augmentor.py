@@ -380,8 +380,9 @@ class ProductAugmentor:
 
         # --- SYN SOURCE & COUNT ---
         root_imgs_all = [p for p in list_images(upc_root) if p.parent == upc_root]
-        syn_sources = [p for p in root_imgs_all if not p.name.lower().startswith('syn_')]
-        current_syn_total = len(root_imgs_all)
+        syn_sources = [p for p in root_imgs_all if not RE_SYN_OUT.match(p.name)]
+        syn_outputs = [p for p in root_imgs_all if RE_SYN_OUT.match(p.name)]
+        current_syn_total = len(syn_outputs)  # Only count actual syn_*.jpg outputs
         missing_syn = max(0, syn_target - current_syn_total)
 
         # --- REAL SOURCE & COUNT ---
