@@ -1,6 +1,8 @@
 import type {
   Product,
   ProductsResponse,
+  ProductSummary,
+  RealImage,
   Dataset,
   DatasetWithProducts,
   CreateDatasetRequest,
@@ -387,6 +389,49 @@ class ApiClient {
   // Matching
   // ===========================================
 
+  async getMatchingProducts(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<ProductSummary[]> {
+    return this.request<ProductSummary[]>("/api/v1/matching/products", {
+      params,
+    });
+  }
+
+  async getMatchingProduct(productId: string): Promise<{
+    product: Product;
+    synthetic_frames: { url: string; index: number; type: string }[];
+    real_images: RealImage[];
+  }> {
+    return this.request(`/api/v1/matching/products/${productId}`);
+  }
+
+  async getProductRealImages(productId: string): Promise<{ images: RealImage[] }> {
+    return this.request(`/api/v1/matching/products/${productId}/real-images`);
+  }
+
+  async addRealImages(
+    productId: string,
+    imageUrls: string[]
+  ): Promise<{ added: number }> {
+    return this.request(`/api/v1/matching/products/${productId}/real-images`, {
+      method: "POST",
+      body: imageUrls,
+    });
+  }
+
+  async removeRealImages(
+    productId: string,
+    imageIds: string[]
+  ): Promise<{ status: string }> {
+    return this.request(`/api/v1/matching/products/${productId}/real-images`, {
+      method: "DELETE",
+      body: imageIds,
+    });
+  }
+
+  // Legacy methods (for compatibility)
   async getMatchingUPCs(): Promise<string[]> {
     return this.request<string[]>("/api/v1/matching/upcs");
   }

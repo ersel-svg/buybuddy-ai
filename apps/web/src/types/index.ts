@@ -177,6 +177,28 @@ export interface ModelArtifact {
 // Matching Types
 // ===========================================
 
+export interface ProductSummary {
+  id: string;
+  barcode?: string;
+  brand_name?: string;
+  product_name?: string;
+  primary_image_url?: string;
+  frame_count: number;
+  real_image_count: number;
+  status?: string;
+}
+
+export interface RealImage {
+  id: string;
+  product_id: string;
+  image_url: string;
+  image_path?: string;
+  source?: string;
+  similarity?: number;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface MatchCandidate {
   id: string;
   image_path: string;

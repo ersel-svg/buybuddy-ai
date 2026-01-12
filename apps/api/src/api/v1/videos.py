@@ -1,11 +1,13 @@
 """Videos API router for syncing and processing videos."""
 
-from datetime import datetime
 from typing import Optional
-from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
+
+from services.supabase import SupabaseService, supabase_service
+from services.runpod import RunpodService, runpod_service, EndpointType
+from config import settings
 
 router = APIRouter()
 
@@ -15,28 +17,18 @@ router = APIRouter()
 # ===========================================
 
 
-class Video(BaseModel):
-    """Video schema."""
-
-    id: int
-    barcode: str
-    video_url: str
-    status: str = "pending"
-    product_id: Optional[str] = None
-    created_at: datetime
-
-
 class VideoSyncResponse(BaseModel):
     """Response from video sync."""
 
     synced_count: int
-    new_videos: list[Video]
 
 
 class ProcessVideoRequest(BaseModel):
     """Request to process a video."""
 
     video_id: int
+    barcode: Optional[str] = None
+    product_id: Optional[str] = None
 
 
 class ProcessVideosRequest(BaseModel):
@@ -45,22 +37,38 @@ class ProcessVideosRequest(BaseModel):
     video_ids: list[int]
 
 
-class Job(BaseModel):
-    """Job schema."""
+class ProcessVideoByUrlRequest(BaseModel):
+    """Request to process a video by URL directly."""
 
-    id: str
-    type: str
-    status: str
-    progress: int = 0
-    created_at: datetime
+    video_url: str
+    barcode: str
+    product_id: Optional[str] = None
 
 
 # ===========================================
-# Mock Data
+# Dependencies
 # ===========================================
 
-MOCK_VIDEOS: list[dict] = []
-MOCK_JOBS: list[dict] = []
+
+def get_supabase() -> SupabaseService:
+    """Get Supabase service instance."""
+    return supabase_service
+
+
+def get_runpod() -> RunpodService:
+    """Get Runpod service instance."""
+    return runpod_service
+
+
+# ===========================================
+# Helper Functions
+# ===========================================
+
+
+def get_webhook_url(request: Request) -> str:
+    """Build webhook URL for Runpod callbacks."""
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}{settings.api_prefix}/webhooks/runpod"
 
 
 # ===========================================
@@ -69,74 +77,236 @@ MOCK_JOBS: list[dict] = []
 
 
 @router.get("")
-async def list_videos() -> list[Video]:
+async def list_videos(
+    db: SupabaseService = Depends(get_supabase),
+):
     """List all videos."""
-    return [Video(**v) for v in MOCK_VIDEOS]
+    return await db.get_videos()
 
 
-@router.post("/sync", response_model=VideoSyncResponse)
-async def sync_videos() -> VideoSyncResponse:
+@router.post("/sync")
+async def sync_videos(
+    db: SupabaseService = Depends(get_supabase),
+) -> VideoSyncResponse:
     """Sync videos from Buybuddy API."""
-    # TODO: Implement actual sync with Buybuddy API
-    # For now, return mock data
-    new_videos = [
-        Video(
-            id=1001,
-            barcode="0012345678905",
-            video_url="https://example.com/video1.mp4",
-            status="pending",
-            created_at=datetime.now(),
-        ),
-        Video(
-            id=1002,
-            barcode="0012345678906",
-            video_url="https://example.com/video2.mp4",
-            status="pending",
-            created_at=datetime.now(),
-        ),
+    # TODO: Fetch from actual Buybuddy API
+    # For now, simulate sync with mock data
+    mock_videos = [
+        {
+            "barcode": "0012345678905",
+            "video_url": "https://example.com/video1.mp4",
+            "status": "pending",
+        },
+        {
+            "barcode": "0012345678906",
+            "video_url": "https://example.com/video2.mp4",
+            "status": "pending",
+        },
     ]
 
-    return VideoSyncResponse(synced_count=len(new_videos), new_videos=new_videos)
+    synced_count = await db.sync_videos_from_buybuddy(mock_videos)
+    return VideoSyncResponse(synced_count=synced_count)
 
 
-@router.post("/process", response_model=Job)
-async def process_video(request: ProcessVideoRequest) -> Job:
+@router.post("/process")
+async def process_video(
+    request_data: ProcessVideoRequest,
+    request: Request,
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
     """Process a single video through the pipeline."""
-    # TODO: Dispatch to Runpod video-segmentation worker
-    job = Job(
-        id=str(uuid4()),
-        type="video_processing",
-        status="queued",
-        progress=0,
-        created_at=datetime.now(),
-    )
+    # Get video details
+    videos = await db.get_videos()
+    video = next((v for v in videos if v.get("id") == request_data.video_id), None)
 
-    MOCK_JOBS.append(job.model_dump())
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Create video processing job
+    job = await db.create_job({
+        "type": "video_processing",
+        "config": {
+            "video_id": request_data.video_id,
+            "video_url": video.get("video_url"),
+            "barcode": request_data.barcode or video.get("barcode"),
+            "product_id": request_data.product_id,
+        },
+    })
+
+    # Dispatch to Runpod video-segmentation worker
+    if runpod.is_configured(EndpointType.VIDEO):
+        try:
+            webhook_url = get_webhook_url(request)
+            runpod_response = await runpod.submit_job(
+                endpoint_type=EndpointType.VIDEO,
+                input_data={
+                    "video_url": video.get("video_url"),
+                    "barcode": request_data.barcode or video.get("barcode"),
+                    "video_id": request_data.video_id,
+                    "product_id": request_data.product_id,
+                    "job_id": job["id"],
+                },
+                webhook_url=webhook_url,
+            )
+
+            # Update job with Runpod job ID
+            await db.update_job(job["id"], {
+                "status": "queued",
+                "runpod_job_id": runpod_response.get("id"),
+            })
+            job["runpod_job_id"] = runpod_response.get("id")
+            job["status"] = "queued"
+
+            print(f"[Videos] Dispatched to Runpod: {runpod_response.get('id')}")
+
+        except Exception as e:
+            print(f"[Videos] Failed to dispatch to Runpod: {e}")
+            await db.update_job(job["id"], {
+                "status": "failed",
+                "error": f"Failed to dispatch to Runpod: {str(e)}",
+            })
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to dispatch to Runpod: {str(e)}",
+            )
+    else:
+        print("[Videos] Runpod not configured, job created but not dispatched")
+
+    return job
+
+
+@router.post("/process/url")
+async def process_video_by_url(
+    request_data: ProcessVideoByUrlRequest,
+    request: Request,
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
+    """Process a video directly by URL (without syncing first)."""
+    # Create video processing job
+    job = await db.create_job({
+        "type": "video_processing",
+        "config": {
+            "video_url": request_data.video_url,
+            "barcode": request_data.barcode,
+            "product_id": request_data.product_id,
+        },
+    })
+
+    # Dispatch to Runpod video-segmentation worker
+    if runpod.is_configured(EndpointType.VIDEO):
+        try:
+            webhook_url = get_webhook_url(request)
+            runpod_response = await runpod.submit_job(
+                endpoint_type=EndpointType.VIDEO,
+                input_data={
+                    "video_url": request_data.video_url,
+                    "barcode": request_data.barcode,
+                    "product_id": request_data.product_id,
+                    "job_id": job["id"],
+                },
+                webhook_url=webhook_url,
+            )
+
+            # Update job with Runpod job ID
+            await db.update_job(job["id"], {
+                "status": "queued",
+                "runpod_job_id": runpod_response.get("id"),
+            })
+            job["runpod_job_id"] = runpod_response.get("id")
+            job["status"] = "queued"
+
+            print(f"[Videos] Dispatched to Runpod: {runpod_response.get('id')}")
+
+        except Exception as e:
+            print(f"[Videos] Failed to dispatch to Runpod: {e}")
+            await db.update_job(job["id"], {
+                "status": "failed",
+                "error": f"Failed to dispatch to Runpod: {str(e)}",
+            })
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to dispatch to Runpod: {str(e)}",
+            )
+    else:
+        print("[Videos] Runpod not configured, job created but not dispatched")
+
     return job
 
 
 @router.post("/process/batch")
-async def process_videos_batch(request: ProcessVideosRequest) -> list[Job]:
+async def process_videos_batch(
+    request_data: ProcessVideosRequest,
+    request: Request,
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
     """Process multiple videos through the pipeline."""
+    # Get all videos
+    videos = await db.get_videos()
+    video_map = {v.get("id"): v for v in videos}
+
     jobs = []
-    for video_id in request.video_ids:
-        job = Job(
-            id=str(uuid4()),
-            type="video_processing",
-            status="queued",
-            progress=0,
-            created_at=datetime.now(),
-        )
-        MOCK_JOBS.append(job.model_dump())
+    webhook_url = get_webhook_url(request) if runpod.is_configured(EndpointType.VIDEO) else None
+
+    for video_id in request_data.video_ids:
+        video = video_map.get(video_id)
+        if not video:
+            continue
+
+        # Create job
+        job = await db.create_job({
+            "type": "video_processing",
+            "config": {
+                "video_id": video_id,
+                "video_url": video.get("video_url"),
+                "barcode": video.get("barcode"),
+            },
+        })
+
+        # Dispatch to Runpod
+        if webhook_url and runpod.is_configured(EndpointType.VIDEO):
+            try:
+                runpod_response = await runpod.submit_job(
+                    endpoint_type=EndpointType.VIDEO,
+                    input_data={
+                        "video_url": video.get("video_url"),
+                        "barcode": video.get("barcode"),
+                        "video_id": video_id,
+                        "job_id": job["id"],
+                    },
+                    webhook_url=webhook_url,
+                )
+
+                await db.update_job(job["id"], {
+                    "status": "queued",
+                    "runpod_job_id": runpod_response.get("id"),
+                })
+                job["runpod_job_id"] = runpod_response.get("id")
+                job["status"] = "queued"
+
+            except Exception as e:
+                print(f"[Videos] Failed to dispatch video {video_id}: {e}")
+                await db.update_job(job["id"], {
+                    "status": "failed",
+                    "error": str(e),
+                })
+
         jobs.append(job)
 
     return jobs
 
 
 @router.get("/{video_id}")
-async def get_video(video_id: int) -> Video:
+async def get_video(
+    video_id: int,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get video details."""
-    video = next((v for v in MOCK_VIDEOS if v["id"] == video_id), None)
+    # Get all videos and find the one with matching ID
+    videos = await db.get_videos()
+    video = next((v for v in videos if v.get("id") == video_id), None)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    return Video(**video)
+    return video

@@ -3,14 +3,14 @@
 import csv
 import json
 import zipfile
-from datetime import datetime
 from io import BytesIO
 from typing import Optional
-from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from services.supabase import SupabaseService, supabase_service
 
 router = APIRouter()
 
@@ -54,30 +54,6 @@ class ProductUpdate(BaseModel):
     version: Optional[int] = None  # For optimistic locking
 
 
-class Product(ProductBase):
-    """Full product schema."""
-
-    id: str
-    video_id: Optional[int] = None
-    video_url: Optional[str] = None
-    status: str = "pending"
-    frame_count: int = 0
-    frames_path: Optional[str] = None
-    primary_image_url: Optional[str] = None
-    version: int = 1
-    created_at: datetime
-    updated_at: datetime
-
-
-class ProductsResponse(BaseModel):
-    """Paginated products response."""
-
-    items: list[Product]
-    total: int
-    page: int
-    limit: int
-
-
 class ProductIdsRequest(BaseModel):
     """Request with product IDs."""
 
@@ -85,37 +61,13 @@ class ProductIdsRequest(BaseModel):
 
 
 # ===========================================
-# Mock Data (will be replaced with Supabase)
+# Dependency
 # ===========================================
 
-MOCK_PRODUCTS: list[dict] = [
-    {
-        "id": str(uuid4()),
-        "barcode": "0012345678901",
-        "brand_name": "Coca-Cola",
-        "product_name": "Classic",
-        "category": "Beverages",
-        "container_type": "Can",
-        "status": "ready",
-        "frame_count": 24,
-        "version": 1,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    },
-    {
-        "id": str(uuid4()),
-        "barcode": "0012345678902",
-        "brand_name": "Pepsi",
-        "product_name": "Max",
-        "category": "Beverages",
-        "container_type": "Bottle",
-        "status": "ready",
-        "frame_count": 18,
-        "version": 1,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    },
-]
+
+def get_supabase() -> SupabaseService:
+    """Get Supabase service instance."""
+    return supabase_service
 
 
 # ===========================================
@@ -123,105 +75,117 @@ MOCK_PRODUCTS: list[dict] = [
 # ===========================================
 
 
-@router.get("", response_model=ProductsResponse)
+@router.get("")
 async def list_products(
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=1000),
     search: Optional[str] = None,
     status: Optional[str] = None,
     category: Optional[str] = None,
-) -> ProductsResponse:
+    db: SupabaseService = Depends(get_supabase),
+):
     """List products with pagination and filters."""
-    items = MOCK_PRODUCTS.copy()
-
-    # Apply filters
-    if search:
-        search_lower = search.lower()
-        items = [
-            p
-            for p in items
-            if search_lower in p.get("barcode", "").lower()
-            or search_lower in (p.get("product_name") or "").lower()
-            or search_lower in (p.get("brand_name") or "").lower()
-        ]
-    if status:
-        items = [p for p in items if p.get("status") == status]
-    if category:
-        items = [p for p in items if p.get("category") == category]
-
-    total = len(items)
-    start = (page - 1) * limit
-    end = start + limit
-
-    return ProductsResponse(
-        items=[Product(**p) for p in items[start:end]],
-        total=total,
+    result = await db.get_products(
         page=page,
         limit=limit,
+        search=search,
+        status=status,
+        category=category,
     )
+    return result
 
 
 @router.get("/categories")
-async def get_product_categories() -> list[str]:
+async def get_product_categories(
+    db: SupabaseService = Depends(get_supabase),
+) -> list[str]:
     """Get unique product categories."""
-    categories = list(set(p.get("category") for p in MOCK_PRODUCTS if p.get("category")))
-    return sorted(categories)
+    return await db.get_product_categories()
 
 
-@router.get("/{product_id}", response_model=Product)
-async def get_product(product_id: str) -> Product:
+@router.get("/{product_id}")
+async def get_product(
+    product_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get product details."""
-    product = next((p for p in MOCK_PRODUCTS if p["id"] == product_id), None)
+    product = await db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    return Product(**product)
+    return product
 
 
-@router.patch("/{product_id}", response_model=Product)
-async def update_product(product_id: str, data: ProductUpdate) -> Product:
+@router.post("")
+async def create_product(
+    data: ProductCreate,
+    db: SupabaseService = Depends(get_supabase),
+):
+    """Create a new product."""
+    product_data = data.model_dump(exclude_unset=True)
+    return await db.create_product(product_data)
+
+
+@router.patch("/{product_id}")
+async def update_product(
+    product_id: str,
+    data: ProductUpdate,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Update product metadata with optimistic locking."""
-    product = next((p for p in MOCK_PRODUCTS if p["id"] == product_id), None)
-    if not product:
+    # Check if product exists
+    existing = await db.get_product(product_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Optimistic locking check
-    if data.version is not None and data.version != product.get("version", 1):
+    update_data = data.model_dump(exclude_unset=True, exclude={"version"})
+
+    try:
+        return await db.update_product(
+            product_id,
+            update_data,
+            expected_version=data.version,
+        )
+    except ValueError as e:
         raise HTTPException(
             status_code=409,
             detail="Product was modified by another user. Please refresh and try again.",
-        )
-
-    update_data = data.model_dump(exclude_unset=True, exclude={"version"})
-    product.update(update_data)
-    product["updated_at"] = datetime.now().isoformat()
-    product["version"] = product.get("version", 1) + 1
-
-    return Product(**product)
+        ) from e
 
 
 @router.delete("/{product_id}")
-async def delete_product(product_id: str) -> dict[str, str]:
+async def delete_product(
+    product_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Delete a product."""
-    global MOCK_PRODUCTS
-    original_len = len(MOCK_PRODUCTS)
-    MOCK_PRODUCTS = [p for p in MOCK_PRODUCTS if p["id"] != product_id]
-
-    if len(MOCK_PRODUCTS) == original_len:
+    existing = await db.get_product(product_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    await db.delete_product(product_id)
     return {"status": "deleted"}
 
 
 @router.get("/{product_id}/frames")
-async def get_product_frames(product_id: str) -> dict:
+async def get_product_frames(
+    product_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get product frames."""
-    product = next((p for p in MOCK_PRODUCTS if p["id"] == product_id), None)
+    product = await db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # TODO: Return frame URLs from Supabase Storage
+    # Get frames from Supabase Storage
+    # Pipeline uploads using product_id as folder name
     frame_count = product.get("frame_count", 0)
-    frames = [{"url": f"/frames/{product_id}/frame_{i:04d}.png", "index": i} for i in range(frame_count)]
+
+    frames = []
+    for i in range(frame_count):
+        frames.append({
+            "url": db.get_public_url("frames", f"{product_id}/frame_{i:04d}.png"),
+            "index": i,
+        })
 
     return {"frames": frames}
 
@@ -232,12 +196,20 @@ async def get_product_frames(product_id: str) -> dict:
 
 
 @router.post("/download")
-async def download_products(request: ProductIdsRequest) -> StreamingResponse:
+async def download_products(
+    request: ProductIdsRequest,
+    db: SupabaseService = Depends(get_supabase),
+) -> StreamingResponse:
     """Download selected products as ZIP with frames and metadata."""
     if not request.product_ids:
         raise HTTPException(status_code=400, detail="No product IDs provided")
 
-    products = [p for p in MOCK_PRODUCTS if p["id"] in request.product_ids]
+    # Fetch products
+    products = []
+    for pid in request.product_ids:
+        product = await db.get_product(pid)
+        if product:
+            products.append(product)
 
     if not products:
         raise HTTPException(status_code=404, detail="No products found")
@@ -274,14 +246,11 @@ async def download_products(request: ProductIdsRequest) -> StreamingResponse:
 async def download_all_products(
     status: Optional[str] = None,
     category: Optional[str] = None,
+    db: SupabaseService = Depends(get_supabase),
 ) -> StreamingResponse:
     """Download ALL products as ZIP (filtered by status/category)."""
-    products = MOCK_PRODUCTS.copy()
-
-    if status:
-        products = [p for p in products if p.get("status") == status]
-    if category:
-        products = [p for p in products if p.get("category") == category]
+    result = await db.get_products(page=1, limit=1000, status=status, category=category)
+    products = result.get("items", [])
 
     if not products:
         raise HTTPException(status_code=404, detail="No products found")
@@ -310,9 +279,12 @@ async def download_all_products(
 
 
 @router.get("/{product_id}/download")
-async def download_single_product(product_id: str) -> StreamingResponse:
+async def download_single_product(
+    product_id: str,
+    db: SupabaseService = Depends(get_supabase),
+) -> StreamingResponse:
     """Download single product as ZIP with all frames."""
-    product = next((p for p in MOCK_PRODUCTS if p["id"] == product_id), None)
+    product = await db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
@@ -338,12 +310,20 @@ async def download_single_product(product_id: str) -> StreamingResponse:
 
 
 @router.post("/export/csv")
-async def export_products_csv(request: ProductIdsRequest) -> StreamingResponse:
+async def export_products_csv(
+    request: ProductIdsRequest,
+    db: SupabaseService = Depends(get_supabase),
+) -> StreamingResponse:
     """Export products as CSV file."""
     if request.product_ids:
-        products = [p for p in MOCK_PRODUCTS if p["id"] in request.product_ids]
+        products = []
+        for pid in request.product_ids:
+            product = await db.get_product(pid)
+            if product:
+                products.append(product)
     else:
-        products = MOCK_PRODUCTS
+        result = await db.get_products(page=1, limit=10000)
+        products = result.get("items", [])
 
     output = BytesIO()
     # Write UTF-8 BOM for Excel compatibility
@@ -381,12 +361,20 @@ async def export_products_csv(request: ProductIdsRequest) -> StreamingResponse:
 
 
 @router.post("/export/json")
-async def export_products_json(request: ProductIdsRequest) -> StreamingResponse:
+async def export_products_json(
+    request: ProductIdsRequest,
+    db: SupabaseService = Depends(get_supabase),
+) -> StreamingResponse:
     """Export products as JSON file."""
     if request.product_ids:
-        products = [p for p in MOCK_PRODUCTS if p["id"] in request.product_ids]
+        products = []
+        for pid in request.product_ids:
+            product = await db.get_product(pid)
+            if product:
+                products.append(product)
     else:
-        products = MOCK_PRODUCTS
+        result = await db.get_products(page=1, limit=10000)
+        products = result.get("items", [])
 
     # Clean up products for export
     export_data = []
@@ -416,13 +404,13 @@ async def export_products_json(request: ProductIdsRequest) -> StreamingResponse:
 
 
 @router.post("/bulk-delete")
-async def bulk_delete_products(request: ProductIdsRequest) -> dict[str, int]:
+async def bulk_delete_products(
+    request: ProductIdsRequest,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Delete multiple products at once."""
     if not request.product_ids:
         raise HTTPException(status_code=400, detail="No product IDs provided")
 
-    global MOCK_PRODUCTS
-    deleted_count = len([p for p in MOCK_PRODUCTS if p["id"] in request.product_ids])
-    MOCK_PRODUCTS = [p for p in MOCK_PRODUCTS if p["id"] not in request.product_ids]
-
+    deleted_count = await db.delete_products(request.product_ids)
     return {"deleted_count": deleted_count}

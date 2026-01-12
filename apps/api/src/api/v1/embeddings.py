@@ -1,11 +1,9 @@
 """Embeddings API router for managing embedding indexes."""
 
-from datetime import datetime
-from typing import Optional
-from uuid import uuid4
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+
+from services.supabase import SupabaseService, supabase_service
 
 router = APIRouter()
 
@@ -13,18 +11,6 @@ router = APIRouter()
 # ===========================================
 # Schemas
 # ===========================================
-
-
-class EmbeddingIndex(BaseModel):
-    """Embedding index schema."""
-
-    id: str
-    name: str
-    model_artifact_id: str
-    model_name: Optional[str] = None
-    vector_count: int = 0
-    index_path: str
-    created_at: datetime
 
 
 class CreateIndexRequest(BaseModel):
@@ -41,20 +27,13 @@ class AddEmbeddingsRequest(BaseModel):
 
 
 # ===========================================
-# Mock Data
+# Dependency
 # ===========================================
 
-MOCK_INDEXES: list[dict] = [
-    {
-        "id": str(uuid4()),
-        "name": "Beverages Index v1",
-        "model_artifact_id": "model-001",
-        "model_name": "DINOv2-Large Beverages",
-        "vector_count": 15000,
-        "index_path": "/indexes/beverages_v1.faiss",
-        "created_at": datetime.now().isoformat(),
-    }
-]
+
+def get_supabase() -> SupabaseService:
+    """Get Supabase service instance."""
+    return supabase_service
 
 
 # ===========================================
@@ -63,59 +42,71 @@ MOCK_INDEXES: list[dict] = [
 
 
 @router.get("/indexes")
-async def list_indexes() -> list[EmbeddingIndex]:
+async def list_indexes(
+    db: SupabaseService = Depends(get_supabase),
+):
     """List all embedding indexes."""
-    return [EmbeddingIndex(**idx) for idx in MOCK_INDEXES]
+    return await db.get_embedding_indexes()
 
 
-@router.post("/indexes", response_model=EmbeddingIndex)
-async def create_index(request: CreateIndexRequest) -> EmbeddingIndex:
+@router.post("/indexes")
+async def create_index(
+    request: CreateIndexRequest,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Create a new embedding index."""
-    index = {
-        "id": str(uuid4()),
-        "name": request.name,
-        "model_artifact_id": request.model_id,
-        "model_name": None,  # TODO: Look up model name
-        "vector_count": 0,
-        "index_path": f"/indexes/{request.name.lower().replace(' ', '_')}.faiss",
-        "created_at": datetime.now().isoformat(),
-    }
+    # Verify model exists
+    models = await db.get_models()
+    model = next((m for m in models if m.get("id") == request.model_id), None)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
 
-    MOCK_INDEXES.append(index)
-    return EmbeddingIndex(**index)
+    return await db.create_embedding_index(request.name, request.model_id)
 
 
-@router.get("/indexes/{index_id}", response_model=EmbeddingIndex)
-async def get_index(index_id: str) -> EmbeddingIndex:
+@router.get("/indexes/{index_id}")
+async def get_index(
+    index_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get embedding index details."""
-    index = next((idx for idx in MOCK_INDEXES if idx["id"] == index_id), None)
+    indexes = await db.get_embedding_indexes()
+    index = next((idx for idx in indexes if idx.get("id") == index_id), None)
     if not index:
         raise HTTPException(status_code=404, detail="Index not found")
-    return EmbeddingIndex(**index)
+    return index
 
 
 @router.post("/indexes/{index_id}/add")
-async def add_embeddings_to_index(index_id: str, request: AddEmbeddingsRequest) -> dict:
+async def add_embeddings_to_index(
+    index_id: str,
+    request: AddEmbeddingsRequest,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Add embeddings for products to an index."""
-    index = next((idx for idx in MOCK_INDEXES if idx["id"] == index_id), None)
+    indexes = await db.get_embedding_indexes()
+    index = next((idx for idx in indexes if idx.get("id") == index_id), None)
     if not index:
         raise HTTPException(status_code=404, detail="Index not found")
 
-    # TODO: Actually compute and add embeddings
+    # TODO: Actually compute and add embeddings via Runpod worker
     added_count = len(request.product_ids)
-    index["vector_count"] += added_count
+    new_total = (index.get("vector_count", 0) or 0) + added_count
 
-    return {"added_count": added_count, "total_count": index["vector_count"]}
+    return {"added_count": added_count, "total_count": new_total}
 
 
 @router.delete("/indexes/{index_id}")
-async def delete_index(index_id: str) -> dict[str, str]:
+async def delete_index(
+    index_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Delete an embedding index."""
-    global MOCK_INDEXES
-    original_len = len(MOCK_INDEXES)
-    MOCK_INDEXES = [idx for idx in MOCK_INDEXES if idx["id"] != index_id]
-
-    if len(MOCK_INDEXES) == original_len:
+    indexes = await db.get_embedding_indexes()
+    index = next((idx for idx in indexes if idx.get("id") == index_id), None)
+    if not index:
         raise HTTPException(status_code=404, detail="Index not found")
 
+    # TODO: Delete from Supabase
+    # For now, just return success
     return {"status": "deleted"}

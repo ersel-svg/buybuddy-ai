@@ -1,10 +1,11 @@
 """Webhooks API router for handling external callbacks."""
 
-from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Header, Depends
 from pydantic import BaseModel
+
+from services.supabase import SupabaseService, supabase_service
 
 router = APIRouter()
 
@@ -32,6 +33,16 @@ class WebhookResponse(BaseModel):
 
 
 # ===========================================
+# Dependency
+# ===========================================
+
+
+def get_supabase() -> SupabaseService:
+    """Get Supabase service instance."""
+    return supabase_service
+
+
+# ===========================================
 # Endpoints
 # ===========================================
 
@@ -40,6 +51,7 @@ class WebhookResponse(BaseModel):
 async def handle_runpod_webhook(
     payload: RunpodWebhookPayload,
     x_runpod_signature: Optional[str] = Header(None),
+    db: SupabaseService = Depends(get_supabase),
 ) -> WebhookResponse:
     """
     Handle Runpod job completion webhook.
@@ -47,25 +59,46 @@ async def handle_runpod_webhook(
     This endpoint is called by Runpod when a serverless job completes.
     """
     # TODO: Verify webhook signature
-    # TODO: Update job status in database
-    # TODO: Handle job output (save results, update related entities)
 
     print(f"[Webhook] Received Runpod webhook for job {payload.id}")
     print(f"          Status: {payload.status}")
 
-    if payload.status == "COMPLETED":
-        print(f"          Output: {payload.output}")
-        # TODO: Process completed job
-        # - For video_processing: Update product with frames
-        # - For training: Save model artifact
-        # - For embedding: Update index
-        # - For augmentation: Update dataset
+    # Map Runpod status to our status
+    status_map = {
+        "COMPLETED": "completed",
+        "FAILED": "failed",
+        "IN_PROGRESS": "running",
+        "IN_QUEUE": "queued",
+        "CANCELLED": "cancelled",
+    }
+    job_status = status_map.get(payload.status, "pending")
 
-    elif payload.status == "FAILED":
-        print(f"          Error: {payload.error}")
-        # TODO: Handle failed job
-        # - Update job status
-        # - Send notification
+    # Try to find and update the job
+    try:
+        # Find job by runpod_job_id
+        jobs = await db.get_jobs()
+        job = next(
+            (j for j in jobs if j.get("runpod_job_id") == payload.id),
+            None,
+        )
+
+        if job:
+            update_data = {"status": job_status}
+
+            if payload.status == "COMPLETED":
+                update_data["progress"] = 100
+                update_data["result"] = payload.output
+                print(f"          Output: {payload.output}")
+
+            elif payload.status == "FAILED":
+                update_data["error"] = payload.error
+                print(f"          Error: {payload.error}")
+
+            await db.update_job(job["id"], update_data)
+            print(f"          Job {job['id']} updated to {job_status}")
+
+    except Exception as e:
+        print(f"          Error updating job: {e}")
 
     return WebhookResponse(
         received=True,
@@ -75,7 +108,10 @@ async def handle_runpod_webhook(
 
 
 @router.post("/supabase")
-async def handle_supabase_webhook(payload: dict) -> dict:
+async def handle_supabase_webhook(
+    payload: dict,
+    db: SupabaseService = Depends(get_supabase),
+) -> dict:
     """
     Handle Supabase database webhooks.
 

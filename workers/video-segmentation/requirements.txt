@@ -1,0 +1,22 @@
+# Runpod
+runpod>=1.6.0
+
+# PyTorch (usually pre-installed in runpod image)
+torch>=2.2.0
+torchvision
+
+# Computer Vision
+opencv-python-headless
+Pillow
+numpy
+
+# Gemini API
+google-generativeai>=0.4.0
+
+# Supabase
+supabase>=2.0.0
+
+# Utils
+requests
+tqdm
+python-dotenv

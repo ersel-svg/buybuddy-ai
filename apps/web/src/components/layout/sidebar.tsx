@@ -9,6 +9,7 @@ import {
   Package,
   Database,
   GitCompare,
+  Sparkles,
   Brain,
   Layers,
   Settings,
@@ -49,6 +50,11 @@ const navigation = [
     name: "Matching",
     href: "/matching",
     icon: GitCompare,
+  },
+  {
+    name: "Augmentation",
+    href: "/augmentation",
+    icon: Sparkles,
   },
   {
     name: "Training",

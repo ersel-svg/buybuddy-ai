@@ -1,13 +1,13 @@
 """Training API router for managing training jobs and models."""
 
-from datetime import datetime
+from io import BytesIO
 from typing import Optional
-from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from io import BytesIO
+
+from services.supabase import SupabaseService, supabase_service
 
 router = APIRouter()
 
@@ -22,107 +22,34 @@ class TrainingConfig(BaseModel):
 
     dataset_id: str
     model_name: str = "facebook/dinov2-large"
-    proj_dim: int = 1024
+    proj_dim: int = 512
     epochs: int = 30
-    batch_size: int = 16
-    learning_rate: float = 0.00002
+    batch_size: int = 32
+    learning_rate: float = 0.0001
     weight_decay: float = 0.01
-    label_smoothing: float = 0.2
-    warmup_epochs: int = 5
-    grad_clip: float = 0.5
-    llrd_decay: float = 0.9
-    domain_aware_ratio: float = 0.57
-    hard_negative_pool_size: int = 5
+    label_smoothing: float = 0.1
+    warmup_epochs: int = 3
+    grad_clip: float = 1.0
+    llrd_decay: float = 0.95
+    domain_aware_ratio: float = 0.3
+    hard_negative_pool_size: int = 10
     use_hardest_negatives: bool = True
-    use_mixed_precision: bool = False
-    train_ratio: float = 0.80
-    valid_ratio: float = 0.10
-    test_ratio: float = 0.10
-    save_every: int = 1
-    seed: int = 1337
-
-
-class TrainingJob(BaseModel):
-    """Training job schema."""
-
-    id: str
-    type: str = "training"
-    status: str
-    progress: int = 0
-    dataset_id: str
-    dataset_name: Optional[str] = None
-    epochs: int
-    epochs_completed: int = 0
-    batch_size: int
-    learning_rate: float
-    final_loss: Optional[float] = None
-    checkpoint_url: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class ModelArtifact(BaseModel):
-    """Trained model artifact schema."""
-
-    id: str
-    name: str
-    version: str
-    training_job_id: str
-    checkpoint_url: str
-    embedding_dim: int = 1024
-    num_classes: int = 0
-    final_loss: float
-    is_active: bool = False
-    created_at: datetime
-
-
-class Job(BaseModel):
-    """Generic job schema."""
-
-    id: str
-    type: str
-    status: str
-    progress: int = 0
-    created_at: datetime
+    use_mixed_precision: bool = True
+    train_ratio: float = 0.8
+    valid_ratio: float = 0.1
+    test_ratio: float = 0.1
+    save_every: int = 5
+    seed: int = 42
 
 
 # ===========================================
-# Mock Data
+# Dependency
 # ===========================================
 
-MOCK_TRAINING_JOBS: list[dict] = [
-    {
-        "id": str(uuid4()),
-        "type": "training",
-        "status": "completed",
-        "progress": 100,
-        "dataset_id": "ds-001",
-        "dataset_name": "Beverages v1",
-        "epochs": 30,
-        "epochs_completed": 30,
-        "batch_size": 16,
-        "learning_rate": 0.00002,
-        "final_loss": 0.0234,
-        "checkpoint_url": "/models/model_001.pth",
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-]
 
-MOCK_MODELS: list[dict] = [
-    {
-        "id": str(uuid4()),
-        "name": "DINOv2-Large Beverages",
-        "version": "v1.0",
-        "training_job_id": MOCK_TRAINING_JOBS[0]["id"],
-        "checkpoint_url": "/models/model_001.pth",
-        "embedding_dim": 1024,
-        "num_classes": 150,
-        "final_loss": 0.0234,
-        "is_active": True,
-        "created_at": datetime.now().isoformat(),
-    }
-]
+def get_supabase() -> SupabaseService:
+    """Get Supabase service instance."""
+    return supabase_service
 
 
 # ===========================================
@@ -131,22 +58,30 @@ MOCK_MODELS: list[dict] = [
 
 
 @router.get("/jobs")
-async def list_training_jobs() -> list[TrainingJob]:
+async def list_training_jobs(
+    db: SupabaseService = Depends(get_supabase),
+):
     """List all training jobs."""
-    return [TrainingJob(**j) for j in MOCK_TRAINING_JOBS]
+    return await db.get_training_jobs()
 
 
-@router.get("/jobs/{job_id}", response_model=TrainingJob)
-async def get_training_job(job_id: str) -> TrainingJob:
+@router.get("/jobs/{job_id}")
+async def get_training_job(
+    job_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get training job details."""
-    job = next((j for j in MOCK_TRAINING_JOBS if j["id"] == job_id), None)
-    if not job:
+    job = await db.get_job(job_id)
+    if not job or job.get("type") != "training":
         raise HTTPException(status_code=404, detail="Training job not found")
-    return TrainingJob(**job)
+    return job
 
 
-@router.post("/start", response_model=Job)
-async def start_training(config: TrainingConfig) -> Job:
+@router.post("/start")
+async def start_training(
+    config: TrainingConfig,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Start a new training job."""
     # Validate ratios
     total_ratio = config.train_ratio + config.valid_ratio + config.test_ratio
@@ -156,54 +91,57 @@ async def start_training(config: TrainingConfig) -> Job:
             detail=f"Train/valid/test ratios must sum to 1.0, got {total_ratio}",
         )
 
+    # Create training job
+    job = await db.create_training_job(config.model_dump())
+
     # TODO: Dispatch to Runpod training worker
-    job = Job(
-        id=str(uuid4()),
-        type="training",
-        status="queued",
-        progress=0,
-        created_at=datetime.now(),
-    )
 
     return job
 
 
 @router.get("/models")
-async def list_models() -> list[ModelArtifact]:
+async def list_models(
+    db: SupabaseService = Depends(get_supabase),
+):
     """List all trained models."""
-    return [ModelArtifact(**m) for m in MOCK_MODELS]
+    return await db.get_models()
 
 
-@router.get("/models/{model_id}", response_model=ModelArtifact)
-async def get_model(model_id: str) -> ModelArtifact:
+@router.get("/models/{model_id}")
+async def get_model(
+    model_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Get model details."""
-    model = next((m for m in MOCK_MODELS if m["id"] == model_id), None)
+    models = await db.get_models()
+    model = next((m for m in models if m.get("id") == model_id), None)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
-    return ModelArtifact(**model)
+    return model
 
 
-@router.post("/models/{model_id}/activate", response_model=ModelArtifact)
-async def activate_model(model_id: str) -> ModelArtifact:
+@router.post("/models/{model_id}/activate")
+async def activate_model(
+    model_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Set a model as the active model for matching."""
-    model = next((m for m in MOCK_MODELS if m["id"] == model_id), None)
+    models = await db.get_models()
+    model = next((m for m in models if m.get("id") == model_id), None)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # Deactivate all other models
-    for m in MOCK_MODELS:
-        m["is_active"] = False
-
-    # Activate this model
-    model["is_active"] = True
-
-    return ModelArtifact(**model)
+    return await db.activate_model(model_id)
 
 
 @router.get("/models/{model_id}/download")
-async def download_model(model_id: str) -> StreamingResponse:
+async def download_model(
+    model_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
     """Download model checkpoint."""
-    model = next((m for m in MOCK_MODELS if m["id"] == model_id), None)
+    models = await db.get_models()
+    model = next((m for m in models if m.get("id") == model_id), None)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
@@ -212,8 +150,9 @@ async def download_model(model_id: str) -> StreamingResponse:
     buffer = BytesIO(b"Model checkpoint placeholder")
     buffer.seek(0)
 
+    model_name = model.get("name", "model")
     return StreamingResponse(
         buffer,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={model['name']}.pth"},
+        headers={"Content-Disposition": f"attachment; filename={model_name}.pth"},
     )
