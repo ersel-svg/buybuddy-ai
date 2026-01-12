@@ -21,7 +21,10 @@ RUN pip install --no-cache-dir \
     albumentations>=1.3.0
 
 # Install BiRefNet/transformers dependencies separately (like SAM3 in video-segmentation)
-RUN pip install --no-cache-dir einops kornia timm transformers
+# IMPORTANT: transformers pulls numpy as dependency, which may upgrade to 2.x
+# We must pin numpy<2.0 to maintain PyTorch compatibility
+RUN pip install --no-cache-dir einops kornia timm transformers && \
+    pip install --no-cache-dir "numpy<2.0" --force-reinstall
 
 # Copy source code
 COPY src/ ./src/
