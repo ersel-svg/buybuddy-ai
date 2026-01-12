@@ -394,11 +394,26 @@ class ProductAugmentor:
         produced_syn = 0
         produced_real = 0
 
+        # Debug counters
+        debug_info = {
+            "jobs_created": 0,
+            "transforms_ok": 0,
+            "transforms_fail": 0,
+            "segments_ok": 0,
+            "segments_fail": 0,
+            "composes_ok": 0,
+            "composes_fail": 0,
+            "saves_ok": 0,
+            "saves_fail": 0,
+        }
+
         # ========== SYN TOP-UP (BATCH) ==========
         if missing_syn > 0 and len(syn_sources) > 0:
             # Prepare all augmentation jobs
             jobs = []  # [(src_path, stem, out_idx, bg_image), ...]
             per_src = ceil_div(missing_syn, len(syn_sources))
+
+            print(f"  Creating jobs: missing_syn={missing_syn}, per_src={per_src}")
 
             for src in syn_sources:
                 stem = src.stem
@@ -411,9 +426,13 @@ class ProductAugmentor:
                     bg = self.get_random_background()
                     jobs.append((src, stem, start_idx + k, bg))
 
+            debug_info["jobs_created"] = len(jobs)
+            print(f"  Total jobs created: {len(jobs)}")
+
             # Process in batches
             for batch_start in range(0, len(jobs), self.batch_size):
                 batch_jobs = jobs[batch_start:batch_start + self.batch_size]
+                print(f"  Processing batch {batch_start // self.batch_size + 1}: {len(batch_jobs)} jobs")
 
                 # Step 1: Load and transform images
                 transformed_images = []
@@ -423,13 +442,25 @@ class ProductAugmentor:
                         transform = self.transforms['heavy'] if random.random() < 0.5 else self.transforms['light']
                         augmented = Image.fromarray(transform(image=np.array(img))['image'])
                         transformed_images.append(augmented)
+                        debug_info["transforms_ok"] += 1
                     except Exception as e:
+                        print(f"    Transform error: {e}")
                         transformed_images.append(None)
+                        debug_info["transforms_fail"] += 1
 
                 # Step 2: Batch segmentation
                 valid_images = [img for img in transformed_images if img is not None]
+                print(f"    Valid images for segmentation: {len(valid_images)}")
                 if valid_images:
-                    segmented = self.segment_batch(valid_images)
+                    try:
+                        segmented = self.segment_batch(valid_images)
+                        debug_info["segments_ok"] += len([s for s in segmented if s is not None])
+                        debug_info["segments_fail"] += len([s for s in segmented if s is None])
+                        print(f"    Segmented: {len([s for s in segmented if s is not None])} ok, {len([s for s in segmented if s is None])} fail")
+                    except Exception as e:
+                        print(f"    Batch segmentation error: {e}")
+                        segmented = [None] * len(valid_images)
+                        debug_info["segments_fail"] += len(valid_images)
                 else:
                     segmented = []
 
@@ -443,19 +474,24 @@ class ProductAugmentor:
                     seg_idx += 1
 
                     if rgba is None:
+                        debug_info["composes_fail"] += 1
                         continue
 
                     final = self.compose_synthetic(rgba, bg)
                     if final is None:
+                        debug_info["composes_fail"] += 1
                         continue
+                    debug_info["composes_ok"] += 1
 
                     out_name = f"syn_{stem}_{out_idx:03d}.jpg"
                     out_path = upc_root / out_name
                     try:
                         final.save(out_path, quality=95)
                         produced_syn += 1
+                        debug_info["saves_ok"] += 1
                     except Exception as e:
                         print(f"  ⚠️ Syn save error {out_name}: {e}")
+                        debug_info["saves_fail"] += 1
 
         # ========== REAL TOP-UP (sequential - usually fewer images) ==========
         if missing_real > 0 and len(real_sources) > 0:
@@ -481,6 +517,7 @@ class ProductAugmentor:
                     if produced_real >= missing_real:
                         break
 
+        print(f"  DEBUG: {debug_info}")
         return {
             "syn_sources": len(syn_sources),
             "real_sources": len(real_sources),
@@ -490,6 +527,7 @@ class ProductAugmentor:
             "produced_real": produced_real,
             "final_syn": current_syn_total + produced_syn,
             "final_real": current_real_total + produced_real,
+            "debug": debug_info,
         }
 
     def process_dataset(self, dataset_path, syn_target, real_target, backgrounds_path=None):
