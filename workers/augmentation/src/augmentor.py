@@ -62,23 +62,9 @@ class ProductAugmentor:
     def __init__(self, batch_size=BATCH_SIZE):
         self.batch_size = batch_size
 
-        # Diagnostic: Check numpy/torch compatibility
-        print("\n=== NUMPY/TORCH COMPATIBILITY CHECK ===")
+        # Version info
         print(f"NumPy version: {np.__version__}")
         print(f"PyTorch version: {torch.__version__}")
-        try:
-            test_tensor = torch.tensor([1.0, 2.0, 3.0])
-            test_list = test_tensor.tolist()
-            test_np = np.array(test_list)
-            print(f"tolist() + np.array() works: {test_np}")
-        except Exception as e:
-            print(f"WARNING: tolist() + np.array() failed: {e}")
-        try:
-            test_np_direct = test_tensor.numpy()
-            print(f".numpy() works: {test_np_direct}")
-        except Exception as e:
-            print(f"WARNING: .numpy() failed (expected): {e}")
-        print("=" * 40 + "\n")
 
         # Device selection with fallback
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -202,9 +188,7 @@ class ProductAugmentor:
                 if self.device == 'cuda':
                     inp = inp.half()
                 preds = self.birefnet(inp)[-1].sigmoid()
-                # Avoid .numpy() - use tolist() for compatibility
-                pred_tensor = preds[0, 0].detach().cpu().float()
-                mask = (np.array(pred_tensor.tolist()) * 255).astype(np.uint8)
+                mask = (preds[0, 0].detach().cpu().numpy() * 255).astype(np.uint8)
 
             mask_pil = Image.fromarray(mask).resize(img_pil.size, Image.BILINEAR)
             rgba = np.array(img_pil.convert("RGBA"))
@@ -257,10 +241,7 @@ class ProductAugmentor:
             success_count = 0
             for i, (img_pil, orig_size) in enumerate(zip(pil_images, original_sizes)):
                 try:
-                    # Avoid .numpy() - use tolist() for compatibility
-                    # .float() ensures we're not in half precision
-                    pred_tensor = preds[i, 0].detach().cpu().float()
-                    mask = (np.array(pred_tensor.tolist()) * 255).astype(np.uint8)
+                    mask = (preds[i, 0].detach().cpu().numpy() * 255).astype(np.uint8)
                     mask_pil = Image.fromarray(mask).resize(orig_size, Image.BILINEAR)
                     rgba = np.array(img_pil.convert("RGBA"))
                     rgba[:, :, 3] = np.array(mask_pil)

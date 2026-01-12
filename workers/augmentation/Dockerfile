@@ -2,26 +2,25 @@ FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies (ignore NVIDIA repo errors during mirror sync)
+RUN apt-get update --allow-releaseinfo-change || true && \
+    apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install core Python dependencies first (matching video-segmentation order)
+# Install Python dependencies WITHOUT touching torch/numpy (already in base image)
+# Base image has: PyTorch 2.2.0 + NumPy 1.x (compatible)
 RUN pip install --no-cache-dir \
     runpod \
-    torch>=2.0.0 \
-    torchvision \
     opencv-python-headless \
     pillow \
-    numpy \
     tqdm \
     supabase>=2.0.0 \
     httpx>=0.25.0 \
     albumentations>=1.3.0
 
-# Install BiRefNet/transformers dependencies separately (like SAM3 deps in video-segmentation)
+# Install BiRefNet/transformers dependencies separately (like SAM3 in video-segmentation)
 RUN pip install --no-cache-dir einops kornia timm transformers
 
 # Copy source code
