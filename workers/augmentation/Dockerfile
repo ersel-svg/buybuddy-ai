@@ -8,15 +8,21 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure numpy is properly installed and compatible with PyTorch
-RUN pip install --no-cache-dir --force-reinstall numpy
+# Install core Python dependencies first (matching video-segmentation order)
+RUN pip install --no-cache-dir \
+    runpod \
+    torch>=2.0.0 \
+    torchvision \
+    opencv-python-headless \
+    pillow \
+    numpy \
+    tqdm \
+    supabase>=2.0.0 \
+    httpx>=0.25.0 \
+    albumentations>=1.3.0
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Reinstall numpy after all deps to ensure compatibility
-RUN pip install --no-cache-dir --force-reinstall numpy
+# Install BiRefNet/transformers dependencies separately (like SAM3 deps in video-segmentation)
+RUN pip install --no-cache-dir einops kornia timm transformers
 
 # Copy source code
 COPY src/ ./src/
