@@ -13,10 +13,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install SAM3 (Segment Anything 3)
-# Note: Replace with actual SAM3 installation when available
-# RUN pip install git+https://github.com/facebookresearch/sam3.git
-RUN pip install segment-anything-2
+# Install SAM3 dependencies first
+RUN pip install --no-cache-dir einops decord timm iopath hydra-core omegaconf pycocotools
+
+# Install SAM3 (Segment Anything 3) from GitHub
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
 
 # Copy source code
 COPY src/ ./src/
