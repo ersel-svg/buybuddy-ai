@@ -207,22 +207,29 @@ class ProductAugmentor:
         if not pil_images:
             return []
 
+        print(f"    segment_batch: Processing {len(pil_images)} images on {self.device}")
+
         # Store original sizes for mask resizing
         original_sizes = [img.size for img in pil_images]
 
         try:
             # Create batch tensor
+            print(f"    Creating batch tensor...")
             batch_tensors = [self.birefnet_transform(img.copy()) for img in pil_images]
             batch = torch.stack(batch_tensors).to(self.device)
             if self.device == 'cuda':
                 batch = batch.half()
+            print(f"    Batch tensor created: {batch.shape}")
 
             # Batch inference
+            print(f"    Running BiRefNet inference...")
             with torch.no_grad():
                 preds = self.birefnet(batch)[-1].sigmoid()
+            print(f"    BiRefNet inference complete: {preds.shape}")
 
             # Process each result
             results = []
+            success_count = 0
             for i, (img_pil, orig_size) in enumerate(zip(pil_images, original_sizes)):
                 try:
                     mask = (preds[i, 0].detach().cpu().numpy() * 255).astype(np.uint8)
@@ -230,16 +237,29 @@ class ProductAugmentor:
                     rgba = np.array(img_pil.convert("RGBA"))
                     rgba[:, :, 3] = np.array(mask_pil)
                     results.append(Image.fromarray(rgba, 'RGBA'))
+                    success_count += 1
                 except Exception as e:
-                    print(f"  Mask processing error: {e}")
+                    print(f"    Mask processing error [{i}]: {e}")
                     results.append(None)
 
+            print(f"    Batch complete: {success_count}/{len(pil_images)} successful")
             return results
 
         except Exception as e:
-            print(f"  Batch segmentation error: {e}")
+            import traceback
+            print(f"    BATCH SEGMENTATION FAILED: {e}")
+            print(f"    Traceback: {traceback.format_exc()}")
+            print(f"    Falling back to sequential...")
             # Fallback to sequential
-            return [self.segment_with_birefnet(img) for img in pil_images]
+            results = []
+            for i, img in enumerate(pil_images):
+                result = self.segment_with_birefnet(img)
+                if result is not None:
+                    print(f"    Sequential [{i}]: OK")
+                else:
+                    print(f"    Sequential [{i}]: FAILED")
+                results.append(result)
+            return results
 
     def compose_synthetic(self, rgba_product, bg_image):
         """Compose product onto background with shadow effect."""
