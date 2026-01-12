@@ -1,8 +1,8 @@
 # Runpod
 runpod>=1.6.0
 
-# PyTorch (usually pre-installed in runpod image)
-torch>=2.2.0
+# PyTorch (SAM3 requires 2.7+)
+torch>=2.7.0
 torchvision
 
 # Computer Vision
