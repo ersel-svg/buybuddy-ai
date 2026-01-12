@@ -8,9 +8,15 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure numpy is properly installed and compatible with PyTorch
+RUN pip install --no-cache-dir --force-reinstall numpy
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Reinstall numpy after all deps to ensure compatibility
+RUN pip install --no-cache-dir --force-reinstall numpy
 
 # Copy source code
 COPY src/ ./src/
