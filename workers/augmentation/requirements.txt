@@ -9,3 +9,7 @@ numpy
 tqdm
 supabase>=2.0.0
 httpx>=0.25.0
+# BiRefNet dependencies
+einops
+kornia
+timm
