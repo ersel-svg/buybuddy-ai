@@ -20,3 +20,4 @@ supabase>=2.0.0
 requests
 tqdm
 python-dotenv
+huggingface_hub

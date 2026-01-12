@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from services.supabase import SupabaseService, supabase_service
 from services.runpod import RunpodService, runpod_service, EndpointType
+from services.buybuddy import BuybuddyService, buybuddy_service
 from config import settings
 
 router = APIRouter()
@@ -60,6 +61,11 @@ def get_runpod() -> RunpodService:
     return runpod_service
 
 
+def get_buybuddy() -> BuybuddyService:
+    """Get BuyBuddy service instance."""
+    return buybuddy_service
+
+
 # ===========================================
 # Helper Functions
 # ===========================================
@@ -86,26 +92,43 @@ async def list_videos(
 
 @router.post("/sync")
 async def sync_videos(
+    limit: int = 50,
     db: SupabaseService = Depends(get_supabase),
+    buybuddy: BuybuddyService = Depends(get_buybuddy),
 ) -> VideoSyncResponse:
     """Sync videos from Buybuddy API."""
-    # TODO: Fetch from actual Buybuddy API
-    # For now, simulate sync with mock data
-    mock_videos = [
-        {
-            "barcode": "0012345678905",
-            "video_url": "https://example.com/video1.mp4",
-            "status": "pending",
-        },
-        {
-            "barcode": "0012345678906",
-            "video_url": "https://example.com/video2.mp4",
-            "status": "pending",
-        },
-    ]
+    if not buybuddy.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="BuyBuddy API credentials not configured. Set BUYBUDDY_USERNAME and BUYBUDDY_PASSWORD.",
+        )
 
-    synced_count = await db.sync_videos_from_buybuddy(mock_videos)
-    return VideoSyncResponse(synced_count=synced_count)
+    try:
+        # Fetch products from BuyBuddy API
+        products = await buybuddy.get_unprocessed_products(limit=limit)
+
+        if not products:
+            return VideoSyncResponse(synced_count=0)
+
+        # Transform to video format
+        videos = [
+            {
+                "barcode": p["barcode"],
+                "video_url": p["video_url"],
+                "video_id": p.get("video_id"),
+                "status": "pending",
+            }
+            for p in products
+        ]
+
+        synced_count = await db.sync_videos_from_buybuddy(videos)
+        return VideoSyncResponse(synced_count=synced_count)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sync from BuyBuddy: {str(e)}",
+        )
 
 
 @router.post("/process")

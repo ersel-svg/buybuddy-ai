@@ -85,6 +85,14 @@ class ProductPipeline:
     def _init_sam3(self):
         """Initialize SAM3 video predictor."""
         try:
+            # Authenticate with HuggingFace for model download
+            if HF_TOKEN:
+                from huggingface_hub import login
+                login(token=HF_TOKEN, add_to_git_credential=False)
+                print("[Pipeline] HuggingFace authenticated")
+            else:
+                print("[Pipeline] WARNING: HF_TOKEN not set, SAM3 download may fail")
+
             from sam3.model_builder import build_sam3_video_predictor
 
             self.video_predictor = build_sam3_video_predictor()

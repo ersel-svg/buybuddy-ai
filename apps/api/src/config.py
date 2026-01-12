@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     hf_token: str = ""
 
     # Buybuddy Legacy API
-    buybuddy_api_url: str = "https://api.buybuddy.co"
-    buybuddy_api_key: str = ""
+    buybuddy_api_url: str = "https://api-legacy.buybuddy.co/api/v1"
+    buybuddy_username: str = ""
+    buybuddy_password: str = ""
 
     # Processing defaults
     target_resolution: int = 518
