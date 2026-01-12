@@ -195,17 +195,20 @@ class ProductAugmentor:
             return None
 
     def segment_batch(self, pil_images):
-        """
-        BiRefNet BATCH segmentation - up to 10x faster!
+        """Wrapper for backwards compatibility."""
+        results, _ = self.segment_batch_with_errors(pil_images)
+        return results
 
-        Args:
-            pil_images: List of PIL Images
+    def segment_batch_with_errors(self, pil_images):
+        """
+        BiRefNet BATCH segmentation with error reporting.
 
         Returns:
-            List of RGBA PIL Images (or None for failed ones)
+            Tuple of (results_list, errors_list)
         """
+        errors = []
         if not pil_images:
-            return []
+            return [], errors
 
         print(f"    segment_batch: Processing {len(pil_images)} images on {self.device}")
 
@@ -239,27 +242,39 @@ class ProductAugmentor:
                     results.append(Image.fromarray(rgba, 'RGBA'))
                     success_count += 1
                 except Exception as e:
-                    print(f"    Mask processing error [{i}]: {e}")
+                    err = f"Mask[{i}]: {str(e)[:100]}"
+                    print(f"    {err}")
+                    errors.append(err)
                     results.append(None)
 
             print(f"    Batch complete: {success_count}/{len(pil_images)} successful")
-            return results
+            return results, errors
 
         except Exception as e:
             import traceback
-            print(f"    BATCH SEGMENTATION FAILED: {e}")
+            err = f"BiRefNet batch failed: {str(e)[:200]}"
+            print(f"    {err}")
+            errors.append(err)
             print(f"    Traceback: {traceback.format_exc()}")
             print(f"    Falling back to sequential...")
+
             # Fallback to sequential
             results = []
             for i, img in enumerate(pil_images):
-                result = self.segment_with_birefnet(img)
-                if result is not None:
-                    print(f"    Sequential [{i}]: OK")
-                else:
-                    print(f"    Sequential [{i}]: FAILED")
-                results.append(result)
-            return results
+                try:
+                    result = self.segment_with_birefnet(img)
+                    if result is not None:
+                        print(f"    Sequential [{i}]: OK")
+                    else:
+                        print(f"    Sequential [{i}]: FAILED (returned None)")
+                        errors.append(f"Sequential[{i}]: returned None")
+                    results.append(result)
+                except Exception as seq_e:
+                    err = f"Sequential[{i}]: {str(seq_e)[:100]}"
+                    print(f"    {err}")
+                    errors.append(err)
+                    results.append(None)
+            return results, errors
 
     def compose_synthetic(self, rgba_product, bg_image):
         """Compose product onto background with shadow effect."""
@@ -425,6 +440,7 @@ class ProductAugmentor:
             "composes_fail": 0,
             "saves_ok": 0,
             "saves_fail": 0,
+            "errors": [],
         }
 
         # ========== SYN TOP-UP (BATCH) ==========
@@ -473,12 +489,17 @@ class ProductAugmentor:
                 print(f"    Valid images for segmentation: {len(valid_images)}")
                 if valid_images:
                     try:
-                        segmented = self.segment_batch(valid_images)
+                        segmented, seg_errors = self.segment_batch_with_errors(valid_images)
                         debug_info["segments_ok"] += len([s for s in segmented if s is not None])
                         debug_info["segments_fail"] += len([s for s in segmented if s is None])
+                        if seg_errors:
+                            debug_info["errors"].extend(seg_errors[:3])  # Limit to first 3 errors
                         print(f"    Segmented: {len([s for s in segmented if s is not None])} ok, {len([s for s in segmented if s is None])} fail")
                     except Exception as e:
-                        print(f"    Batch segmentation error: {e}")
+                        import traceback
+                        err_msg = f"Batch seg outer error: {str(e)[:200]}"
+                        print(f"    {err_msg}")
+                        debug_info["errors"].append(err_msg)
                         segmented = [None] * len(valid_images)
                         debug_info["segments_fail"] += len(valid_images)
                 else:
