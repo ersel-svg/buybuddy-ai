@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install SAM3 dependencies first
 RUN pip install --no-cache-dir einops decord timm iopath hydra-core omegaconf pycocotools
 
-# Install SAM3 (Segment Anything 3) from GitHub
-RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
+# Install SAM3 (Segment Anything 3) from GitHub - pinned to working commit (CUDA 12.4 compatible)
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git@7b89b8fc3fa0ae8d09d9b17a284b5299e238b1b0
 
 # Copy source code
 COPY src/ ./src/
