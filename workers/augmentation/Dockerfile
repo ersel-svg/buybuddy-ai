@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.5.1-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
 
@@ -9,8 +9,8 @@ RUN apt-get update --allow-releaseinfo-change || true && \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies WITHOUT touching torch/numpy (already in base image)
-# Base image has: PyTorch 2.2.0 + NumPy 1.x (compatible)
+# Install Python dependencies - matching tested pod environment
+# Pod: Python 3.11, PyTorch 2.5.1, CUDA 12.4, NumPy 1.26.4
 RUN pip install --no-cache-dir \
     runpod \
     opencv-python-headless \
@@ -18,13 +18,11 @@ RUN pip install --no-cache-dir \
     tqdm \
     supabase>=2.0.0 \
     httpx>=0.25.0 \
-    albumentations>=1.3.0
+    albumentations>=2.0.0
 
-# Install BiRefNet/transformers dependencies separately (like SAM3 in video-segmentation)
-# IMPORTANT: transformers pulls numpy as dependency, which may upgrade to 2.x
-# We must pin numpy<2.0 to maintain PyTorch compatibility
-RUN pip install --no-cache-dir einops kornia timm transformers && \
-    pip install --no-cache-dir "numpy<2.0" --force-reinstall
+# Install BiRefNet/transformers dependencies
+# Versions matching tested pod: transformers 4.57.3, timm 1.0.24
+RUN pip install --no-cache-dir einops kornia timm transformers
 
 # Copy source code
 COPY src/ ./src/
