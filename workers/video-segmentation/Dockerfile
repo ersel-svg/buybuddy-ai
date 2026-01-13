@@ -3,8 +3,9 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (git needed for pip install from GitHub)
 RUN apt-get update && apt-get install -y \
+    git \
     ffmpeg \
     libgl1-mesa-glx \
     libglib2.0-0 \
