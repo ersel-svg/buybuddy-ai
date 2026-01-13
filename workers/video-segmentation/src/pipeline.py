@@ -119,6 +119,12 @@ class ProductPipeline:
         """
         Main processing method.
 
+        Args:
+            video_url: URL to download video from
+            barcode: Product barcode
+            video_id: External video ID
+            product_id: Product UUID (required for storage)
+
         Returns:
             {
                 "metadata": {...},
@@ -127,8 +133,12 @@ class ProductPipeline:
                 "primary_image_url": "https://..."
             }
         """
+        # Validate product_id is provided (required for storage folder)
+        if not product_id:
+            raise ValueError("product_id is required for storage. Create product before processing.")
+
         # Create temp directory for this job
-        job_dir = self.temp_dir / barcode
+        job_dir = self.temp_dir / product_id
         job_dir.mkdir(parents=True, exist_ok=True)
         frames_dir = job_dir / "frames"
         frames_dir.mkdir(exist_ok=True)
@@ -289,28 +299,119 @@ class ProductPipeline:
   "extraction_metadata": {"visibility_score": 0, "issues_detected": []}
 }"""
 
-    def _get_grounding_prompt(self, metadata: dict) -> str:
-        """Get grounding prompt from metadata or generate fallback."""
-        # Try to get from Gemini output
-        prompt = metadata.get("visual_grounding", {}).get("grounding_prompt", "")
+    # Fallback prompts for retail packaging types (ordered by commonality)
+    FALLBACK_PROMPTS = [
+        "can",
+        "bottle",
+        "box",
+        "bag",
+        "package",
+        "container",
+        "jar",
+        "pouch",
+        "carton",
+        "tube",
+    ]
 
-        # Check if it's a valid prompt
-        invalid_prompts = ["Brand ProductName ContainerType", "", None]
+    # Minimum mask pixels to consider segmentation successful
+    MIN_MASK_PIXELS = 10000
+
+    def _get_grounding_prompt(self, metadata: dict) -> str:
+        """Get grounding prompt from metadata - prefer container_type."""
+        # Primary: use container_type directly (most reliable for SAM3)
+        container = metadata.get("product_identity", {}).get("container_type", "")
+        if container and container.strip().lower() not in ["", "product", "unknown", "n/a"]:
+            return container.strip().lower()
+
+        # Secondary: try grounding_prompt from Gemini
+        prompt = metadata.get("visual_grounding", {}).get("grounding_prompt", "")
+        invalid_prompts = ["Brand ProductName ContainerType", "", None, "product"]
         if prompt and prompt.strip() and prompt.strip() not in invalid_prompts:
+            # Extract just the container type from the prompt if it contains one
+            prompt_lower = prompt.strip().lower()
+            for fallback in self.FALLBACK_PROMPTS:
+                if fallback in prompt_lower:
+                    return fallback
             return prompt.strip()
 
-        # Fallback: build from fields
-        brand = metadata.get("brand_info", {}).get("brand_name", "") or ""
-        product = metadata.get("product_identity", {}).get("product_name", "") or ""
-        container = metadata.get("product_identity", {}).get("container_type", "product") or "product"
+        # Default fallback
+        return "can"
 
-        prompt = f"{brand} {product} {container}".strip()
-        return prompt if prompt else "product"
+    def _test_prompt_on_first_frame(self, video_path: Path, prompt: str) -> int:
+        """Test a prompt on the first frame and return mask pixel count."""
+        response = self.video_predictor.handle_request(
+            request=dict(type="start_session", resource_path=str(video_path))
+        )
+        session_id = response["session_id"]
+
+        try:
+            self.video_predictor.handle_request(
+                request=dict(
+                    type="add_prompt",
+                    session_id=session_id,
+                    frame_index=0,
+                    text=prompt,
+                )
+            )
+
+            propagate_result = self.video_predictor.propagate_in_video(
+                session_id=session_id,
+                propagation_direction="forward",
+                start_frame_idx=0,
+                max_frame_num_to_track=1,
+            )
+
+            for item in propagate_result:
+                if isinstance(item, dict):
+                    outputs = item.get("outputs", {})
+                    masks = outputs.get("out_binary_masks", [])
+                    if len(masks) > 0:
+                        mask = masks[0]
+                        if hasattr(mask, "cpu"):
+                            mask = mask.cpu().numpy()
+                        return int(mask.sum())
+                break
+            return 0
+
+        finally:
+            self.video_predictor.handle_request(
+                request=dict(type="close_session", session_id=session_id)
+            )
+
+    def _find_best_prompt(self, video_path: Path, primary_prompt: str) -> str:
+        """Find the best working prompt by testing on first frame."""
+        # First try the primary prompt
+        print(f"      Testing primary prompt: '{primary_prompt}'")
+        pixel_count = self._test_prompt_on_first_frame(video_path, primary_prompt)
+        print(f"      -> {pixel_count} pixels")
+
+        if pixel_count >= self.MIN_MASK_PIXELS:
+            return primary_prompt
+
+        # Try fallback prompts
+        print("      Primary prompt failed, trying fallbacks...")
+        for fallback in self.FALLBACK_PROMPTS:
+            if fallback == primary_prompt:
+                continue
+            print(f"      Testing fallback: '{fallback}'")
+            pixel_count = self._test_prompt_on_first_frame(video_path, fallback)
+            print(f"      -> {pixel_count} pixels")
+
+            if pixel_count >= self.MIN_MASK_PIXELS:
+                print(f"      Found working prompt: '{fallback}'")
+                return fallback
+
+        # If nothing works, return primary prompt anyway
+        print(f"      No fallback worked, using primary: '{primary_prompt}'")
+        return primary_prompt
 
     def _segment_video_sam3(self, video_path: Path, grounding_prompt: str, num_frames: int) -> dict:
-        """Segment video using SAM3 with text prompt."""
-        # Start session
-        print("      Starting SAM3 session...")
+        """Segment video using SAM3 with text prompt and fallback support."""
+        # Find the best working prompt
+        best_prompt = self._find_best_prompt(video_path, grounding_prompt)
+
+        # Start session for full segmentation
+        print(f"      Starting SAM3 session with prompt: '{best_prompt}'")
         response = self.video_predictor.handle_request(
             request=dict(
                 type="start_session",
@@ -322,13 +423,12 @@ class ProductPipeline:
 
         try:
             # Add text prompt on first frame
-            print(f"      Adding text prompt: '{grounding_prompt}'")
             self.video_predictor.handle_request(
                 request=dict(
                     type="add_prompt",
                     session_id=session_id,
                     frame_index=0,
-                    text=grounding_prompt,
+                    text=best_prompt,
                 )
             )
 
@@ -492,12 +592,12 @@ class ProductPipeline:
         self,
         frames: List[np.ndarray],
         barcode: str,
-        product_id: Optional[str],
+        product_id: str,
         metadata: dict = None,
     ) -> tuple[str, str]:
         """Upload frames and metadata to Supabase Storage."""
         bucket = "frames"
-        folder = product_id or barcode
+        folder = product_id  # Always use product_id for consistent storage
 
         # Upload frames
         for i, frame in enumerate(tqdm(frames, desc="Uploading")):

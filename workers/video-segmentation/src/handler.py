@@ -7,10 +7,9 @@ Input:
     "barcode": "123456789",
     "video_id": 12345,
     "product_id": "uuid-...",  # Our system's product UUID
-    "job_id": "uuid-..."       # Job ID for status updates
 }
 
-Output:
+Output (returned to RunPod, sent via webhook automatically):
 {
     "status": "success",
     "barcode": "123456789",
@@ -19,12 +18,15 @@ Output:
     "frame_count": 177,
     "frames_url": "https://..."
 }
+
+Note: RunPod serverless automatically sends webhook on job completion.
+No manual callbacks needed - RunPod handles this with the webhook_url
+specified when submitting the job.
 """
 
 import runpod
 import traceback
 import os
-import requests
 from pipeline import ProductPipeline
 
 # Pipeline singleton - loaded once on cold start
@@ -44,62 +46,30 @@ def get_pipeline():
     return pipeline
 
 
-def send_callback(job_id: str, status: str, result: dict = None, error: str = None):
-    """Send status callback to backend API."""
-    callback_url = os.environ.get("CALLBACK_URL")
-    if not callback_url:
-        return
-
-    try:
-        payload = {
-            "job_id": job_id,
-            "type": "video_processing",
-            "status": status,
-        }
-
-        if result:
-            payload["result"] = result
-        if error:
-            payload["error"] = error
-
-        response = requests.post(
-            f"{callback_url}/api/v1/webhooks/runpod",
-            json=payload,
-            timeout=10,
-        )
-        print(f"[Callback] Sent to {callback_url}: {response.status_code}")
-    except Exception as e:
-        print(f"[Callback] Failed: {e}")
-
-
 def handler(job):
     """Main handler for Runpod serverless."""
-    job_input = job.get("input", {})
-    job_id = job_input.get("job_id")
+    job_input = job.get("input", {}) if job else {}
+    product_id = None  # Define early so it's available in except block
 
     try:
         # Validate input
         video_url = job_input.get("video_url")
         if not video_url:
-            error = "video_url is required"
-            if job_id:
-                send_callback(job_id, "failed", error=error)
-            return {"status": "error", "error": error}
+            return {"status": "error", "error": "video_url is required"}
 
         barcode = job_input.get("barcode", "unknown")
         video_id = job_input.get("video_id")
         product_id = job_input.get("product_id")
 
+        # Validate product_id is provided (required for storage)
+        if not product_id:
+            return {"status": "error", "error": "product_id is required. Create product before processing."}
+
         print(f"\n{'=' * 60}")
         print(f"Processing: {barcode}")
         print(f"Video URL: {video_url[:80]}...")
         print(f"Product ID: {product_id}")
-        print(f"Job ID: {job_id}")
         print(f"{'=' * 60}\n")
-
-        # Send processing status
-        if job_id:
-            send_callback(job_id, "processing")
 
         # Get pipeline and process
         pipe = get_pipeline()
@@ -115,7 +85,8 @@ def handler(job):
         print(f"Frames: {result['frame_count']}")
         print(f"{'=' * 60}\n")
 
-        response = {
+        # Return result - RunPod will send this via webhook automatically
+        return {
             "status": "success",
             "barcode": barcode,
             "video_id": video_id,
@@ -126,12 +97,6 @@ def handler(job):
             "primary_image_url": result.get("primary_image_url"),
         }
 
-        # Send success callback
-        if job_id:
-            send_callback(job_id, "completed", result=response)
-
-        return response
-
     except Exception as e:
         error_msg = str(e)
         error_trace = traceback.format_exc()
@@ -141,14 +106,13 @@ def handler(job):
         print(error_trace)
         print(f"{'=' * 60}\n")
 
-        # Send failure callback
-        if job_id:
-            send_callback(job_id, "failed", error=error_msg)
-
+        # Return error with product_id so webhook can update product status
+        # Note: product_id may be None if error occurred before validation
         return {
             "status": "error",
             "error": error_msg,
             "traceback": error_trace,
+            "product_id": product_id,  # Include for webhook to reset product status
         }
 
 

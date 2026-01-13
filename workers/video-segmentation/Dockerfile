@@ -1,4 +1,5 @@
-FROM runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2204
+# Tested on RunPod: PyTorch 2.5.1 + CUDA 12.4 (RTX 4090)
+FROM runpod/pytorch:2.5.1-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
 
@@ -27,7 +28,6 @@ ENV GEMINI_API_KEY=""
 ENV HF_TOKEN=""
 ENV SUPABASE_URL=""
 ENV SUPABASE_KEY=""
-ENV CALLBACK_URL=""
 
 # Run handler
 CMD ["python", "-u", "src/handler.py"]

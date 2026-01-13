@@ -1,5 +1,6 @@
 """Videos API router for syncing and processing videos."""
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -36,6 +37,7 @@ class ProcessVideosRequest(BaseModel):
     """Request to process multiple videos."""
 
     video_ids: list[int]
+    chunk_size: int = 25  # Process in chunks to avoid rate limits
 
 
 class ProcessVideoByUrlRequest(BaseModel):
@@ -146,14 +148,28 @@ async def process_video(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
+    barcode = request_data.barcode or video.get("barcode")
+    product_id = request_data.product_id
+
+    # Create product first if not provided (so pipeline has product_id for storage)
+    if not product_id:
+        product = await db.create_product({
+            "barcode": barcode,
+            "video_id": request_data.video_id,
+            "video_url": video.get("video_url"),
+            "status": "processing",
+        })
+        product_id = product["id"]
+        print(f"[Videos] Created product {product_id} for barcode {barcode}")
+
     # Create video processing job
     job = await db.create_job({
         "type": "video_processing",
         "config": {
             "video_id": request_data.video_id,
             "video_url": video.get("video_url"),
-            "barcode": request_data.barcode or video.get("barcode"),
-            "product_id": request_data.product_id,
+            "barcode": barcode,
+            "product_id": product_id,
         },
     })
 
@@ -165,9 +181,9 @@ async def process_video(
                 endpoint_type=EndpointType.VIDEO,
                 input_data={
                     "video_url": video.get("video_url"),
-                    "barcode": request_data.barcode or video.get("barcode"),
+                    "barcode": barcode,
                     "video_id": request_data.video_id,
-                    "product_id": request_data.product_id,
+                    "product_id": product_id,
                     "job_id": job["id"],
                 },
                 webhook_url=webhook_url,
@@ -189,6 +205,8 @@ async def process_video(
                 "status": "failed",
                 "error": f"Failed to dispatch to Runpod: {str(e)}",
             })
+            # Update product status to failed
+            await db.update_product(product_id, {"status": "pending"})
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to dispatch to Runpod: {str(e)}",
@@ -207,13 +225,25 @@ async def process_video_by_url(
     runpod: RunpodService = Depends(get_runpod),
 ):
     """Process a video directly by URL (without syncing first)."""
+    product_id = request_data.product_id
+
+    # Create product first if not provided (so pipeline has product_id for storage)
+    if not product_id:
+        product = await db.create_product({
+            "barcode": request_data.barcode,
+            "video_url": request_data.video_url,
+            "status": "processing",
+        })
+        product_id = product["id"]
+        print(f"[Videos] Created product {product_id} for barcode {request_data.barcode}")
+
     # Create video processing job
     job = await db.create_job({
         "type": "video_processing",
         "config": {
             "video_url": request_data.video_url,
             "barcode": request_data.barcode,
-            "product_id": request_data.product_id,
+            "product_id": product_id,
         },
     })
 
@@ -226,7 +256,7 @@ async def process_video_by_url(
                 input_data={
                     "video_url": request_data.video_url,
                     "barcode": request_data.barcode,
-                    "product_id": request_data.product_id,
+                    "product_id": product_id,
                     "job_id": job["id"],
                 },
                 webhook_url=webhook_url,
@@ -248,6 +278,8 @@ async def process_video_by_url(
                 "status": "failed",
                 "error": f"Failed to dispatch to Runpod: {str(e)}",
             })
+            # Update product status to pending on failure
+            await db.update_product(product_id, {"status": "pending"})
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to dispatch to Runpod: {str(e)}",
@@ -265,59 +297,94 @@ async def process_videos_batch(
     db: SupabaseService = Depends(get_supabase),
     runpod: RunpodService = Depends(get_runpod),
 ):
-    """Process multiple videos through the pipeline."""
+    """Process multiple videos through the pipeline with chunking."""
     # Get all videos
     videos = await db.get_videos()
     video_map = {v.get("id"): v for v in videos}
 
     jobs = []
     webhook_url = get_webhook_url(request) if runpod.is_configured(EndpointType.VIDEO) else None
+    chunk_size = request_data.chunk_size
+    video_ids = request_data.video_ids
+    total = len(video_ids)
 
-    for video_id in request_data.video_ids:
-        video = video_map.get(video_id)
-        if not video:
-            continue
+    print(f"[Videos] Processing {total} videos in chunks of {chunk_size}")
 
-        # Create job
-        job = await db.create_job({
-            "type": "video_processing",
-            "config": {
+    # Process in chunks
+    for chunk_idx in range(0, total, chunk_size):
+        chunk = video_ids[chunk_idx:chunk_idx + chunk_size]
+        chunk_num = chunk_idx // chunk_size + 1
+        total_chunks = (total + chunk_size - 1) // chunk_size
+
+        print(f"[Videos] Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} videos)")
+
+        for video_id in chunk:
+            video = video_map.get(video_id)
+            if not video:
+                continue
+
+            barcode = video.get("barcode")
+
+            # Create product first (so pipeline has product_id for storage)
+            product = await db.create_product({
+                "barcode": barcode,
                 "video_id": video_id,
                 "video_url": video.get("video_url"),
-                "barcode": video.get("barcode"),
-            },
-        })
+                "status": "processing",
+            })
+            product_id = product["id"]
+            print(f"[Videos] Created product {product_id} for barcode {barcode}")
 
-        # Dispatch to Runpod
-        if webhook_url and runpod.is_configured(EndpointType.VIDEO):
-            try:
-                runpod_response = await runpod.submit_job(
-                    endpoint_type=EndpointType.VIDEO,
-                    input_data={
-                        "video_url": video.get("video_url"),
-                        "barcode": video.get("barcode"),
-                        "video_id": video_id,
-                        "job_id": job["id"],
-                    },
-                    webhook_url=webhook_url,
-                )
+            # Create job
+            job = await db.create_job({
+                "type": "video_processing",
+                "config": {
+                    "video_id": video_id,
+                    "video_url": video.get("video_url"),
+                    "barcode": barcode,
+                    "product_id": product_id,
+                },
+            })
 
-                await db.update_job(job["id"], {
-                    "status": "queued",
-                    "runpod_job_id": runpod_response.get("id"),
-                })
-                job["runpod_job_id"] = runpod_response.get("id")
-                job["status"] = "queued"
+            # Dispatch to Runpod
+            if webhook_url and runpod.is_configured(EndpointType.VIDEO):
+                try:
+                    runpod_response = await runpod.submit_job(
+                        endpoint_type=EndpointType.VIDEO,
+                        input_data={
+                            "video_url": video.get("video_url"),
+                            "barcode": barcode,
+                            "video_id": video_id,
+                            "product_id": product_id,
+                            "job_id": job["id"],
+                        },
+                        webhook_url=webhook_url,
+                    )
 
-            except Exception as e:
-                print(f"[Videos] Failed to dispatch video {video_id}: {e}")
-                await db.update_job(job["id"], {
-                    "status": "failed",
-                    "error": str(e),
-                })
+                    await db.update_job(job["id"], {
+                        "status": "queued",
+                        "runpod_job_id": runpod_response.get("id"),
+                    })
+                    job["runpod_job_id"] = runpod_response.get("id")
+                    job["status"] = "queued"
 
-        jobs.append(job)
+                except Exception as e:
+                    print(f"[Videos] Failed to dispatch video {video_id}: {e}")
+                    await db.update_job(job["id"], {
+                        "status": "failed",
+                        "error": str(e),
+                    })
+                    # Update product status to pending on failure
+                    await db.update_product(product_id, {"status": "pending"})
 
+            jobs.append(job)
+
+        # Small delay between chunks to avoid rate limits
+        if chunk_idx + chunk_size < total:
+            print(f"[Videos] Waiting 1s before next chunk...")
+            await asyncio.sleep(1)
+
+    print(f"[Videos] Batch complete: {len(jobs)} jobs created")
     return jobs
 
 
