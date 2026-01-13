@@ -4,12 +4,16 @@ import os
 import json
 from pathlib import Path
 from supabase import create_client, Client
-from typing import Optional
+from typing import Optional, List, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 CALLBACK_URL = os.environ.get("CALLBACK_URL", "")
+
+# Parallel download/upload settings
+MAX_WORKERS = 10  # Concurrent connections
 
 
 def get_supabase() -> Client:
@@ -84,29 +88,54 @@ class DatasetDownloader:
         return dataset_dir.parent
 
     def _download_product_frames(self, frames_path: str, target_dir: Path):
-        """Download frames from Supabase Storage."""
+        """Download frames from Supabase Storage with parallel downloads."""
         try:
             # frames_path format: "{supabase_url}/storage/v1/object/public/frames/{barcode}/"
             # or just "{barcode}/" if relative
             bucket = "frames"
 
-            # Extract barcode from path
+            # Extract folder from path
             if "/" in frames_path:
-                barcode = frames_path.rstrip("/").split("/")[-1]
+                folder = frames_path.rstrip("/").split("/")[-1]
             else:
-                barcode = frames_path.rstrip("/")
+                folder = frames_path.rstrip("/")
 
             # List files in bucket
-            files = self.client.storage.from_(bucket).list(barcode)
+            files = self.client.storage.from_(bucket).list(folder)
+            image_files = [
+                f for f in files
+                if f.get("name", "").endswith(('.png', '.jpg', '.jpeg', '.webp'))
+            ]
 
-            for f in files:
-                if f.get("name", "").endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    file_path = f"{barcode}/{f['name']}"
+            if not image_files:
+                print(f"   ⚠️ No image files found in {folder}")
+                return
+
+            print(f"   📥 Downloading {len(image_files)} frames (parallel)...")
+
+            def download_single(file_info: dict) -> Tuple[str, bool]:
+                """Download a single file."""
+                file_name = file_info['name']
+                file_path = f"{folder}/{file_name}"
+                try:
                     data = self.client.storage.from_(bucket).download(file_path)
-
-                    local_path = target_dir / f['name']
+                    local_path = target_dir / file_name
                     with open(local_path, 'wb') as fp:
                         fp.write(data)
+                    return file_name, True
+                except Exception as e:
+                    return file_name, False
+
+            # Parallel download
+            success_count = 0
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {executor.submit(download_single, f): f for f in image_files}
+                for future in as_completed(futures):
+                    name, success = future.result()
+                    if success:
+                        success_count += 1
+
+            print(f"   ✅ Downloaded {success_count}/{len(image_files)} frames")
 
         except Exception as e:
             print(f"   ⚠️ Frame download error: {e}")
@@ -146,14 +175,13 @@ class ResultUploader:
 
     def upload_augmented(self, dataset_dir, dataset_id: str) -> dict:
         """
-        Upload augmented images to Supabase Storage.
+        Upload augmented images to Supabase Storage with parallel uploads.
 
         Returns upload statistics.
         """
-        print(f"\n📤 Uploading augmented images...")
+        print(f"\n📤 Uploading augmented images (parallel)...")
 
         bucket = "augmented-images"
-        stats = {"syn_uploaded": 0, "real_uploaded": 0}
 
         # Ensure Path object
         dataset_dir = Path(dataset_dir) if isinstance(dataset_dir, str) else dataset_dir
@@ -163,33 +191,54 @@ class ResultUploader:
         if not train_dir.exists():
             train_dir = dataset_dir
 
+        # Collect all files to upload
+        upload_tasks: List[Tuple[Path, str, str]] = []  # (local_path, storage_path, type)
+
         for product_dir in train_dir.iterdir():
             if not product_dir.is_dir():
                 continue
 
             barcode = product_dir.name
 
-            # Upload synthetic augmented images (syn_*.jpg)
+            # Synthetic augmented images (syn_*.jpg)
             for img in product_dir.glob("syn_*.jpg"):
                 storage_path = f"{dataset_id}/{barcode}/{img.name}"
-                try:
-                    with open(img, 'rb') as f:
-                        self.client.storage.from_(bucket).upload(storage_path, f.read())
-                    stats["syn_uploaded"] += 1
-                except Exception:
-                    pass  # May already exist
+                upload_tasks.append((img, storage_path, "syn"))
 
-            # Upload real augmented images (real/*_aug_*.jpg)
+            # Real augmented images (real/*_aug_*.jpg)
             real_dir = product_dir / "real"
             if real_dir.exists():
                 for img in real_dir.glob("*_aug_*.jpg"):
                     storage_path = f"{dataset_id}/{barcode}/real/{img.name}"
-                    try:
-                        with open(img, 'rb') as f:
-                            self.client.storage.from_(bucket).upload(storage_path, f.read())
+                    upload_tasks.append((img, storage_path, "real"))
+
+        if not upload_tasks:
+            print("   ⚠️ No augmented images to upload")
+            return {"syn_uploaded": 0, "real_uploaded": 0}
+
+        print(f"   📤 Uploading {len(upload_tasks)} images...")
+
+        def upload_single(task: Tuple[Path, str, str]) -> Tuple[str, bool]:
+            """Upload a single file."""
+            local_path, storage_path, img_type = task
+            try:
+                with open(local_path, 'rb') as f:
+                    self.client.storage.from_(bucket).upload(storage_path, f.read())
+                return img_type, True
+            except Exception:
+                return img_type, False
+
+        # Parallel upload
+        stats = {"syn_uploaded": 0, "real_uploaded": 0}
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(upload_single, task) for task in upload_tasks]
+            for future in as_completed(futures):
+                img_type, success = future.result()
+                if success:
+                    if img_type == "syn":
+                        stats["syn_uploaded"] += 1
+                    else:
                         stats["real_uploaded"] += 1
-                    except Exception:
-                        pass
 
         print(f"   ✅ Uploaded: {stats['syn_uploaded']} syn + {stats['real_uploaded']} real")
         return stats

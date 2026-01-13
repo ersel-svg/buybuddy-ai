@@ -10,9 +10,10 @@ import time
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 import numpy as np
@@ -21,6 +22,9 @@ from PIL import Image
 import requests
 import google.generativeai as genai
 from tqdm import tqdm
+
+# Parallel upload settings
+MAX_UPLOAD_WORKERS = 10
 
 from config import (
     GEMINI_API_KEY,
@@ -595,32 +599,53 @@ class ProductPipeline:
         product_id: str,
         metadata: dict = None,
     ) -> tuple[str, str]:
-        """Upload frames and metadata to Supabase Storage."""
+        """Upload frames and metadata to Supabase Storage with parallel uploads."""
         bucket = "frames"
         folder = product_id  # Always use product_id for consistent storage
 
-        # Upload frames
-        for i, frame in enumerate(tqdm(frames, desc="Uploading")):
+        print(f"      Uploading {len(frames)} frames (parallel)...")
+
+        # Prepare frame data for parallel upload
+        frame_data: List[Tuple[int, bytes]] = []
+        for i, frame in enumerate(frames):
             img = Image.fromarray(frame)
             buffer = BytesIO()
             img.save(buffer, format="PNG")
-            buffer.seek(0)
+            frame_data.append((i, buffer.getvalue()))
 
-            path = f"{folder}/frame_{i:04d}.png"
+        def upload_single_frame(item: Tuple[int, bytes]) -> Tuple[int, bool]:
+            """Upload a single frame."""
+            idx, data = item
+            path = f"{folder}/frame_{idx:04d}.png"
             try:
                 self.supabase.storage.from_(bucket).upload(
-                    path, buffer.getvalue(), {"content-type": "image/png"}
+                    path, data, {"content-type": "image/png"}
                 )
+                return idx, True
             except Exception as e:
                 # File might already exist, try update
                 if "already exists" in str(e).lower() or "Duplicate" in str(e):
-                    self.supabase.storage.from_(bucket).update(
-                        path, buffer.getvalue(), {"content-type": "image/png"}
-                    )
-                else:
-                    raise
+                    try:
+                        self.supabase.storage.from_(bucket).update(
+                            path, data, {"content-type": "image/png"}
+                        )
+                        return idx, True
+                    except Exception:
+                        return idx, False
+                return idx, False
 
-        # Upload metadata JSON
+        # Parallel upload
+        success_count = 0
+        with ThreadPoolExecutor(max_workers=MAX_UPLOAD_WORKERS) as executor:
+            futures = [executor.submit(upload_single_frame, item) for item in frame_data]
+            for future in as_completed(futures):
+                idx, success = future.result()
+                if success:
+                    success_count += 1
+
+        print(f"      Uploaded {success_count}/{len(frames)} frames")
+
+        # Upload metadata JSON (single file, no need for parallel)
         if metadata:
             metadata_bytes = json.dumps(metadata, indent=2, ensure_ascii=False).encode("utf-8")
             metadata_path = f"{folder}/metadata.json"
