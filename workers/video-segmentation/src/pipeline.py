@@ -195,17 +195,27 @@ class ProductPipeline:
                 "model": "SAM3",
             }
 
-            # 6. Save frames and metadata
-            print("\n[6/6] Saving frames and metadata...")
+            # 6. Save frames to storage
+            print("\n[6/7] Saving frames to storage...")
             frames_url, primary_image_url = self._save_frames(
                 processed_frames, barcode, product_id, frames_dir, metadata
             )
             print(f"      Frames URL: {frames_url}")
             print(f"      Primary Image: {primary_image_url}")
 
-            # 7. Update product in database (if product_id provided)
+            # 7. Sync product and frame records to database (idempotent)
             if product_id and self.supabase:
-                self._update_product(product_id, metadata, len(processed_frames), frames_url, primary_image_url)
+                print("\n[7/7] Syncing to database...")
+                self._sync_product_and_frames(
+                    product_id=product_id,
+                    barcode=barcode,
+                    video_url=video_url,
+                    video_id=video_id,
+                    metadata=metadata,
+                    frame_count=len(processed_frames),
+                    frames_url=frames_url,
+                    primary_image_url=primary_image_url,
+                )
 
             return {
                 "metadata": metadata,
@@ -613,35 +623,57 @@ class ProductPipeline:
             img.save(buffer, format="PNG")
             frame_data.append((i, buffer.getvalue()))
 
-        def upload_single_frame(item: Tuple[int, bytes]) -> Tuple[int, bool]:
-            """Upload a single frame."""
+        def upload_single_frame(item: Tuple[int, bytes], max_retries: int = 3) -> Tuple[int, bool]:
+            """Upload a single frame with retry logic."""
             idx, data = item
             path = f"{folder}/frame_{idx:04d}.png"
-            try:
-                self.supabase.storage.from_(bucket).upload(
-                    path, data, {"content-type": "image/png"}
-                )
-                return idx, True
-            except Exception as e:
-                # File might already exist, try update
-                if "already exists" in str(e).lower() or "Duplicate" in str(e):
-                    try:
-                        self.supabase.storage.from_(bucket).update(
-                            path, data, {"content-type": "image/png"}
-                        )
-                        return idx, True
-                    except Exception:
-                        return idx, False
-                return idx, False
 
-        # Parallel upload
+            for attempt in range(max_retries):
+                try:
+                    self.supabase.storage.from_(bucket).upload(
+                        path, data, {"content-type": "image/png"}
+                    )
+                    return idx, True
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # File already exists - try update
+                    if "already exists" in error_str or "duplicate" in error_str:
+                        try:
+                            self.supabase.storage.from_(bucket).update(
+                                path, data, {"content-type": "image/png"}
+                            )
+                            return idx, True
+                        except Exception:
+                            pass
+                    # Rate limit or server error - wait and retry
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                        continue
+            return idx, False
+
+        # Parallel upload with retry for failed frames
+        failed_items = list(frame_data)
         success_count = 0
-        with ThreadPoolExecutor(max_workers=MAX_UPLOAD_WORKERS) as executor:
-            futures = [executor.submit(upload_single_frame, item) for item in frame_data]
-            for future in as_completed(futures):
-                idx, success = future.result()
-                if success:
-                    success_count += 1
+        max_rounds = 3  # Try up to 3 rounds for failed frames
+
+        for round_num in range(max_rounds):
+            if not failed_items:
+                break
+
+            current_failed = []
+            with ThreadPoolExecutor(max_workers=MAX_UPLOAD_WORKERS) as executor:
+                futures = {executor.submit(upload_single_frame, item): item for item in failed_items}
+                for future in as_completed(futures):
+                    idx, success = future.result()
+                    if success:
+                        success_count += 1
+                    else:
+                        current_failed.append(futures[future])
+
+            failed_items = current_failed
+            if failed_items and round_num < max_rounds - 1:
+                print(f"      Round {round_num + 1}: {len(failed_items)} failed, retrying...")
+                time.sleep(1)  # Wait before retry round
 
         print(f"      Uploaded {success_count}/{len(frames)} frames")
 
@@ -661,12 +693,7 @@ class ProductPipeline:
                 except Exception as e:
                     print(f"      Warning: metadata upload failed: {e}")
 
-        # Insert frame records into product_images table
-        print(f"      [DEBUG] About to call _insert_frame_records...")
-        self._insert_frame_records(product_id, len(frames), bucket, folder)
-        print(f"      [DEBUG] _insert_frame_records completed")
-
-        # Get URLs
+        # Get URLs (frame records will be synced in _sync_product_and_frames)
         frames_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/"
 
         # Primary image is the middle frame (best representation)
@@ -675,32 +702,101 @@ class ProductPipeline:
 
         return frames_url, primary_image_url
 
-    def _insert_frame_records(
+    def _sync_product_and_frames(
         self,
         product_id: str,
+        barcode: str,
+        video_url: str,
+        video_id: Optional[int],
+        metadata: dict,
         frame_count: int,
-        bucket: str,
-        folder: str,
+        frames_url: str,
+        primary_image_url: str,
     ):
-        """Insert frame records into product_images table."""
-        print(f"      [DEBUG] _insert_frame_records called: product_id={product_id}, frame_count={frame_count}")
-        print(f"      [DEBUG] supabase client exists: {self.supabase is not None}")
+        """
+        Sync product and frame records to database.
 
+        This is idempotent - safe to retry on failure.
+        Uses UPSERT for product, DELETE+INSERT for frames.
+        All input fields (video_url, video_id, barcode) are included to ensure
+        they are preserved even if product was created elsewhere.
+        """
         if not self.supabase:
-            print("      [DEBUG] Skipping frame records - no supabase client")
+            print("      Skipping database sync - no supabase client")
             return
 
+        bucket = "frames"
+        folder = product_id
+
         try:
-            # First, delete any existing synthetic frames for this product
-            # (in case of re-processing)
-            print(f"      [DEBUG] Deleting existing synthetic frames for product_id={product_id}")
-            delete_result = self.supabase.table("product_images").delete().eq(
+            # 1. UPSERT product (create or update atomically)
+            print(f"      Upserting product {product_id}...")
+
+            product_data = {
+                "id": product_id,
+                "barcode": barcode,
+                "video_url": video_url,
+                "frame_count": frame_count,
+                "frames_path": frames_url,
+                "primary_image_url": primary_image_url,
+                "status": "ready",
+            }
+
+            # Add video_id if provided
+            if video_id is not None:
+                product_data["video_id"] = video_id
+
+            # Extract fields from metadata
+            brand_info = metadata.get("brand_info", {})
+            product_identity = metadata.get("product_identity", {})
+            specs = metadata.get("specifications", {})
+
+            if brand_info.get("brand_name"):
+                product_data["brand_name"] = brand_info["brand_name"]
+            if brand_info.get("sub_brand"):
+                product_data["sub_brand"] = brand_info["sub_brand"]
+            if product_identity.get("product_name"):
+                product_data["product_name"] = product_identity["product_name"]
+            if product_identity.get("variant_flavor"):
+                product_data["variant_flavor"] = product_identity["variant_flavor"]
+            if product_identity.get("product_category"):
+                product_data["category"] = product_identity["product_category"]
+            if product_identity.get("container_type"):
+                product_data["container_type"] = product_identity["container_type"]
+            if specs.get("net_quantity_text"):
+                product_data["net_quantity"] = specs["net_quantity_text"]
+
+            # Store grounding prompt
+            grounding = metadata.get("visual_grounding", {})
+            if grounding.get("grounding_prompt"):
+                product_data["grounding_prompt"] = grounding["grounding_prompt"]
+
+            # Store visibility score (convert to int for DB)
+            extraction = metadata.get("extraction_metadata", {})
+            if extraction.get("visibility_score") is not None:
+                product_data["visibility_score"] = int(extraction["visibility_score"])
+
+            # Store nutrition facts as JSON
+            nutrition = metadata.get("nutrition_facts", {})
+            if nutrition:
+                product_data["nutrition_facts"] = nutrition
+
+            # UPSERT - insert if not exists, update if exists
+            self.supabase.table("products").upsert(
+                product_data,
+                on_conflict="id"
+            ).execute()
+            print(f"      Product {product_id} synced")
+
+            # 2. Sync frame records (delete old + insert new - idempotent)
+            print(f"      Syncing {frame_count} frame records...")
+
+            # Delete existing synthetic frames
+            self.supabase.table("product_images").delete().eq(
                 "product_id", product_id
             ).eq("image_type", "synthetic").execute()
-            print(f"      [DEBUG] Delete result: {delete_result}")
 
-            # Insert new frame records
-            print(f"      [DEBUG] Building {frame_count} frame records...")
+            # Build and insert new frame records
             records = []
             for i in range(frame_count):
                 image_path = f"{folder}/frame_{i:04d}.png"
@@ -715,80 +811,15 @@ class ProductPipeline:
                 })
 
             if records:
-                # Batch insert
-                print(f"      [DEBUG] Inserting {len(records)} records...")
-                insert_result = self.supabase.table("product_images").insert(records).execute()
-                print(f"      [DEBUG] Insert result count: {len(insert_result.data) if insert_result.data else 0}")
-                print(f"      Inserted {len(records)} frame records into database")
-            else:
-                print("      [DEBUG] No records to insert!")
+                self.supabase.table("product_images").insert(records).execute()
+                print(f"      Inserted {len(records)} frame records")
+
+            print(f"      Database sync complete!")
 
         except Exception as e:
-            print(f"      Warning: Failed to insert frame records: {e}")
+            print(f"      Warning: Database sync failed: {e}")
             import traceback
             traceback.print_exc()
-
-    def _update_product(
-        self,
-        product_id: str,
-        metadata: dict,
-        frame_count: int,
-        frames_url: str,
-        primary_image_url: str,
-    ):
-        """Update product record in database."""
-        if not self.supabase:
-            return
-
-        try:
-            update_data = {
-                "frame_count": frame_count,
-                "frames_path": frames_url,
-                "primary_image_url": primary_image_url,
-                "status": "ready",
-            }
-
-            # Extract fields from metadata
-            brand_info = metadata.get("brand_info", {})
-            product_identity = metadata.get("product_identity", {})
-            specs = metadata.get("specifications", {})
-
-            if brand_info.get("brand_name"):
-                update_data["brand_name"] = brand_info["brand_name"]
-            if brand_info.get("sub_brand"):
-                update_data["sub_brand"] = brand_info["sub_brand"]
-            if product_identity.get("product_name"):
-                update_data["product_name"] = product_identity["product_name"]
-            if product_identity.get("variant_flavor"):
-                update_data["variant_flavor"] = product_identity["variant_flavor"]
-            if product_identity.get("product_category"):
-                update_data["category"] = product_identity["product_category"]
-            if product_identity.get("container_type"):
-                update_data["container_type"] = product_identity["container_type"]
-            if specs.get("net_quantity_text"):
-                update_data["net_quantity"] = specs["net_quantity_text"]
-
-            # Store grounding prompt
-            grounding = metadata.get("visual_grounding", {})
-            if grounding.get("grounding_prompt"):
-                update_data["grounding_prompt"] = grounding["grounding_prompt"]
-
-            # Store visibility score
-            extraction = metadata.get("extraction_metadata", {})
-            if extraction.get("visibility_score") is not None:
-                update_data["visibility_score"] = extraction["visibility_score"]
-
-            # Store nutrition facts as JSON
-            nutrition = metadata.get("nutrition_facts", {})
-            if nutrition:
-                update_data["nutrition_facts"] = nutrition
-
-            # Update in database
-            self.supabase.table("products").update(update_data).eq("id", product_id).execute()
-            print(f"      Updated product {product_id} in database")
-
-        except Exception as e:
-            print(f"      Warning: Failed to update product: {e}")
 
     def _cleanup(self, job_dir: Path):
         """Cleanup temporary files."""
