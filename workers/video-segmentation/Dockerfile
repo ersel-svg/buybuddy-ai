@@ -1,5 +1,5 @@
-# Tested on RunPod: PyTorch 2.5.1 + CUDA 12.4 (RTX 4090)
-FROM runpod/pytorch:2.5.1-py3.11-cuda12.4.1-devel-ubuntu22.04
+# Official PyTorch image with CUDA 12.4
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 WORKDIR /app
 
