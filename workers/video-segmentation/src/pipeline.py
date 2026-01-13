@@ -351,81 +351,36 @@ class ProductPipeline:
         # Default fallback
         return "can"
 
-    def _test_prompt_on_first_frame(self, video_path: Path, prompt: str) -> int:
-        """Test a prompt on the first frame and return mask pixel count."""
-        response = self.video_predictor.handle_request(
-            request=dict(type="start_session", resource_path=str(video_path))
-        )
-        session_id = response["session_id"]
+    def _clear_cuda_cache(self):
+        """Clear CUDA cache to free GPU memory."""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
-        try:
-            self.video_predictor.handle_request(
-                request=dict(
-                    type="add_prompt",
-                    session_id=session_id,
-                    frame_index=0,
-                    text=prompt,
-                )
-            )
+    def _check_segmentation_quality(self, all_frame_outputs: dict) -> bool:
+        """Check if segmentation results have enough valid pixels."""
+        if not all_frame_outputs:
+            return False
 
-            propagate_result = self.video_predictor.propagate_in_video(
-                session_id=session_id,
-                propagation_direction="forward",
-                start_frame_idx=0,
-                max_frame_num_to_track=1,
-            )
+        # Check first few frames for valid masks
+        valid_frames = 0
+        for frame_idx in range(min(5, len(all_frame_outputs))):
+            if frame_idx in all_frame_outputs:
+                outputs = all_frame_outputs[frame_idx]
+                masks = outputs.get("out_binary_masks", [])
+                if len(masks) > 0:
+                    mask = masks[0]
+                    if hasattr(mask, "cpu"):
+                        mask = mask.cpu().numpy()
+                    if mask.sum() >= self.MIN_MASK_PIXELS:
+                        valid_frames += 1
 
-            for item in propagate_result:
-                if isinstance(item, dict):
-                    outputs = item.get("outputs", {})
-                    masks = outputs.get("out_binary_masks", [])
-                    if len(masks) > 0:
-                        mask = masks[0]
-                        if hasattr(mask, "cpu"):
-                            mask = mask.cpu().numpy()
-                        return int(mask.sum())
-                break
-            return 0
+        # At least 3 of first 5 frames should have valid masks
+        return valid_frames >= 3
 
-        finally:
-            self.video_predictor.handle_request(
-                request=dict(type="close_session", session_id=session_id)
-            )
-
-    def _find_best_prompt(self, video_path: Path, primary_prompt: str) -> str:
-        """Find the best working prompt by testing on first frame."""
-        # First try the primary prompt
-        print(f"      Testing primary prompt: '{primary_prompt}'")
-        pixel_count = self._test_prompt_on_first_frame(video_path, primary_prompt)
-        print(f"      -> {pixel_count} pixels")
-
-        if pixel_count >= self.MIN_MASK_PIXELS:
-            return primary_prompt
-
-        # Try fallback prompts
-        print("      Primary prompt failed, trying fallbacks...")
-        for fallback in self.FALLBACK_PROMPTS:
-            if fallback == primary_prompt:
-                continue
-            print(f"      Testing fallback: '{fallback}'")
-            pixel_count = self._test_prompt_on_first_frame(video_path, fallback)
-            print(f"      -> {pixel_count} pixels")
-
-            if pixel_count >= self.MIN_MASK_PIXELS:
-                print(f"      Found working prompt: '{fallback}'")
-                return fallback
-
-        # If nothing works, return primary prompt anyway
-        print(f"      No fallback worked, using primary: '{primary_prompt}'")
-        return primary_prompt
-
-    def _segment_video_sam3(self, video_path: Path, grounding_prompt: str, num_frames: int) -> dict:
-        """Segment video using SAM3 with text prompt and fallback support."""
-        # Find the best working prompt
-        best_prompt = self._find_best_prompt(video_path, grounding_prompt)
-
-        # Start session for full segmentation
-        print(f"      Starting SAM3 session with prompt: '{best_prompt}'")
+    def _run_segmentation_with_prompt(self, video_path: Path, prompt: str, num_frames: int) -> dict:
+        """Run segmentation with a single prompt. Returns frame outputs."""
+        print(f"      Starting SAM3 session with prompt: '{prompt}'")
         response = self.video_predictor.handle_request(
             request=dict(
                 type="start_session",
@@ -442,7 +397,7 @@ class ProductPipeline:
                     type="add_prompt",
                     session_id=session_id,
                     frame_index=0,
-                    text=best_prompt,
+                    text=prompt,
                 )
             )
 
@@ -474,7 +429,7 @@ class ProductPipeline:
             return all_frame_outputs
 
         finally:
-            # Close session
+            # Close session and clear CUDA cache
             print("      Closing SAM3 session...")
             self.video_predictor.handle_request(
                 request=dict(
@@ -482,6 +437,45 @@ class ProductPipeline:
                     session_id=session_id,
                 )
             )
+            self._clear_cuda_cache()
+
+    def _segment_video_sam3(self, video_path: Path, primary_prompt: str, num_frames: int) -> dict:
+        """
+        Segment video with SAM3 using smart fallback strategy.
+
+        Strategy:
+        1. Try primary prompt (from Gemini's container_type)
+        2. Check quality - if good, return immediately
+        3. If bad, try fallback prompts until one works
+
+        This avoids loading the video multiple times in most cases.
+        """
+        # Try primary prompt first
+        print(f"      Trying primary prompt: '{primary_prompt}'")
+        all_frame_outputs = self._run_segmentation_with_prompt(video_path, primary_prompt, num_frames)
+
+        # Check quality
+        if self._check_segmentation_quality(all_frame_outputs):
+            print(f"      Primary prompt succeeded!")
+            return all_frame_outputs
+
+        print(f"      Primary prompt quality check failed, trying fallbacks...")
+
+        # Try fallback prompts (excluding primary if it's in the list)
+        for fallback_prompt in self.FALLBACK_PROMPTS:
+            if fallback_prompt.lower() == primary_prompt.lower():
+                continue  # Skip if same as primary
+
+            print(f"      Trying fallback: '{fallback_prompt}'")
+            all_frame_outputs = self._run_segmentation_with_prompt(video_path, fallback_prompt, num_frames)
+
+            if self._check_segmentation_quality(all_frame_outputs):
+                print(f"      Fallback '{fallback_prompt}' succeeded!")
+                return all_frame_outputs
+
+        # If all fail, return the last attempt (better than nothing)
+        print(f"      All prompts failed quality check, using last result")
+        return all_frame_outputs
 
     def _process_frames(self, frames: List[np.ndarray], all_frame_outputs: dict) -> List[np.ndarray]:
         """Process frames: apply mask, crop, center, resize to target resolution."""
