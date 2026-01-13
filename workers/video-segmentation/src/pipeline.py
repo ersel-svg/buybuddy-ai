@@ -654,9 +654,17 @@ class ProductPipeline:
                     metadata_path, metadata_bytes, {"content-type": "application/json"}
                 )
             except Exception:
-                self.supabase.storage.from_(bucket).update(
-                    metadata_path, metadata_bytes, {"content-type": "application/json"}
-                )
+                try:
+                    self.supabase.storage.from_(bucket).update(
+                        metadata_path, metadata_bytes, {"content-type": "application/json"}
+                    )
+                except Exception as e:
+                    print(f"      Warning: metadata upload failed: {e}")
+
+        # Insert frame records into product_images table
+        print(f"      [DEBUG] About to call _insert_frame_records...")
+        self._insert_frame_records(product_id, len(frames), bucket, folder)
+        print(f"      [DEBUG] _insert_frame_records completed")
 
         # Get URLs
         frames_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/"
@@ -666,6 +674,59 @@ class ProductPipeline:
         primary_image_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/frame_{middle_idx:04d}.png"
 
         return frames_url, primary_image_url
+
+    def _insert_frame_records(
+        self,
+        product_id: str,
+        frame_count: int,
+        bucket: str,
+        folder: str,
+    ):
+        """Insert frame records into product_images table."""
+        print(f"      [DEBUG] _insert_frame_records called: product_id={product_id}, frame_count={frame_count}")
+        print(f"      [DEBUG] supabase client exists: {self.supabase is not None}")
+
+        if not self.supabase:
+            print("      [DEBUG] Skipping frame records - no supabase client")
+            return
+
+        try:
+            # First, delete any existing synthetic frames for this product
+            # (in case of re-processing)
+            print(f"      [DEBUG] Deleting existing synthetic frames for product_id={product_id}")
+            delete_result = self.supabase.table("product_images").delete().eq(
+                "product_id", product_id
+            ).eq("image_type", "synthetic").execute()
+            print(f"      [DEBUG] Delete result: {delete_result}")
+
+            # Insert new frame records
+            print(f"      [DEBUG] Building {frame_count} frame records...")
+            records = []
+            for i in range(frame_count):
+                image_path = f"{folder}/frame_{i:04d}.png"
+                image_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{image_path}"
+                records.append({
+                    "product_id": product_id,
+                    "image_type": "synthetic",
+                    "source": "video_frame",
+                    "image_path": image_path,
+                    "image_url": image_url,
+                    "frame_index": i,
+                })
+
+            if records:
+                # Batch insert
+                print(f"      [DEBUG] Inserting {len(records)} records...")
+                insert_result = self.supabase.table("product_images").insert(records).execute()
+                print(f"      [DEBUG] Insert result count: {len(insert_result.data) if insert_result.data else 0}")
+                print(f"      Inserted {len(records)} frame records into database")
+            else:
+                print("      [DEBUG] No records to insert!")
+
+        except Exception as e:
+            print(f"      Warning: Failed to insert frame records: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _update_product(
         self,
