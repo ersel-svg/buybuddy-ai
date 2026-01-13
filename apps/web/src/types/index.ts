@@ -9,15 +9,20 @@ export interface Product {
   video_url?: string;
   brand_name?: string;
   sub_brand?: string;
+  manufacturer_country?: string;
   product_name?: string;
   variant_flavor?: string;
   category?: string;
   container_type?: string;
   net_quantity?: string;
+  pack_configuration?: PackConfiguration;
+  identifiers?: ProductIdentifiers;
   nutrition_facts?: NutritionFacts;
   claims?: string[];
+  marketing_description?: string;
   grounding_prompt?: string;
   visibility_score?: number;
+  issues_detected?: string[];
   frame_count: number;
   frames_path?: string;
   primary_image_url?: string;
@@ -25,7 +30,58 @@ export interface Product {
   version?: number;
   created_at: string;
   updated_at: string;
+  // New fields for multiple identifiers and custom fields
+  identifiers_list?: ProductIdentifier[];
+  custom_fields?: Record<string, string>;
 }
+
+export interface PackConfiguration {
+  type: "single_unit" | "multipack";
+  item_count: number;
+}
+
+export interface ProductIdentifiers {
+  barcode?: string;
+  sku_model_code?: string;
+}
+
+// ===========================================
+// Product Identifier Types (New System)
+// ===========================================
+
+export type IdentifierType =
+  | "barcode"
+  | "short_code"
+  | "sku"
+  | "upc"
+  | "ean"
+  | "custom";
+
+export interface ProductIdentifier {
+  id: string;
+  identifier_type: IdentifierType;
+  identifier_value: string;
+  custom_label?: string;
+  is_primary: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProductIdentifierCreate {
+  identifier_type: IdentifierType;
+  identifier_value: string;
+  custom_label?: string;
+  is_primary?: boolean;
+}
+
+export const IDENTIFIER_TYPE_LABELS: Record<IdentifierType, string> = {
+  barcode: "Barcode",
+  short_code: "Short Code",
+  sku: "SKU",
+  upc: "UPC",
+  ean: "EAN",
+  custom: "Custom",
+};
 
 export type ProductStatus =
   | "pending"
@@ -35,13 +91,14 @@ export type ProductStatus =
   | "rejected";
 
 export interface NutritionFacts {
+  serving_size?: string;
   calories?: number;
+  total_fat?: string;
   protein?: string;
   carbohydrates?: string;
-  fat?: string;
+  sugar?: string;
   fiber?: string;
   sodium?: string;
-  sugar?: string;
   [key: string]: string | number | undefined;
 }
 
@@ -66,8 +123,22 @@ export interface Dataset {
   updated_at: string;
 }
 
+export interface FrameCounts {
+  synthetic: number;
+  real: number;
+  augmented: number;
+}
+
+export interface ProductWithFrameCounts extends Product {
+  frame_counts?: FrameCounts;
+  total_frames?: number;
+}
+
 export interface DatasetWithProducts extends Dataset {
-  products: Product[];
+  products: ProductWithFrameCounts[];
+  total_synthetic?: number;
+  total_real?: number;
+  total_augmented?: number;
 }
 
 export interface CreateDatasetRequest {
@@ -81,6 +152,74 @@ export interface ProductFilters {
   status?: ProductStatus;
   category?: string;
   search?: string;
+}
+
+// ===========================================
+// Augmentation Types
+// ===========================================
+
+export type AugmentationPreset = "clean" | "normal" | "realistic" | "extreme" | "custom";
+
+export interface AugmentationConfig {
+  // Preset selection
+  preset: AugmentationPreset;
+
+  // Transform probabilities (0.0 - 1.0)
+  PROB_HEAVY_AUGMENTATION?: number;
+  PROB_NEIGHBORING_PRODUCTS?: number;
+  PROB_TIPPED_OVER_NEIGHBOR?: number;
+
+  // Shelf elements
+  PROB_PRICE_TAG?: number;
+  PROB_SHELF_RAIL?: number;
+  PROB_CAMPAIGN_STICKER?: number;
+
+  // Lighting effects
+  PROB_FLUORESCENT_BANDING?: number;
+  PROB_COLOR_TRANSFER?: number;
+  PROB_SHELF_REFLECTION?: number;
+  PROB_SHADOW?: number;
+
+  // Camera effects
+  PROB_PERSPECTIVE_CHANGE?: number;
+  PROB_LENS_DISTORTION?: number;
+  PROB_CHROMATIC_ABERRATION?: number;
+  PROB_CAMERA_NOISE?: number;
+
+  // Refrigerator effects
+  PROB_CONDENSATION?: number;
+  PROB_FROST_CRYSTALS?: number;
+  PROB_COLD_COLOR_FILTER?: number;
+  PROB_WIRE_RACK?: number;
+
+  // Color adjustments
+  PROB_HSV_SHIFT?: number;
+  PROB_RGB_SHIFT?: number;
+  PROB_MEDIAN_BLUR?: number;
+  PROB_ISO_NOISE?: number;
+  PROB_CLAHE?: number;
+  PROB_SHARPEN?: number;
+  PROB_HORIZONTAL_FLIP?: number;
+
+  // Neighbor settings
+  MIN_NEIGHBORS?: number;
+  MAX_NEIGHBORS?: number;
+
+  // Color shift limits
+  HSV_HUE_LIMIT?: number;
+  HSV_SAT_LIMIT?: number;
+  HSV_VAL_LIMIT?: number;
+  RGB_SHIFT_LIMIT?: number;
+}
+
+export interface AugmentationRequest {
+  syn_target: number;
+  real_target: number;
+  use_diversity_pyramid: boolean;
+  include_neighbors: boolean;
+  // Frame interval for angle diversity (1 = all frames, 20 = every 20th frame)
+  frame_interval: number;
+  augmentation_config?: AugmentationConfig;
 }
 
 // ===========================================

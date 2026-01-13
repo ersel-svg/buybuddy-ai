@@ -228,10 +228,14 @@ def handler(job):
         # Whether to include neighbor products in shelf composition
         include_neighbors = job_input.get("include_neighbors", True)
 
+        # Frame interval for angle diversity (1 = use all frames, 20 = every 20th frame)
+        frame_interval = job_input.get("frame_interval", 1)
+
         print(f"\n{'=' * 60}")
         print(f"JOB ID: {job_id}")
         print(f"Dataset ID: {dataset_id or 'N/A (using local path)'}")
         print(f"SYN target: {syn_target}, REAL target: {real_target}")
+        print(f"Frame Interval: {frame_interval}")
         print(f"Preset: {aug_config_dict.get('preset', 'normal')}")
         print(f"Use Diversity Pyramid: {use_diversity_pyramid}")
         print(f"Include Neighbors: {include_neighbors}")
@@ -305,6 +309,7 @@ def handler(job):
             real_target=real_target,
             backgrounds_path=None,  # Already loaded
             use_diversity_pyramid=use_diversity_pyramid,
+            frame_interval=frame_interval,
         )
 
         # ========================================
@@ -331,6 +336,7 @@ def handler(job):
                 "preset": aug_config_dict.get("preset", "normal"),
                 "use_diversity_pyramid": use_diversity_pyramid,
                 "include_neighbors": include_neighbors,
+                "frame_interval": frame_interval,
             }
         }
 

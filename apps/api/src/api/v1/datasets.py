@@ -8,9 +8,11 @@ from pydantic import BaseModel
 
 from services.supabase import SupabaseService, supabase_service
 from services.runpod import RunpodService, runpod_service, EndpointType
+from auth.dependencies import get_current_user
 from config import settings
 
-router = APIRouter()
+# Router with authentication required for all endpoints
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ===========================================
@@ -46,11 +48,78 @@ class AddProductsRequest(BaseModel):
     product_ids: list[str]
 
 
+class AugmentationConfigRequest(BaseModel):
+    """Configuration for augmentation effects."""
+
+    # Preset: 'clean', 'normal', 'realistic', 'extreme', 'custom'
+    preset: str = "normal"
+
+    # Transform probabilities (0.0 - 1.0)
+    PROB_HEAVY_AUGMENTATION: Optional[float] = None
+    PROB_NEIGHBORING_PRODUCTS: Optional[float] = None
+    PROB_TIPPED_OVER_NEIGHBOR: Optional[float] = None
+
+    # Shelf elements
+    PROB_PRICE_TAG: Optional[float] = None
+    PROB_SHELF_RAIL: Optional[float] = None
+    PROB_CAMPAIGN_STICKER: Optional[float] = None
+
+    # Lighting effects
+    PROB_FLUORESCENT_BANDING: Optional[float] = None
+    PROB_COLOR_TRANSFER: Optional[float] = None
+    PROB_SHELF_REFLECTION: Optional[float] = None
+    PROB_SHADOW: Optional[float] = None
+
+    # Camera effects
+    PROB_PERSPECTIVE_CHANGE: Optional[float] = None
+    PROB_LENS_DISTORTION: Optional[float] = None
+    PROB_CHROMATIC_ABERRATION: Optional[float] = None
+    PROB_CAMERA_NOISE: Optional[float] = None
+
+    # Refrigerator effects
+    PROB_CONDENSATION: Optional[float] = None
+    PROB_FROST_CRYSTALS: Optional[float] = None
+    PROB_COLD_COLOR_FILTER: Optional[float] = None
+    PROB_WIRE_RACK: Optional[float] = None
+
+    # Color adjustments
+    PROB_HSV_SHIFT: Optional[float] = None
+    PROB_RGB_SHIFT: Optional[float] = None
+    PROB_MEDIAN_BLUR: Optional[float] = None
+    PROB_ISO_NOISE: Optional[float] = None
+    PROB_CLAHE: Optional[float] = None
+    PROB_SHARPEN: Optional[float] = None
+    PROB_HORIZONTAL_FLIP: Optional[float] = None
+
+    # Neighbor settings
+    MIN_NEIGHBORS: Optional[int] = None
+    MAX_NEIGHBORS: Optional[int] = None
+
+    # Color shift limits
+    HSV_HUE_LIMIT: Optional[int] = None
+    HSV_SAT_LIMIT: Optional[int] = None
+    HSV_VAL_LIMIT: Optional[int] = None
+    RGB_SHIFT_LIMIT: Optional[int] = None
+
+
 class AugmentRequest(BaseModel):
     """Request to start augmentation."""
 
     syn_target: int = 600
     real_target: int = 400
+
+    # Use diversity pyramid for random level selection
+    use_diversity_pyramid: bool = True
+
+    # Include neighbor products in shelf composition
+    include_neighbors: bool = True
+
+    # Frame interval for angle diversity (1 = all frames, 20 = every 20th frame)
+    # Higher values select fewer frames but more diverse angles from 360° videos
+    frame_interval: int = 1
+
+    # Augmentation config (optional - uses preset defaults if not provided)
+    augmentation_config: Optional[AugmentationConfigRequest] = None
 
 
 class TrainRequest(BaseModel):
@@ -246,13 +315,26 @@ async def start_augmentation(
     if runpod.is_configured(EndpointType.AUGMENTATION):
         try:
             webhook_url = get_webhook_url(request)
+
+            # Build input data with config
+            input_data = {
+                "dataset_id": dataset_id,
+                "syn_target": request_data.syn_target,
+                "real_target": request_data.real_target,
+                "use_diversity_pyramid": request_data.use_diversity_pyramid,
+                "include_neighbors": request_data.include_neighbors,
+                "frame_interval": request_data.frame_interval,
+            }
+
+            # Add augmentation config if provided
+            if request_data.augmentation_config:
+                input_data["augmentation_config"] = request_data.augmentation_config.model_dump(
+                    exclude_unset=True
+                )
+
             runpod_response = await runpod.submit_job(
                 endpoint_type=EndpointType.AUGMENTATION,
-                input_data={
-                    "dataset_id": dataset_id,
-                    "syn_target": request_data.syn_target,
-                    "real_target": request_data.real_target,
-                },
+                input_data=input_data,
                 webhook_url=webhook_url,
             )
 

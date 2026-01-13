@@ -1081,9 +1081,14 @@ class ProductAugmentor:
                     max_idx = idx
         return max_idx
 
-    def process_upc(self, upc_dir, syn_target, real_target, use_diversity_pyramid=True):
+    def process_upc(self, upc_dir, syn_target, real_target, use_diversity_pyramid=True, frame_interval=1):
         """
         Process single UPC with full shelf scene composition.
+
+        Args:
+            frame_interval: Select 1 frame every N frames for angle diversity.
+                           E.g., frame_interval=20 means select every 20th frame.
+                           Default is 1 (use all frames).
         """
         upc_root = Path(upc_dir)
         real_dir = upc_root / "real"
@@ -1091,7 +1096,15 @@ class ProductAugmentor:
 
         # --- SYN SOURCE & COUNT ---
         root_imgs_all = [p for p in list_images(upc_root) if p.parent == upc_root]
-        syn_sources = [p for p in root_imgs_all if not RE_SYN_OUT.match(p.name)]
+        all_syn_sources = [p for p in root_imgs_all if not RE_SYN_OUT.match(p.name)]
+
+        # Apply frame interval for angle diversity (from 360° rotating videos)
+        # Sort by name to ensure consistent frame ordering
+        all_syn_sources.sort(key=lambda p: p.name)
+        syn_sources = all_syn_sources[::frame_interval] if frame_interval > 1 else all_syn_sources
+
+        if frame_interval > 1 and len(all_syn_sources) > 0:
+            print(f"  Frame interval: {frame_interval} -> selected {len(syn_sources)}/{len(all_syn_sources)} frames")
         syn_outputs = [p for p in root_imgs_all if RE_SYN_OUT.match(p.name)]
         current_syn_total = len(syn_outputs)
         missing_syn = max(0, syn_target - current_syn_total)
@@ -1207,6 +1220,8 @@ class ProductAugmentor:
         print(f"  DEBUG: {debug_info}")
         return {
             "syn_sources": len(syn_sources),
+            "syn_sources_total": len(all_syn_sources),
+            "frame_interval": frame_interval,
             "real_sources": len(real_sources),
             "current_syn": current_syn_total,
             "current_real": current_real_total,
@@ -1217,8 +1232,12 @@ class ProductAugmentor:
             "debug": debug_info,
         }
 
-    def process_dataset(self, dataset_path, syn_target, real_target, backgrounds_path=None, use_diversity_pyramid=True):
-        """Process entire dataset - all UPCs with full shelf scene composition."""
+    def process_dataset(self, dataset_path, syn_target, real_target, backgrounds_path=None, use_diversity_pyramid=True, frame_interval=1):
+        """Process entire dataset - all UPCs with full shelf scene composition.
+
+        Args:
+            frame_interval: Select 1 frame every N frames for angle diversity.
+        """
         base = Path(dataset_path)
         if not base.exists():
             raise ValueError(f"Dataset path not found: {dataset_path}")
@@ -1240,7 +1259,7 @@ class ProductAugmentor:
 
             for upc in tqdm(upc_dirs, desc=f"{split_dir.name} UPC"):
                 try:
-                    stats = self.process_upc(upc, syn_target, real_target, use_diversity_pyramid)
+                    stats = self.process_upc(upc, syn_target, real_target, use_diversity_pyramid, frame_interval)
                     totals[f"{split_dir.name}_syn_produced"] += stats["produced_syn"]
                     totals[f"{split_dir.name}_real_produced"] += stats["produced_real"]
                     totals["syn_produced"] += stats["produced_syn"]
