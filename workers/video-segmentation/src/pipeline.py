@@ -171,9 +171,8 @@ class ProductPipeline:
             # 4. SAM3 segmentation
             print("\n[4/6] Segmenting with SAM3...")
             if self.video_predictor:
-                grounding_prompt = self._get_grounding_prompt(metadata)
-                print(f"      Prompt: '{grounding_prompt}'")
-                all_frame_outputs = self._segment_video_sam3(video_path, grounding_prompt, len(all_frames))
+                grounding_prompts = self._get_grounding_prompts(metadata)
+                all_frame_outputs = self._segment_video_sam3(video_path, grounding_prompts, len(all_frames))
                 print(f"      Segmented {len(all_frame_outputs)} frames")
             else:
                 print("      Skipped (SAM3 not available, using raw frames)")
@@ -191,7 +190,7 @@ class ProductPipeline:
                 "product_id": product_id,
                 "timestamp": datetime.now().isoformat(),
                 "frame_count": len(processed_frames),
-                "grounding_prompt": self._get_grounding_prompt(metadata) if self.video_predictor else None,
+                "grounding_prompts": grounding_prompts if self.video_predictor else None,
                 "model": "SAM3",
             }
 
@@ -300,7 +299,10 @@ class ProductPipeline:
 1. Only extract text that is visibly legible
 2. Use Title Case for brand and product names
 3. Return null for missing values
-4. grounding_prompt must be: "{Brand} {ProductName} {ContainerType}"
+4. grounding_prompts: List 3-5 simple object descriptions for SAM3 segmentation, ordered by likelihood
+   - Use simple nouns: "bottle", "can", "box", "pouch", "bag", "jar", "tube", "carton", "package"
+   - First should be the most specific match (e.g., "pouch" for a pouch)
+   - Include alternatives (e.g., "bag", "package" as fallbacks for pouch)
 
 ### OUTPUT (JSON only, no markdown)
 {
@@ -309,7 +311,7 @@ class ProductPipeline:
   "specifications": {"net_quantity_text": "", "pack_configuration": {"type": "", "item_count": 1}, "identifiers": {"barcode": null, "sku_model_code": null}},
   "marketing_and_claims": {"claims_list": [], "marketing_description": ""},
   "nutrition_facts": {"serving_size": "", "calories": null, "total_fat": "", "protein": "", "carbohydrates": "", "sugar": ""},
-  "visual_grounding": {"grounding_prompt": "Brand ProductName ContainerType"},
+  "visual_grounding": {"grounding_prompts": ["bottle", "container", "package"]},
   "extraction_metadata": {"visibility_score": 0, "issues_detected": []}
 }"""
 
@@ -330,26 +332,40 @@ class ProductPipeline:
     # Minimum mask pixels to consider segmentation successful
     MIN_MASK_PIXELS = 10000
 
-    def _get_grounding_prompt(self, metadata: dict) -> str:
-        """Get grounding prompt from metadata - prefer container_type."""
-        # Primary: use container_type directly (most reliable for SAM3)
+    def _get_grounding_prompts(self, metadata: dict) -> list[str]:
+        """Get ordered list of grounding prompts from metadata."""
+        prompts = []
+        invalid_values = ["", "product", "unknown", "n/a", None]
+
+        # 1. Try grounding_prompts array from Gemini (new format)
+        gemini_prompts = metadata.get("visual_grounding", {}).get("grounding_prompts", [])
+        if isinstance(gemini_prompts, list):
+            for p in gemini_prompts:
+                if p and str(p).strip().lower() not in invalid_values:
+                    prompts.append(str(p).strip().lower())
+
+        # 2. Add container_type if not already in list
         container = metadata.get("product_identity", {}).get("container_type", "")
-        if container and container.strip().lower() not in ["", "product", "unknown", "n/a"]:
-            return container.strip().lower()
+        if container and container.strip().lower() not in invalid_values:
+            container_lower = container.strip().lower()
+            if container_lower not in prompts:
+                prompts.insert(0, container_lower)  # Prioritize container_type
 
-        # Secondary: try grounding_prompt from Gemini
-        prompt = metadata.get("visual_grounding", {}).get("grounding_prompt", "")
-        invalid_prompts = ["Brand ProductName ContainerType", "", None, "product"]
-        if prompt and prompt.strip() and prompt.strip() not in invalid_prompts:
-            # Extract just the container type from the prompt if it contains one
-            prompt_lower = prompt.strip().lower()
+        # 3. Legacy: try old grounding_prompt field
+        old_prompt = metadata.get("visual_grounding", {}).get("grounding_prompt", "")
+        if old_prompt and old_prompt.strip() not in ["Brand ProductName ContainerType", ""] + invalid_values:
+            # Extract container type keywords from old format
+            prompt_lower = old_prompt.strip().lower()
             for fallback in self.FALLBACK_PROMPTS:
-                if fallback in prompt_lower:
-                    return fallback
-            return prompt.strip()
+                if fallback in prompt_lower and fallback not in prompts:
+                    prompts.append(fallback)
 
-        # Default fallback
-        return "can"
+        # 4. Default if nothing found
+        if not prompts:
+            prompts = ["can"]
+
+        print(f"      Gemini prompts: {prompts}")
+        return prompts
 
     def _clear_cuda_cache(self):
         """Clear CUDA cache to free GPU memory."""
@@ -360,23 +376,32 @@ class ProductPipeline:
     def _check_segmentation_quality(self, all_frame_outputs: dict) -> bool:
         """Check if segmentation results have enough valid pixels."""
         if not all_frame_outputs:
+            print("      Quality check: No frame outputs!")
             return False
 
         # Check first few frames for valid masks
         valid_frames = 0
-        for frame_idx in range(min(5, len(all_frame_outputs))):
-            if frame_idx in all_frame_outputs:
-                outputs = all_frame_outputs[frame_idx]
-                masks = outputs.get("out_binary_masks", [])
-                if len(masks) > 0:
-                    mask = masks[0]
-                    if hasattr(mask, "cpu"):
-                        mask = mask.cpu().numpy()
-                    if mask.sum() >= self.MIN_MASK_PIXELS:
-                        valid_frames += 1
+        frame_indices = sorted(all_frame_outputs.keys())[:5]
 
-        # At least 3 of first 5 frames should have valid masks
-        return valid_frames >= 3
+        for frame_idx in frame_indices:
+            outputs = all_frame_outputs[frame_idx]
+            masks = outputs.get("out_binary_masks", [])
+
+            if len(masks) > 0:
+                mask = masks[0]
+                if hasattr(mask, "cpu"):
+                    mask = mask.cpu().numpy()
+                pixel_count = int(mask.sum())
+                is_valid = pixel_count >= self.MIN_MASK_PIXELS
+                print(f"      Frame {frame_idx}: {pixel_count} pixels {'✓' if is_valid else '✗'}")
+                if is_valid:
+                    valid_frames += 1
+            else:
+                print(f"      Frame {frame_idx}: No masks found")
+
+        result = valid_frames >= 3
+        print(f"      Quality check: {valid_frames}/5 valid frames -> {'PASS' if result else 'FAIL'}")
+        return result
 
     def _run_segmentation_with_prompt(self, video_path: Path, prompt: str, num_frames: int) -> dict:
         """Run segmentation with a single prompt. Returns frame outputs."""
@@ -439,32 +464,43 @@ class ProductPipeline:
             )
             self._clear_cuda_cache()
 
-    def _segment_video_sam3(self, video_path: Path, primary_prompt: str, num_frames: int) -> dict:
+    def _segment_video_sam3(self, video_path: Path, gemini_prompts: list[str], num_frames: int) -> dict:
         """
         Segment video with SAM3 using smart fallback strategy.
 
         Strategy:
-        1. Try primary prompt (from Gemini's container_type)
-        2. Check quality - if good, return immediately
-        3. If bad, try fallback prompts until one works
+        1. Try Gemini's suggested prompts in order (usually 3-5 options)
+        2. If all fail, try generic fallback prompts
+        3. Return best result (or last attempt if all fail)
 
-        This avoids loading the video multiple times in most cases.
+        Args:
+            gemini_prompts: Ordered list of prompts from Gemini (e.g., ["pouch", "bag", "package"])
         """
-        # Try primary prompt first
-        print(f"      Trying primary prompt: '{primary_prompt}'")
-        all_frame_outputs = self._run_segmentation_with_prompt(video_path, primary_prompt, num_frames)
+        tried_prompts = set()
+        all_frame_outputs = {}
 
-        # Check quality
-        if self._check_segmentation_quality(all_frame_outputs):
-            print(f"      Primary prompt succeeded!")
-            return all_frame_outputs
+        # Phase 1: Try Gemini's suggested prompts
+        for i, prompt in enumerate(gemini_prompts):
+            prompt_lower = prompt.lower()
+            if prompt_lower in tried_prompts:
+                continue
+            tried_prompts.add(prompt_lower)
 
-        print(f"      Primary prompt quality check failed, trying fallbacks...")
+            label = "primary" if i == 0 else f"Gemini alt {i}"
+            print(f"      Trying {label}: '{prompt}'")
+            all_frame_outputs = self._run_segmentation_with_prompt(video_path, prompt, num_frames)
 
-        # Try fallback prompts (excluding primary if it's in the list)
+            if self._check_segmentation_quality(all_frame_outputs):
+                print(f"      {label.capitalize()} prompt succeeded!")
+                return all_frame_outputs
+
+        print(f"      All Gemini prompts failed, trying generic fallbacks...")
+
+        # Phase 2: Try generic fallback prompts
         for fallback_prompt in self.FALLBACK_PROMPTS:
-            if fallback_prompt.lower() == primary_prompt.lower():
-                continue  # Skip if same as primary
+            if fallback_prompt.lower() in tried_prompts:
+                continue  # Skip already tried
+            tried_prompts.add(fallback_prompt.lower())
 
             print(f"      Trying fallback: '{fallback_prompt}'")
             all_frame_outputs = self._run_segmentation_with_prompt(video_path, fallback_prompt, num_frames)
