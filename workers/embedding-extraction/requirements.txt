@@ -1,0 +1,22 @@
+# RunPod
+runpod>=1.6.0
+
+# PyTorch - will be installed via base image
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Transformers for DINOv2
+transformers>=4.30.0
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# HTTP client
+httpx>=0.24.0
+
+# Supabase
+supabase>=2.0.0
+
+# Qdrant
+qdrant-client>=1.7.0
