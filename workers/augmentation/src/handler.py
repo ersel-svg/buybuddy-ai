@@ -340,9 +340,11 @@ def handler(job):
             }
         }
 
-        # Send callback if configured
+        # Update job status to completed and send callback
         if dataset_id:
-            get_uploader().send_callback(final_result)
+            up = get_uploader()
+            up.update_job_status(job_id, "completed", result=final_result)
+            up.send_callback(final_result)
 
         return final_result
 
@@ -351,6 +353,12 @@ def handler(job):
         error_trace = traceback.format_exc()
         print(f"\nERROR: {error_msg}")
         print(error_trace)
+
+        # Update job status to failed
+        try:
+            get_uploader().update_job_status(job_id, "failed", error=error_msg)
+        except Exception:
+            pass  # Best effort
 
         return {
             "status": "error",

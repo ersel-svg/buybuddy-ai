@@ -371,6 +371,22 @@ class ResultUploader:
         except Exception as e:
             print(f"   ⚠️ Progress update error: {e}")
 
+    def update_job_status(self, job_id: str, status: str, result: dict = None, error: str = None):
+        """Update job status in database (completed/failed)."""
+        try:
+            update_data = {"status": status}
+            if status == "completed":
+                update_data["progress"] = 100
+            if result:
+                update_data["result"] = result
+            if error:
+                update_data["error"] = error
+
+            self.client.table("jobs").update(update_data).eq("runpod_job_id", job_id).execute()
+            print(f"   ✅ Job status updated to: {status}")
+        except Exception as e:
+            print(f"   ⚠️ Status update error: {e}")
+
     def send_callback(self, result: dict):
         """Send completion callback to backend."""
         if not CALLBACK_URL:

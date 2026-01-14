@@ -7,6 +7,7 @@ Input:
     "barcode": "123456789",
     "video_id": 12345,
     "product_id": "uuid-...",  # Our system's product UUID
+    "target_frames": 60,  # Optional: number of frames to extract (evenly distributed)
 }
 
 Output (returned to RunPod, sent via webhook automatically):
@@ -29,8 +30,44 @@ import traceback
 import os
 from pipeline import ProductPipeline
 
+# Supabase for job status updates
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
 # Pipeline singleton - loaded once on cold start
 pipeline = None
+supabase_client = None
+
+
+def get_supabase():
+    """Get or create Supabase client singleton."""
+    global supabase_client
+    if supabase_client is None and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            from supabase import create_client
+            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            print(f"Supabase init error: {e}")
+    return supabase_client
+
+
+def update_job_status(job_id: str, status: str, result: dict = None, error: str = None):
+    """Update job status in database."""
+    client = get_supabase()
+    if not client:
+        return
+    try:
+        update_data = {"status": status}
+        if status == "completed":
+            update_data["progress"] = 100
+        if result:
+            update_data["result"] = result
+        if error:
+            update_data["error"] = error
+        client.table("jobs").update(update_data).eq("runpod_job_id", job_id).execute()
+        print(f"Job status updated to: {status}")
+    except Exception as e:
+        print(f"Job status update error: {e}")
 
 
 def get_pipeline():
@@ -48,6 +85,7 @@ def get_pipeline():
 
 def handler(job):
     """Main handler for Runpod serverless."""
+    job_id = job.get("id", "unknown")
     job_input = job.get("input", {}) if job else {}
     product_id = None  # Define early so it's available in except block
 
@@ -60,6 +98,7 @@ def handler(job):
         barcode = job_input.get("barcode", "unknown")
         video_id = job_input.get("video_id")
         product_id = job_input.get("product_id")
+        target_frames = job_input.get("target_frames")  # Optional: evenly distributed frame count
 
         # Validate product_id is provided (required for storage)
         if not product_id:
@@ -69,6 +108,7 @@ def handler(job):
         print(f"Processing: {barcode}")
         print(f"Video URL: {video_url[:80]}...")
         print(f"Product ID: {product_id}")
+        print(f"Target Frames: {target_frames or 'auto (MAX_FRAMES)'}")
         print(f"{'=' * 60}\n")
 
         # Get pipeline and process
@@ -78,6 +118,7 @@ def handler(job):
             barcode=barcode,
             video_id=video_id,
             product_id=product_id,
+            target_frames=target_frames,
         )
 
         print(f"\n{'=' * 60}")
@@ -85,17 +126,23 @@ def handler(job):
         print(f"Frames: {result['frame_count']}")
         print(f"{'=' * 60}\n")
 
-        # Return result - RunPod will send this via webhook automatically
-        return {
+        # Build result
+        final_result = {
             "status": "success",
             "barcode": barcode,
             "video_id": video_id,
             "product_id": product_id,
+            "target_frames_requested": target_frames,
             "metadata": result["metadata"],
             "frame_count": result["frame_count"],
             "frames_url": result.get("frames_url"),
             "primary_image_url": result.get("primary_image_url"),
         }
+
+        # Update job status to completed
+        update_job_status(job_id, "completed", result=final_result)
+
+        return final_result
 
     except Exception as e:
         error_msg = str(e)
@@ -105,6 +152,9 @@ def handler(job):
         print(f"ERROR: {error_msg}")
         print(error_trace)
         print(f"{'=' * 60}\n")
+
+        # Update job status to failed
+        update_job_status(job_id, "failed", error=error_msg)
 
         # Return error with product_id so webhook can update product status
         # Note: product_id may be None if error occurred before validation

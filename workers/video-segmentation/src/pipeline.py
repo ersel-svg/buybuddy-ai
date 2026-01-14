@@ -119,6 +119,7 @@ class ProductPipeline:
         barcode: str,
         video_id: Optional[int] = None,
         product_id: Optional[str] = None,
+        target_frames: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Main processing method.
@@ -128,6 +129,8 @@ class ProductPipeline:
             barcode: Product barcode
             video_id: External video ID
             product_id: Product UUID (required for storage)
+            target_frames: Number of frames to extract (evenly distributed).
+                          If None, uses MAX_FRAMES from config.
 
         Returns:
             {
@@ -153,9 +156,9 @@ class ProductPipeline:
             video_path = self._download_video(video_url, job_dir / "video.mp4")
             print(f"      Saved to: {video_path}")
 
-            # 2. Extract frames
+            # 2. Extract frames (with optional target count)
             print("\n[2/6] Extracting frames...")
-            all_frames = self._extract_frames(video_path)
+            all_frames = self._extract_frames(video_path, target_frames=target_frames)
             print(f"      Extracted {len(all_frames)} frames")
 
             # 3. Gemini metadata extraction
@@ -189,6 +192,7 @@ class ProductPipeline:
                 "video_id": video_id,
                 "product_id": product_id,
                 "timestamp": datetime.now().isoformat(),
+                "target_frames_requested": target_frames,
                 "frame_count": len(processed_frames),
                 "grounding_prompts": grounding_prompts if self.video_predictor else None,
                 "model": "SAM3",
@@ -238,13 +242,35 @@ class ProductPipeline:
 
         return save_path
 
-    def _extract_frames(self, video_path: Path) -> List[np.ndarray]:
-        """Extract frames from video."""
+    def _extract_frames(self, video_path: Path, target_frames: Optional[int] = None) -> List[np.ndarray]:
+        """
+        Extract frames from video with even distribution.
+
+        Args:
+            video_path: Path to video file
+            target_frames: Number of frames to extract (evenly distributed).
+                          If None, uses MAX_FRAMES from config.
+        """
         cap = cv2.VideoCapture(str(video_path))
         frames = []
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        target_frames = min(total_frames, MAX_FRAMES) if MAX_FRAMES else total_frames
+
+        # Determine how many frames to extract
+        if target_frames is None:
+            target_frames = min(total_frames, MAX_FRAMES) if MAX_FRAMES else total_frames
+        else:
+            target_frames = min(target_frames, total_frames)
+
+        # Calculate evenly distributed frame indices
+        if target_frames >= total_frames:
+            # Extract all frames
+            frame_indices = set(range(total_frames))
+        else:
+            # Evenly distributed: np.linspace(0, total-1, target) gives exact indices
+            frame_indices = set(np.linspace(0, total_frames - 1, target_frames, dtype=int))
+
+        print(f"      Total frames: {total_frames}, extracting: {len(frame_indices)} (evenly distributed)")
 
         frame_idx = 0
         for _ in tqdm(range(total_frames), desc="Extracting"):
@@ -252,8 +278,7 @@ class ProductPipeline:
             if not ret:
                 break
 
-            # Skip frames if needed
-            if frame_idx % FRAME_SKIP == 0 and len(frames) < target_frames:
+            if frame_idx in frame_indices:
                 # BGR -> RGB
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
@@ -843,6 +868,15 @@ class ProductPipeline:
             if records:
                 self.supabase.table("product_images").insert(records).execute()
                 print(f"      Inserted {len(records)} frame records")
+
+            # 3. Update videos table status (if video_id provided)
+            if video_id is not None:
+                print(f"      Updating video {video_id} status...")
+                self.supabase.table("videos").update({
+                    "status": "completed",
+                    "product_id": product_id,
+                }).eq("id", video_id).execute()
+                print(f"      Video {video_id} marked as completed")
 
             print(f"      Database sync complete!")
 
