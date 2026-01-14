@@ -9,9 +9,11 @@ from pydantic import BaseModel
 from services.supabase import SupabaseService, supabase_service
 from services.runpod import RunpodService, runpod_service, EndpointType
 from services.buybuddy import BuybuddyService, buybuddy_service
+from auth.dependencies import get_current_user
 from config import settings
 
-router = APIRouter()
+# Router with authentication required for all endpoints
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ===========================================
@@ -400,3 +402,104 @@ async def get_video(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     return video
+
+
+@router.post("/{video_id}/reprocess")
+async def reprocess_video(
+    video_id: int,
+    request: Request,
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
+    """
+    Reprocess a video that was previously processed.
+    This will delete old frames and re-run the entire pipeline.
+    """
+    # Get video details
+    videos = await db.get_videos()
+    video = next((v for v in videos if v.get("id") == video_id), None)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    product_id = video.get("product_id")
+    if not product_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Video has no associated product. Use /process instead."
+        )
+
+    barcode = video.get("barcode")
+    video_url = video.get("video_url")
+
+    if not video_url:
+        raise HTTPException(status_code=400, detail="Video has no URL")
+
+    print(f"[Videos] Reprocessing video {video_id} (product: {product_id})")
+
+    # 1. Clean up old data (frames + storage)
+    cleanup_result = await db.cleanup_product_for_reprocess(product_id)
+    print(f"[Videos] Cleanup: {cleanup_result['frames_deleted']} frames, {cleanup_result['files_deleted']} files deleted")
+
+    # 2. Update video status back to pending
+    db.client.table("videos").update({
+        "status": "processing"
+    }).eq("id", video_id).execute()
+
+    # 3. Create new job
+    job = await db.create_job({
+        "type": "video_processing",
+        "config": {
+            "video_id": video_id,
+            "video_url": video_url,
+            "barcode": barcode,
+            "product_id": product_id,
+            "reprocess": True,
+        },
+    })
+
+    # 4. Dispatch to Runpod
+    if runpod.is_configured(EndpointType.VIDEO):
+        try:
+            webhook_url = get_webhook_url(request)
+            runpod_response = await runpod.submit_job(
+                endpoint_type=EndpointType.VIDEO,
+                input_data={
+                    "video_url": video_url,
+                    "barcode": barcode,
+                    "video_id": video_id,
+                    "product_id": product_id,
+                    "job_id": job["id"],
+                },
+                webhook_url=webhook_url,
+            )
+
+            await db.update_job(job["id"], {
+                "status": "queued",
+                "runpod_job_id": runpod_response.get("id"),
+            })
+            job["runpod_job_id"] = runpod_response.get("id")
+            job["status"] = "queued"
+
+            print(f"[Videos] Reprocess dispatched to Runpod: {runpod_response.get('id')}")
+
+        except Exception as e:
+            print(f"[Videos] Failed to dispatch reprocess to Runpod: {e}")
+            await db.update_job(job["id"], {
+                "status": "failed",
+                "error": f"Failed to dispatch to Runpod: {str(e)}",
+            })
+            # Reset product status to previous state
+            await db.update_product(product_id, {"status": "pending"})
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to dispatch to Runpod: {str(e)}",
+            )
+    else:
+        print("[Videos] Runpod not configured, reprocess job created but not dispatched")
+
+    return {
+        "job": job,
+        "cleanup": cleanup_result,
+        "message": f"Reprocessing video {video_id}",
+    }

@@ -16,9 +16,40 @@ import type {
   EmbeddingIndex,
   DashboardStats,
   ResourceLock,
+  AugmentationRequest,
+  ProductIdentifier,
+  ProductIdentifierCreate,
 } from "@/types";
+import { getAuthHeader, clearAuth } from "./auth";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Export filter options for download/export endpoints
+export interface ExportFilters {
+  product_ids?: string[];
+  search?: string;
+  status?: string[];
+  category?: string[];
+  brand?: string[];
+  sub_brand?: string[];
+  product_name?: string[];
+  variant_flavor?: string[];
+  container_type?: string[];
+  net_quantity?: string[];
+  pack_type?: string[];
+  manufacturer_country?: string[];
+  claims?: string[];
+  has_video?: boolean;
+  has_image?: boolean;
+  has_nutrition?: boolean;
+  has_description?: boolean;
+  has_prompt?: boolean;
+  has_issues?: boolean;
+  frame_count_min?: number;
+  frame_count_max?: number;
+  visibility_score_min?: number;
+  visibility_score_max?: number;
+}
 
 interface RequestOptions extends Omit<RequestInit, "body"> {
   params?: Record<string, string | number | boolean | undefined>;
@@ -56,6 +87,7 @@ class ApiClient {
       ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
+        ...getAuthHeader(),
         ...fetchOptions.headers,
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -63,6 +95,16 @@ class ApiClient {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
+
+      // Handle 401 Unauthorized - clear auth and redirect to login
+      // But only if we're not already on the login page (to prevent infinite loop)
+      if (response.status === 401) {
+        clearAuth();
+        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+      }
+
       throw new ApiError(
         error.detail || `HTTP ${response.status}`,
         response.status,
@@ -101,6 +143,7 @@ class ApiClient {
       ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
+        ...getAuthHeader(),
         ...fetchOptions.headers,
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -108,6 +151,16 @@ class ApiClient {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
+
+      // Handle 401 Unauthorized - clear auth and redirect to login
+      // But only if we're not already on the login page (to prevent infinite loop)
+      if (response.status === 401) {
+        clearAuth();
+        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login";
+        }
+      }
+
       throw new ApiError(
         error.detail || `HTTP ${response.status}`,
         response.status,
@@ -136,6 +189,11 @@ class ApiClient {
     search?: string;
     status?: string;
     category?: string;
+    container_type?: string;
+    pack_type?: string;
+    visibility_score_min?: number;
+    visibility_score_max?: number;
+    manufacturer_country?: string;
   }): Promise<ProductsResponse> {
     return this.request<ProductsResponse>("/api/v1/products", { params });
   }
@@ -170,32 +228,49 @@ class ApiClient {
   }
 
   async getProductFrames(
-    id: string
-  ): Promise<{ frames: { url: string; index: number }[] }> {
-    return this.request<{ frames: { url: string; index: number }[] }>(
-      `/api/v1/products/${id}/frames`
-    );
+    id: string,
+    imageType?: "synthetic" | "real" | "augmented"
+  ): Promise<{
+    frames: {
+      id: string | null;
+      url: string;
+      index: number;
+      image_type: "synthetic" | "real" | "augmented";
+      source: string;
+    }[];
+    counts: { synthetic: number; real: number; augmented: number };
+    total: number;
+  }> {
+    const params = imageType ? `?image_type=${imageType}` : "";
+    return this.request(`/api/v1/products/${id}/frames${params}`);
+  }
+
+  async deleteProductFrames(
+    id: string,
+    frameIds: string[]
+  ): Promise<{ deleted: number; storage_deleted: number }> {
+    const params = frameIds.map((fid) => `frame_ids=${fid}`).join("&");
+    return this.request(`/api/v1/products/${id}/frames?${params}`, {
+      method: "DELETE",
+    });
   }
 
   async getProductCategories(): Promise<string[]> {
     return this.request<string[]>("/api/v1/products/categories");
   }
 
-  // Product Downloads
-  async downloadProducts(ids: string[]): Promise<Blob> {
+  // Product Downloads - with full filter support
+  async downloadProducts(filters: ExportFilters): Promise<Blob> {
     return this.requestBlob("/api/v1/products/download", {
       method: "POST",
-      body: { product_ids: ids },
+      body: filters,
     });
   }
 
-  async downloadAllProducts(filters?: {
-    status?: string;
-    category?: string;
-  }): Promise<Blob> {
-    return this.requestBlob("/api/v1/products/download/all", {
-      method: "GET",
-      params: filters,
+  async downloadAllProducts(filters?: ExportFilters): Promise<Blob> {
+    return this.requestBlob("/api/v1/products/download", {
+      method: "POST",
+      body: filters || {},
     });
   }
 
@@ -203,18 +278,124 @@ class ApiClient {
     return this.requestBlob(`/api/v1/products/${id}/download`);
   }
 
-  async exportProductsCSV(ids?: string[]): Promise<Blob> {
+  async exportProductsCSV(filters?: ExportFilters): Promise<Blob> {
     return this.requestBlob("/api/v1/products/export/csv", {
       method: "POST",
-      body: { product_ids: ids },
+      body: filters || {},
     });
   }
 
-  async exportProductsJSON(ids?: string[]): Promise<Blob> {
+  async exportProductsJSON(filters?: ExportFilters): Promise<Blob> {
     return this.requestBlob("/api/v1/products/export/json", {
       method: "POST",
-      body: { product_ids: ids },
+      body: filters || {},
     });
+  }
+
+  // ===========================================
+  // Product Identifiers
+  // ===========================================
+
+  async getProductIdentifiers(productId: string): Promise<ProductIdentifier[]> {
+    return this.request<ProductIdentifier[]>(
+      `/api/v1/products/${productId}/identifiers`
+    );
+  }
+
+  async addProductIdentifier(
+    productId: string,
+    data: ProductIdentifierCreate
+  ): Promise<ProductIdentifier> {
+    return this.request<ProductIdentifier>(
+      `/api/v1/products/${productId}/identifiers`,
+      {
+        method: "POST",
+        body: data,
+      }
+    );
+  }
+
+  async updateProductIdentifiers(
+    productId: string,
+    identifiers: ProductIdentifierCreate[]
+  ): Promise<ProductIdentifier[]> {
+    return this.request<ProductIdentifier[]>(
+      `/api/v1/products/${productId}/identifiers`,
+      {
+        method: "PUT",
+        body: { identifiers },
+      }
+    );
+  }
+
+  async updateProductIdentifier(
+    productId: string,
+    identifierId: string,
+    data: Partial<ProductIdentifierCreate>
+  ): Promise<ProductIdentifier> {
+    return this.request<ProductIdentifier>(
+      `/api/v1/products/${productId}/identifiers/${identifierId}`,
+      {
+        method: "PATCH",
+        body: data,
+      }
+    );
+  }
+
+  async deleteProductIdentifier(
+    productId: string,
+    identifierId: string
+  ): Promise<void> {
+    await this.request<void>(
+      `/api/v1/products/${productId}/identifiers/${identifierId}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async setPrimaryIdentifier(
+    productId: string,
+    identifierId: string
+  ): Promise<ProductIdentifier> {
+    return this.request<ProductIdentifier>(
+      `/api/v1/products/${productId}/identifiers/${identifierId}/set-primary`,
+      { method: "POST" }
+    );
+  }
+
+  // ===========================================
+  // Custom Fields
+  // ===========================================
+
+  async getCustomFields(productId: string): Promise<Record<string, string>> {
+    return this.request<Record<string, string>>(
+      `/api/v1/products/${productId}/custom-fields`
+    );
+  }
+
+  async updateCustomFields(
+    productId: string,
+    fields: Record<string, string>
+  ): Promise<Record<string, string>> {
+    return this.request<Record<string, string>>(
+      `/api/v1/products/${productId}/custom-fields`,
+      {
+        method: "PUT",
+        body: { custom_fields: fields },
+      }
+    );
+  }
+
+  async patchCustomFields(
+    productId: string,
+    updates: Record<string, string | null>
+  ): Promise<Record<string, string>> {
+    return this.request<Record<string, string>>(
+      `/api/v1/products/${productId}/custom-fields`,
+      {
+        method: "PATCH",
+        body: updates,
+      }
+    );
   }
 
   // ===========================================
@@ -225,9 +406,10 @@ class ApiClient {
     return this.request<Video[]>("/api/v1/videos");
   }
 
-  async syncVideos(): Promise<VideoSyncResponse> {
+  async syncVideos(limit?: number): Promise<VideoSyncResponse> {
     return this.request<VideoSyncResponse>("/api/v1/videos/sync", {
       method: "POST",
+      params: limit ? { limit } : undefined,
     });
   }
 
@@ -242,6 +424,12 @@ class ApiClient {
     return this.request<Job[]>("/api/v1/videos/process/batch", {
       method: "POST",
       body: { video_ids: videoIds },
+    });
+  }
+
+  async reprocessVideo(videoId: number): Promise<{ job: Job; cleanup: { frames_deleted: number; files_deleted: number }; message: string }> {
+    return this.request(`/api/v1/videos/${videoId}/reprocess`, {
+      method: "POST",
     });
   }
 
@@ -305,7 +493,7 @@ class ApiClient {
   // Dataset Actions
   async startAugmentation(
     datasetId: string,
-    config: Record<string, unknown>
+    config: AugmentationRequest
   ): Promise<Job> {
     return this.request<Job>(`/api/v1/datasets/${datasetId}/augment`, {
       method: "POST",

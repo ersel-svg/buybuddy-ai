@@ -21,6 +21,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
@@ -33,14 +43,29 @@ import {
   Loader2,
   Video,
   ExternalLink,
+  RotateCcw,
 } from "lucide-react";
 import type { Video as VideoType, Job } from "@/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 export default function VideosPage() {
   const queryClient = useQueryClient();
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<number>>(
     new Set()
   );
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [syncLimit, setSyncLimit] = useState<string>("");
+  const [syncAll, setSyncAll] = useState(false);
 
   // Fetch videos
   const { data: videos, isLoading: isLoadingVideos } = useQuery({
@@ -58,15 +83,32 @@ export default function VideosPage() {
 
   // Sync mutation
   const syncMutation = useMutation({
-    mutationFn: () => apiClient.syncVideos(),
+    mutationFn: (limit?: number) => apiClient.syncVideos(limit),
     onSuccess: (result) => {
       toast.success(`Synced ${result.synced_count} new videos`);
       queryClient.invalidateQueries({ queryKey: ["videos"] });
+      setSyncModalOpen(false);
+      setSyncLimit("");
+      setSyncAll(false);
     },
     onError: () => {
       toast.error("Failed to sync videos");
     },
   });
+
+  // Handle sync submit
+  const handleSyncSubmit = () => {
+    if (syncAll) {
+      syncMutation.mutate(undefined); // No limit = all
+    } else {
+      const limit = parseInt(syncLimit, 10);
+      if (isNaN(limit) || limit <= 0) {
+        toast.error("Please enter a valid number");
+        return;
+      }
+      syncMutation.mutate(limit);
+    }
+  };
 
   // Process mutation
   const processMutation = useMutation({
@@ -79,6 +121,20 @@ export default function VideosPage() {
     },
     onError: () => {
       toast.error("Failed to start processing");
+    },
+  });
+
+  // Reprocess mutation
+  const reprocessMutation = useMutation({
+    mutationFn: (videoId: number) => apiClient.reprocessVideo(videoId),
+    onSuccess: (result) => {
+      toast.success(`Reprocessing started. Cleaned up ${result.cleanup.frames_deleted} frames.`);
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: () => {
+      toast.error("Failed to start reprocessing");
     },
   });
 
@@ -149,7 +205,7 @@ export default function VideosPage() {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            onClick={() => syncMutation.mutate()}
+            onClick={() => setSyncModalOpen(true)}
             disabled={syncMutation.isPending}
           >
             <RefreshCw
@@ -362,6 +418,7 @@ export default function VideosPage() {
                   <TableHead>Product</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Completed</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -397,6 +454,43 @@ export default function VideosPage() {
                       <TableCell className="text-gray-500 text-sm">
                         {new Date(video.created_at).toLocaleDateString()}
                       </TableCell>
+                      <TableCell>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={!video.product_id || reprocessMutation.isPending}
+                            >
+                              {reprocessMutation.isPending ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RotateCcw className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Reprocess Video?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will delete all existing frames for this product and re-run the entire video processing pipeline.
+                                <br /><br />
+                                <strong>Barcode:</strong> {video.barcode}
+                                <br />
+                                <strong>Video ID:</strong> {video.id}
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => reprocessMutation.mutate(video.id)}
+                              >
+                                Reprocess
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </TableCell>
                     </TableRow>
                   ))}
               </TableBody>
@@ -404,6 +498,60 @@ export default function VideosPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Sync Modal */}
+      <Dialog open={syncModalOpen} onOpenChange={setSyncModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sync Videos from Buybuddy</DialogTitle>
+            <DialogDescription>
+              Choose how many videos to sync. Only new videos (by video ID) will be added.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="sync-all"
+                checked={syncAll}
+                onCheckedChange={(checked) => {
+                  setSyncAll(checked === true);
+                  if (checked) setSyncLimit("");
+                }}
+              />
+              <Label htmlFor="sync-all">Sync all available videos</Label>
+            </div>
+            {!syncAll && (
+              <div className="space-y-2">
+                <Label htmlFor="sync-limit">Number of videos to sync</Label>
+                <Input
+                  id="sync-limit"
+                  type="number"
+                  placeholder="e.g., 10"
+                  value={syncLimit}
+                  onChange={(e) => setSyncLimit(e.target.value)}
+                  min={1}
+                />
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSyncModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSyncSubmit}
+              disabled={syncMutation.isPending || (!syncAll && !syncLimit)}
+            >
+              {syncMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              {syncAll ? "Sync All" : `Sync ${syncLimit || "..."}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

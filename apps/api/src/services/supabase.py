@@ -42,6 +42,11 @@ class SupabaseService:
         search: Optional[str] = None,
         status: Optional[str] = None,
         category: Optional[str] = None,
+        container_type: Optional[str] = None,
+        pack_type: Optional[str] = None,
+        visibility_score_min: Optional[int] = None,
+        visibility_score_max: Optional[int] = None,
+        manufacturer_country: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get products with pagination and filters."""
         query = self.client.table("products").select("*", count="exact")
@@ -54,6 +59,17 @@ class SupabaseService:
             query = query.eq("status", status)
         if category:
             query = query.eq("category", category)
+        if container_type:
+            query = query.eq("container_type", container_type)
+        if manufacturer_country:
+            query = query.eq("manufacturer_country", manufacturer_country)
+        if visibility_score_min is not None:
+            query = query.gte("visibility_score", visibility_score_min)
+        if visibility_score_max is not None:
+            query = query.lte("visibility_score", visibility_score_max)
+        if pack_type:
+            # Filter by pack_configuration JSONB field
+            query = query.eq("pack_configuration->>type", pack_type)
 
         # Pagination
         start = (page - 1) * limit
@@ -130,6 +146,95 @@ class SupabaseService:
         return sorted(list(categories))
 
     # =========================================
+    # Product Identifiers
+    # =========================================
+
+    async def get_product_identifiers(self, product_id: str) -> list[dict[str, Any]]:
+        """Get all identifiers for a product."""
+        response = (
+            self.client.table("product_identifiers")
+            .select("*")
+            .eq("product_id", product_id)
+            .order("is_primary", desc=True)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data
+
+    async def add_product_identifier(
+        self, product_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Add identifier to a product."""
+        response = self.client.table("product_identifiers").insert({
+            "product_id": product_id,
+            "identifier_type": data["identifier_type"],
+            "identifier_value": data["identifier_value"],
+            "custom_label": data.get("custom_label"),
+            "is_primary": data.get("is_primary", False),
+        }).execute()
+        return response.data[0]
+
+    async def update_product_identifier(
+        self, identifier_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update a product identifier."""
+        response = (
+            self.client.table("product_identifiers")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", identifier_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_product_identifier(self, identifier_id: str) -> None:
+        """Delete a product identifier."""
+        self.client.table("product_identifiers").delete().eq("id", identifier_id).execute()
+
+    async def replace_product_identifiers(
+        self, product_id: str, identifiers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace all identifiers for a product."""
+        # Delete existing identifiers
+        self.client.table("product_identifiers").delete().eq("product_id", product_id).execute()
+
+        # Insert new identifiers
+        if identifiers:
+            records = [{
+                "product_id": product_id,
+                "identifier_type": i["identifier_type"],
+                "identifier_value": i["identifier_value"],
+                "custom_label": i.get("custom_label"),
+                "is_primary": i.get("is_primary", False),
+            } for i in identifiers]
+
+            response = self.client.table("product_identifiers").insert(records).execute()
+            return response.data
+        return []
+
+    async def set_primary_identifier(
+        self, product_id: str, identifier_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Set an identifier as primary (trigger handles unsetting others)."""
+        response = (
+            self.client.table("product_identifiers")
+            .update({"is_primary": True, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", identifier_id)
+            .eq("product_id", product_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def search_by_identifier(self, value: str) -> list[dict[str, Any]]:
+        """Search products by any identifier value."""
+        response = (
+            self.client.table("product_identifiers")
+            .select("product_id, identifier_type, identifier_value")
+            .ilike("identifier_value", f"%{value}%")
+            .execute()
+        )
+        return response.data
+
+    # =========================================
     # Datasets
     # =========================================
 
@@ -144,7 +249,7 @@ class SupabaseService:
         return response.data
 
     async def get_dataset(self, dataset_id: str) -> Optional[dict[str, Any]]:
-        """Get dataset with products."""
+        """Get dataset with products and frame counts."""
         # Get dataset
         dataset_response = (
             self.client.table("datasets")
@@ -167,9 +272,22 @@ class SupabaseService:
             .execute()
         )
 
-        dataset["products"] = [
-            item["products"] for item in products_response.data if item.get("products")
-        ]
+        products = []
+        for item in products_response.data:
+            product = item.get("products")
+            if product:
+                # Get frame counts for each product
+                counts = await self.get_product_frame_counts(product["id"])
+                product["frame_counts"] = counts
+                product["total_frames"] = sum(counts.values())
+                products.append(product)
+
+        dataset["products"] = products
+
+        # Calculate dataset totals
+        dataset["total_synthetic"] = sum(p.get("frame_counts", {}).get("synthetic", 0) for p in products)
+        dataset["total_real"] = sum(p.get("frame_counts", {}).get("real", 0) for p in products)
+        dataset["total_augmented"] = sum(p.get("frame_counts", {}).get("augmented", 0) for p in products)
 
         return dataset
 
@@ -348,18 +466,24 @@ class SupabaseService:
         if not videos:
             return 0
 
-        # Get existing barcodes
-        barcodes = [v["barcode"] for v in videos]
+        # Get existing video_urls (unique identifier - S3 link)
+        video_urls = [v["video_url"] for v in videos if v.get("video_url")]
         existing = (
             self.client.table("videos")
-            .select("barcode")
-            .in_("barcode", barcodes)
+            .select("video_url")
+            .in_("video_url", video_urls)
             .execute()
         )
-        existing_barcodes = {item["barcode"] for item in existing.data}
+        existing_urls = {item["video_url"] for item in existing.data if item.get("video_url")}
 
-        # Insert new videos
-        new_videos = [v for v in videos if v["barcode"] not in existing_barcodes]
+        # Insert new videos (filter by video_url to avoid duplicates)
+        new_videos = []
+        for v in videos:
+            if v.get("video_url") and v["video_url"] not in existing_urls:
+                # Remove video_id as it doesn't exist in table schema
+                video_data = {k: v[k] for k in v if k != "video_id"}
+                new_videos.append(video_data)
+
         if new_videos:
             self.client.table("videos").insert(new_videos).execute()
 
@@ -427,59 +551,129 @@ class SupabaseService:
         return response.data[0]
 
     # =========================================
-    # Real Images (for matching)
+    # Product Images (unified: synthetic, real, augmented)
     # =========================================
 
-    async def get_real_images(self, product_id: str) -> list[dict[str, Any]]:
-        """Get real images for a product."""
+    async def get_product_frames(
+        self, product_id: str, image_type: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get frames/images for a product.
+
+        Args:
+            product_id: Product UUID
+            image_type: Optional filter - 'synthetic', 'real', or 'augmented'
+        """
         try:
-            response = (
-                self.client.table("product_real_images")
+            query = (
+                self.client.table("product_images")
                 .select("*")
                 .eq("product_id", product_id)
-                .order("created_at", desc=True)
-                .execute()
             )
+            if image_type:
+                query = query.eq("image_type", image_type)
+
+            response = query.order("frame_index", desc=False).order("created_at", desc=False).execute()
             return response.data
         except Exception:
-            # Table may not exist yet
             return []
+
+    async def get_product_frame_counts(self, product_id: str) -> dict[str, int]:
+        """Get frame counts by type for a product."""
+        try:
+            response = (
+                self.client.table("product_images")
+                .select("image_type")
+                .eq("product_id", product_id)
+                .execute()
+            )
+            counts = {"synthetic": 0, "real": 0, "augmented": 0}
+            for row in response.data:
+                img_type = row.get("image_type")
+                if img_type in counts:
+                    counts[img_type] += 1
+            return counts
+        except Exception:
+            return {"synthetic": 0, "real": 0, "augmented": 0}
+
+    async def add_product_frames(
+        self,
+        product_id: str,
+        frames: list[dict],
+    ) -> int:
+        """
+        Add frames to a product.
+
+        Args:
+            product_id: Product UUID
+            frames: List of dicts with keys: image_type, source, image_path, image_url, frame_index (optional)
+        """
+        if not frames:
+            return 0
+
+        records = []
+        for frame in frames:
+            records.append({
+                "product_id": product_id,
+                "image_type": frame.get("image_type", "synthetic"),
+                "source": frame.get("source", "video_frame"),
+                "image_path": frame.get("image_path"),
+                "image_url": frame.get("image_url"),
+                "frame_index": frame.get("frame_index"),
+            })
+
+        response = self.client.table("product_images").insert(records).execute()
+        return len(response.data)
+
+    async def delete_product_frames(
+        self, product_id: str, frame_ids: list[str]
+    ) -> int:
+        """Delete specific frames from a product."""
+        if not frame_ids:
+            return 0
+
+        response = (
+            self.client.table("product_images")
+            .delete()
+            .eq("product_id", product_id)
+            .in_("id", frame_ids)
+            .execute()
+        )
+        return len(response.data) if response.data else 0
+
+    # Backward compatible methods for real images
+    async def get_real_images(self, product_id: str) -> list[dict[str, Any]]:
+        """Get real images for a product (backward compatible)."""
+        return await self.get_product_frames(product_id, image_type="real")
 
     async def get_real_image_count(self, product_id: str) -> int:
         """Get count of real images for a product."""
-        try:
-            response = (
-                self.client.table("product_real_images")
-                .select("*", count="exact")
-                .eq("product_id", product_id)
-                .execute()
-            )
-            return response.count or 0
-        except Exception:
-            # Table may not exist yet
-            return 0
+        counts = await self.get_product_frame_counts(product_id)
+        return counts.get("real", 0)
 
     async def add_real_images(
         self, product_id: str, image_urls: list[str]
     ) -> int:
-        """Add real images to a product."""
+        """Add real images to a product (backward compatible)."""
         if not image_urls:
             return 0
 
-        records = [
-            {"product_id": product_id, "image_url": url}
+        frames = [
+            {
+                "image_type": "real",
+                "source": "matching",
+                "image_url": url,
+                "image_path": url,  # For real images, path is the URL
+            }
             for url in image_urls
         ]
-        response = self.client.table("product_real_images").insert(records).execute()
-        return len(response.data)
+        return await self.add_product_frames(product_id, frames)
 
     async def remove_real_images(
         self, product_id: str, image_ids: list[str]
     ) -> None:
-        """Remove real images from a product."""
-        self.client.table("product_real_images").delete().eq(
-            "product_id", product_id
-        ).in_("id", image_ids).execute()
+        """Remove real images from a product (backward compatible)."""
+        await self.delete_product_frames(product_id, image_ids)
 
     # =========================================
     # Storage
@@ -501,6 +695,53 @@ class SupabaseService:
     async def delete_file(self, bucket: str, path: str) -> None:
         """Delete file from storage."""
         self.client.storage.from_(bucket).remove([path])
+
+    async def delete_folder(self, bucket: str, folder_path: str) -> int:
+        """Delete all files in a storage folder."""
+        try:
+            # List all files in the folder
+            files = self.client.storage.from_(bucket).list(folder_path)
+            if not files:
+                return 0
+
+            # Build full paths and delete
+            paths = [f"{folder_path}/{f['name']}" for f in files]
+            if paths:
+                self.client.storage.from_(bucket).remove(paths)
+            return len(paths)
+        except Exception as e:
+            print(f"[Supabase] Error deleting folder {folder_path}: {e}")
+            return 0
+
+    async def cleanup_product_for_reprocess(self, product_id: str) -> dict[str, Any]:
+        """
+        Clean up a product's synthetic frames for reprocessing.
+        Returns counts of deleted items.
+        """
+        result = {"frames_deleted": 0, "files_deleted": 0}
+
+        # 1. Delete synthetic frame records from database
+        response = (
+            self.client.table("product_images")
+            .delete()
+            .eq("product_id", product_id)
+            .eq("image_type", "synthetic")
+            .execute()
+        )
+        result["frames_deleted"] = len(response.data) if response.data else 0
+
+        # 2. Delete storage files
+        result["files_deleted"] = await self.delete_folder("frames", product_id)
+
+        # 3. Reset product frame-related fields
+        self.client.table("products").update({
+            "status": "processing",
+            "frame_count": 0,
+            "frames_path": None,
+            "primary_image_url": None,
+        }).eq("id", product_id).execute()
+
+        return result
 
 
 # Singleton instance
