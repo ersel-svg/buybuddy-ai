@@ -372,15 +372,34 @@ class SupabaseService:
     # Jobs
     # =========================================
 
-    async def get_jobs(self, job_type: Optional[str] = None) -> list[dict[str, Any]]:
-        """Get jobs, optionally filtered by type."""
+    async def get_jobs(
+        self,
+        job_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get jobs, optionally filtered by type and status."""
         query = self.client.table("jobs").select("*").order("created_at", desc=True)
 
         if job_type:
             query = query.eq("type", job_type)
+        if status:
+            query = query.eq("status", status)
 
-        response = query.limit(100).execute()
+        response = query.limit(limit).execute()
         return response.data
+
+    async def get_active_jobs_count(self, job_type: Optional[str] = None) -> int:
+        """Get count of active (running/queued/pending) jobs."""
+        query = (
+            self.client.table("jobs")
+            .select("id", count="exact")
+            .in_("status", ["running", "queued", "pending"])
+        )
+        if job_type:
+            query = query.eq("type", job_type)
+        response = query.execute()
+        return response.count or 0
 
     async def get_job(self, job_id: str) -> Optional[dict[str, Any]]:
         """Get single job."""
@@ -388,6 +407,17 @@ class SupabaseService:
             self.client.table("jobs").select("*").eq("id", job_id).single().execute()
         )
         return response.data
+
+    async def get_job_by_runpod_id(self, runpod_job_id: str) -> Optional[dict[str, Any]]:
+        """Get job by Runpod job ID (for webhook lookups)."""
+        response = (
+            self.client.table("jobs")
+            .select("*")
+            .eq("runpod_job_id", runpod_job_id)
+            .limit(1)
+            .execute()
+        )
+        return response.data[0] if response.data else None
 
     async def create_job(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create new job."""
@@ -451,30 +481,55 @@ class SupabaseService:
     # Videos
     # =========================================
 
-    async def get_videos(self) -> list[dict[str, Any]]:
-        """Get all videos."""
-        response = (
-            self.client.table("videos")
-            .select("*")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        return response.data
+    async def get_videos(self, limit: int = 10000) -> list[dict[str, Any]]:
+        """Get all videos using pagination (Supabase has 1000 row limit per request)."""
+        all_videos = []
+        page_size = 1000
+        offset = 0
+
+        while offset < limit:
+            response = (
+                self.client.table("videos")
+                .select("*")
+                .order("created_at", desc=True)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+
+            if not response.data:
+                break
+
+            all_videos.extend(response.data)
+            offset += page_size
+
+            # If we got less than page_size, we've reached the end
+            if len(response.data) < page_size:
+                break
+
+        return all_videos[:limit]
 
     async def sync_videos_from_buybuddy(self, videos: list[dict[str, Any]]) -> int:
         """Sync videos from Buybuddy API."""
         if not videos:
             return 0
 
-        # Get existing video_urls (unique identifier - S3 link)
+        # Process in batches to avoid Supabase query size limits
+        BATCH_SIZE = 100
         video_urls = [v["video_url"] for v in videos if v.get("video_url")]
-        existing = (
-            self.client.table("videos")
-            .select("video_url")
-            .in_("video_url", video_urls)
-            .execute()
-        )
-        existing_urls = {item["video_url"] for item in existing.data if item.get("video_url")}
+
+        # Get existing video_urls in batches
+        existing_urls = set()
+        for i in range(0, len(video_urls), BATCH_SIZE):
+            batch_urls = video_urls[i:i + BATCH_SIZE]
+            existing = (
+                self.client.table("videos")
+                .select("video_url")
+                .in_("video_url", batch_urls)
+                .execute()
+            )
+            existing_urls.update(
+                item["video_url"] for item in existing.data if item.get("video_url")
+            )
 
         # Insert new videos (filter by video_url to avoid duplicates)
         new_videos = []
@@ -484,10 +539,14 @@ class SupabaseService:
                 video_data = {k: v[k] for k in v if k != "video_id"}
                 new_videos.append(video_data)
 
-        if new_videos:
-            self.client.table("videos").insert(new_videos).execute()
+        # Insert in batches
+        total_inserted = 0
+        for i in range(0, len(new_videos), BATCH_SIZE):
+            batch = new_videos[i:i + BATCH_SIZE]
+            self.client.table("videos").insert(batch).execute()
+            total_inserted += len(batch)
 
-        return len(new_videos)
+        return total_inserted
 
     # =========================================
     # Model Artifacts
@@ -742,6 +801,369 @@ class SupabaseService:
         }).eq("id", product_id).execute()
 
         return result
+
+    # =========================================
+    # Cutout Images
+    # =========================================
+
+    async def get_cutouts(
+        self,
+        page: int = 1,
+        limit: int = 50,
+        has_embedding: Optional[bool] = None,
+        is_matched: Optional[bool] = None,
+        predicted_upc: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Get cutout images with pagination and filters."""
+        query = self.client.table("cutout_images").select("*", count="exact")
+
+        if has_embedding is not None:
+            query = query.eq("has_embedding", has_embedding)
+        if is_matched is True:
+            query = query.not_.is_("matched_product_id", "null")
+        elif is_matched is False:
+            query = query.is_("matched_product_id", "null")
+        if predicted_upc:
+            query = query.eq("predicted_upc", predicted_upc)
+
+        # Pagination
+        start = (page - 1) * limit
+        end = start + limit - 1
+        query = query.range(start, end).order("synced_at", desc=True)
+
+        response = query.execute()
+        return {
+            "items": response.data,
+            "total": response.count or 0,
+            "page": page,
+            "limit": limit,
+        }
+
+    async def get_cutout(self, cutout_id: str) -> Optional[dict[str, Any]]:
+        """Get single cutout by ID."""
+        response = (
+            self.client.table("cutout_images")
+            .select("*")
+            .eq("id", cutout_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def get_cutout_by_external_id(self, external_id: int) -> Optional[dict[str, Any]]:
+        """Get cutout by BuyBuddy external ID."""
+        response = (
+            self.client.table("cutout_images")
+            .select("*")
+            .eq("external_id", external_id)
+            .maybe_single()
+            .execute()
+        )
+        return response.data
+
+    async def sync_cutouts(self, cutouts: list[dict[str, Any]]) -> dict[str, int]:
+        """
+        Sync cutout images from BuyBuddy API.
+
+        Args:
+            cutouts: List of cutout dicts with external_id, image_url, predicted_upc
+
+        Returns:
+            Dict with synced_count and skipped_count
+        """
+        if not cutouts:
+            return {"synced_count": 0, "skipped_count": 0}
+
+        # Get existing external IDs
+        external_ids = [c["external_id"] for c in cutouts]
+        existing = (
+            self.client.table("cutout_images")
+            .select("external_id")
+            .in_("external_id", external_ids)
+            .execute()
+        )
+        existing_ids = {item["external_id"] for item in existing.data}
+
+        # Filter new cutouts
+        new_cutouts = [
+            {
+                "external_id": c["external_id"],
+                "image_url": c["image_url"],
+                "predicted_upc": c.get("predicted_upc"),
+            }
+            for c in cutouts
+            if c["external_id"] not in existing_ids
+        ]
+
+        if new_cutouts:
+            self.client.table("cutout_images").insert(new_cutouts).execute()
+
+        return {
+            "synced_count": len(new_cutouts),
+            "skipped_count": len(cutouts) - len(new_cutouts),
+        }
+
+    async def update_cutout(
+        self, cutout_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update cutout image."""
+        response = (
+            self.client.table("cutout_images")
+            .update(data)
+            .eq("id", cutout_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def update_cutouts_bulk(
+        self, cutout_ids: list[str], data: dict[str, Any]
+    ) -> int:
+        """Bulk update cutouts."""
+        if not cutout_ids:
+            return 0
+        response = (
+            self.client.table("cutout_images")
+            .update(data)
+            .in_("id", cutout_ids)
+            .execute()
+        )
+        return len(response.data) if response.data else 0
+
+    async def match_cutout_to_product(
+        self,
+        cutout_id: str,
+        product_id: str,
+        similarity: Optional[float] = None,
+        matched_by: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Mark a cutout as matched to a product."""
+        data = {
+            "matched_product_id": product_id,
+            "matched_at": datetime.utcnow().isoformat(),
+        }
+        if similarity is not None:
+            data["match_similarity"] = similarity
+        if matched_by:
+            data["matched_by"] = matched_by
+
+        return await self.update_cutout(cutout_id, data)
+
+    async def get_cutout_stats(self) -> dict[str, int]:
+        """Get cutout statistics."""
+        # Total count
+        total_resp = (
+            self.client.table("cutout_images")
+            .select("*", count="exact")
+            .execute()
+        )
+        total = total_resp.count or 0
+
+        # With embedding
+        with_emb_resp = (
+            self.client.table("cutout_images")
+            .select("*", count="exact")
+            .eq("has_embedding", True)
+            .execute()
+        )
+        with_embedding = with_emb_resp.count or 0
+
+        # Matched
+        matched_resp = (
+            self.client.table("cutout_images")
+            .select("*", count="exact")
+            .not_.is_("matched_product_id", "null")
+            .execute()
+        )
+        matched = matched_resp.count or 0
+
+        return {
+            "total": total,
+            "with_embedding": with_embedding,
+            "without_embedding": total - with_embedding,
+            "matched": matched,
+            "unmatched": total - matched,
+        }
+
+    # =========================================
+    # Embedding Models
+    # =========================================
+
+    async def get_embedding_models(self) -> list[dict[str, Any]]:
+        """Get all embedding models."""
+        response = (
+            self.client.table("embedding_models")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return response.data
+
+    async def get_embedding_model(self, model_id: str) -> Optional[dict[str, Any]]:
+        """Get single embedding model."""
+        response = (
+            self.client.table("embedding_models")
+            .select("*")
+            .eq("id", model_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def get_active_embedding_model(self) -> Optional[dict[str, Any]]:
+        """Get the active matching model."""
+        response = (
+            self.client.table("embedding_models")
+            .select("*")
+            .eq("is_matching_active", True)
+            .maybe_single()
+            .execute()
+        )
+        return response.data
+
+    async def create_embedding_model(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create new embedding model."""
+        response = (
+            self.client.table("embedding_models")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_embedding_model(
+        self, model_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update embedding model."""
+        response = (
+            self.client.table("embedding_models")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", model_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def activate_embedding_model(self, model_id: str) -> Optional[dict[str, Any]]:
+        """Activate a model for matching (deactivates others)."""
+        # Deactivate all
+        self.client.table("embedding_models").update(
+            {"is_matching_active": False}
+        ).execute()
+
+        # Activate selected
+        response = (
+            self.client.table("embedding_models")
+            .update({
+                "is_matching_active": True,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            .eq("id", model_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_embedding_model(self, model_id: str) -> bool:
+        """Delete embedding model."""
+        self.client.table("embedding_models").delete().eq("id", model_id).execute()
+        return True
+
+    # =========================================
+    # Embedding Jobs
+    # =========================================
+
+    async def get_embedding_jobs(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Get embedding jobs."""
+        query = (
+            self.client.table("embedding_jobs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if status:
+            query = query.eq("status", status)
+        response = query.execute()
+        return response.data
+
+    async def get_embedding_job(self, job_id: str) -> Optional[dict[str, Any]]:
+        """Get single embedding job."""
+        response = (
+            self.client.table("embedding_jobs")
+            .select("*")
+            .eq("id", job_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_embedding_job(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create embedding job."""
+        response = (
+            self.client.table("embedding_jobs")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_embedding_job(
+        self, job_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update embedding job."""
+        response = (
+            self.client.table("embedding_jobs")
+            .update(data)
+            .eq("id", job_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    # =========================================
+    # Embedding Exports
+    # =========================================
+
+    async def get_embedding_exports(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Get embedding exports."""
+        response = (
+            self.client.table("embedding_exports")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return response.data
+
+    async def get_embedding_export(self, export_id: str) -> Optional[dict[str, Any]]:
+        """Get single export."""
+        response = (
+            self.client.table("embedding_exports")
+            .select("*")
+            .eq("id", export_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_embedding_export(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create export record."""
+        response = (
+            self.client.table("embedding_exports")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_embedding_export(
+        self, export_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update export record."""
+        response = (
+            self.client.table("embedding_exports")
+            .update(data)
+            .eq("id", export_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
 
 
 # Singleton instance

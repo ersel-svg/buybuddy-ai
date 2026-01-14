@@ -143,74 +143,84 @@ async def handle_runpod_webhook(
 
     # Try to find and update the job
     try:
-        # Find job by runpod_job_id
-        jobs = await db.get_jobs()
-        job = next(
-            (j for j in jobs if j.get("runpod_job_id") == payload.id),
-            None,
-        )
+        # Find job by runpod_job_id (direct indexed query, not list scan)
+        job = await db.get_job_by_runpod_id(payload.id)
 
-        if job:
-            update_data = {"status": job_status}
+        if not job:
+            print(f"          WARNING: Job not found for runpod_job_id {payload.id}")
+            return WebhookResponse(
+                received=True,
+                job_id=payload.id,
+                status=payload.status,
+            )
 
-            if payload.status == "COMPLETED":
-                update_data["progress"] = 100
-                update_data["result"] = payload.output
-                print(f"          Output: {payload.output}")
+        job_config = job.get("config", {})
+        product_id = job_config.get("product_id")
+        video_id = job_config.get("video_id")
 
-                # Check if handler returned an error (RunPod sends COMPLETED even for caught errors)
-                output_status = payload.output.get("status") if payload.output else None
-                if output_status == "error":
-                    # Handler caught an error - reset product status
-                    product_id = payload.output.get("product_id")
-                    if product_id:
-                        try:
-                            await db.update_product(product_id, {"status": "pending"})
-                            print(f"          Product {product_id} status reset to pending (handler error)")
-                        except Exception as pe:
-                            print(f"          Error updating product status: {pe}")
-                    update_data["status"] = "failed"
-                    update_data["error"] = payload.output.get("error", "Unknown error")
-                else:
-                    # Success - update product with metadata from pipeline
-                    await _update_product_from_result(db, payload.output)
+        update_data = {"status": job_status}
 
-            elif payload.status == "FAILED":
-                update_data["error"] = payload.error
-                print(f"          Error: {payload.error}")
+        if payload.status == "COMPLETED":
+            update_data["progress"] = 100
+            update_data["result"] = payload.output
+            print(f"          Output keys: {list(payload.output.keys()) if payload.output else 'None'}")
 
-                # Update product status to failed
-                job_config = job.get("config", {})
-                product_id = job_config.get("product_id")
-                if product_id:
-                    try:
-                        await db.update_product(product_id, {"status": "pending"})
-                        print(f"          Product {product_id} status reset to pending")
-                    except Exception as pe:
-                        print(f"          Error updating product status: {pe}")
+            # Check if handler returned an error (RunPod sends COMPLETED even for caught errors)
+            output_status = payload.output.get("status") if payload.output else None
+            if output_status == "error":
+                # Handler caught an error - reset product and video status
+                update_data["status"] = "failed"
+                update_data["error"] = payload.output.get("error", "Unknown error")
+                await _reset_product_and_video_status(db, product_id, video_id, "pending")
+            else:
+                # Success - update product with metadata from pipeline
+                await _update_product_from_result(db, payload.output)
 
-            elif payload.status == "CANCELLED":
-                # Update product status to pending on cancellation
-                job_config = job.get("config", {})
-                product_id = job_config.get("product_id")
-                if product_id:
-                    try:
-                        await db.update_product(product_id, {"status": "pending"})
-                        print(f"          Product {product_id} status reset to pending")
-                    except Exception as pe:
-                        print(f"          Error updating product status: {pe}")
+        elif payload.status == "FAILED":
+            update_data["error"] = payload.error
+            print(f"          Error: {payload.error}")
+            # Reset product and video status
+            await _reset_product_and_video_status(db, product_id, video_id, "pending")
 
-            await db.update_job(job["id"], update_data)
-            print(f"          Job {job['id']} updated to {job_status}")
+        elif payload.status == "CANCELLED":
+            # Reset product and video status on cancellation
+            await _reset_product_and_video_status(db, product_id, video_id, "pending")
+
+        await db.update_job(job["id"], update_data)
+        print(f"          Job {job['id']} updated to {job_status}")
 
     except Exception as e:
         print(f"          Error updating job: {e}")
+        import traceback
+        traceback.print_exc()
 
     return WebhookResponse(
         received=True,
         job_id=payload.id,
         status=payload.status,
     )
+
+
+async def _reset_product_and_video_status(
+    db: SupabaseService,
+    product_id: str | None,
+    video_id: int | None,
+    status: str,
+) -> None:
+    """Reset product and video status on job failure/cancellation."""
+    if product_id:
+        try:
+            await db.update_product(product_id, {"status": status})
+            print(f"          Product {product_id} status reset to {status}")
+        except Exception as e:
+            print(f"          Error resetting product status: {e}")
+
+    if video_id:
+        try:
+            db.client.table("videos").update({"status": status}).eq("id", video_id).execute()
+            print(f"          Video {video_id} status reset to {status}")
+        except Exception as e:
+            print(f"          Error resetting video status: {e}")
 
 
 async def _update_product_from_result(db: SupabaseService, result: dict) -> None:
@@ -222,6 +232,7 @@ async def _update_product_from_result(db: SupabaseService, result: dict) -> None
 
     The result contains:
     - product_id: UUID of existing product (required)
+    - video_id: ID of the video that was processed
     - barcode: product barcode
     - metadata: Gemini extracted metadata
     - frame_count: number of frames extracted
@@ -232,6 +243,7 @@ async def _update_product_from_result(db: SupabaseService, result: dict) -> None
         return
 
     product_id = result.get("product_id")
+    video_id = result.get("video_id")
     metadata = result.get("metadata", {})
 
     if not product_id:
@@ -257,6 +269,17 @@ async def _update_product_from_result(db: SupabaseService, result: dict) -> None
     try:
         await db.update_product(product_id, product_data)
         print(f"[Webhook] Updated product {product_id} with pipeline results")
+
+        # Also update video status to completed
+        if video_id:
+            try:
+                db.client.table("videos").update({
+                    "status": "completed",
+                    "product_id": product_id,
+                }).eq("id", video_id).execute()
+                print(f"[Webhook] Updated video {video_id} status to completed")
+            except Exception as ve:
+                print(f"[Webhook] Error updating video {video_id}: {ve}")
 
     except Exception as e:
         print(f"[Webhook] Error updating product {product_id}: {e}")

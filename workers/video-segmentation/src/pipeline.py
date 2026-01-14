@@ -9,6 +9,7 @@ import json
 import time
 import re
 import shutil
+import random
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -287,34 +288,69 @@ class ProductPipeline:
         cap.release()
         return frames
 
-    def _extract_metadata(self, video_path: Path) -> dict:
-        """Extract metadata using Gemini."""
-        # Upload video to Gemini
-        video_file = genai.upload_file(path=str(video_path))
+    def _extract_metadata(self, video_path: Path, max_retries: int = 3) -> dict:
+        """Extract metadata using Gemini with rate limit protection."""
+        last_error = None
 
-        # Wait for processing
-        while video_file.state.name == "PROCESSING":
-            time.sleep(2)
-            video_file = genai.get_file(video_file.name)
+        for attempt in range(max_retries):
+            try:
+                # Upload video to Gemini
+                video_file = genai.upload_file(path=str(video_path))
 
-        if video_file.state.name == "FAILED":
-            raise ValueError("Gemini video processing failed")
+                # Wait for processing with timeout
+                wait_count = 0
+                max_wait = 60  # 2 minutes max (60 * 2s)
+                while video_file.state.name == "PROCESSING":
+                    time.sleep(2)
+                    wait_count += 1
+                    if wait_count > max_wait:
+                        raise ValueError("Gemini video processing timeout")
+                    video_file = genai.get_file(video_file.name)
 
-        # Generate metadata
-        prompt = self._get_extraction_prompt()
-        response = self.gemini_model.generate_content([video_file, prompt])
+                if video_file.state.name == "FAILED":
+                    raise ValueError("Gemini video processing failed")
 
-        # Parse JSON response
-        text = response.text.strip()
-        text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"^```\s*", "", text)
-        text = re.sub(r"```\s*$", "", text)
+                # Generate metadata
+                prompt = self._get_extraction_prompt()
+                response = self.gemini_model.generate_content([video_file, prompt])
 
-        try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError as e:
-            print(f"      Warning: JSON parse error: {e}")
-            return {"parse_error": str(e), "raw": text[:500]}
+                # Parse JSON response
+                text = response.text.strip()
+                text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+                text = re.sub(r"^```\s*", "", text)
+                text = re.sub(r"```\s*$", "", text)
+
+                try:
+                    return json.loads(text.strip())
+                except json.JSONDecodeError as e:
+                    print(f"      Warning: JSON parse error: {e}")
+                    return {"parse_error": str(e), "raw": text[:500]}
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Check for rate limit errors
+                if "429" in str(e) or "rate" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                    # Exponential backoff with jitter to prevent thundering herd
+                    base_wait = (attempt + 1) * 30  # 30s, 60s, 90s base
+                    jitter = random.uniform(0, base_wait * 0.5)  # Add 0-50% jitter
+                    wait_time = base_wait + jitter
+                    print(f"      Gemini rate limit hit, waiting {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+
+                # For other errors, shorter retry
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 5
+                    print(f"      Gemini error: {e}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+
+                raise
+
+        # All retries exhausted
+        raise last_error or ValueError("Gemini metadata extraction failed after retries")
 
     def _get_extraction_prompt(self) -> str:
         """Get Gemini extraction prompt."""
@@ -700,9 +736,11 @@ class ProductPipeline:
                             return idx, True
                         except Exception:
                             pass
-                    # Rate limit or server error - wait and retry
+                    # Rate limit or server error - wait and retry with jitter
                     if attempt < max_retries - 1:
-                        time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                        base_wait = 0.5 * (attempt + 1)
+                        jitter = random.uniform(0, base_wait)
+                        time.sleep(base_wait + jitter)
                         continue
             return idx, False
 
@@ -751,9 +789,9 @@ class ProductPipeline:
         # Get URLs (frame records will be synced in _sync_product_and_frames)
         frames_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/"
 
-        # Primary image is the middle frame (best representation)
-        middle_idx = len(frames) // 2
-        primary_image_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/frame_{middle_idx:04d}.png"
+        # Primary image is the first frame (front view of product)
+        # First frame typically shows the product from the front in our videos
+        primary_image_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{folder}/frame_0000.png"
 
         return frames_url, primary_image_url
 

@@ -19,6 +19,15 @@ import type {
   AugmentationRequest,
   ProductIdentifier,
   ProductIdentifierCreate,
+  CutoutImage,
+  CutoutsResponse,
+  CutoutStats,
+  CutoutSyncResponse,
+  EmbeddingModel,
+  EmbeddingJob,
+  EmbeddingExport,
+  CutoutCandidate,
+  ProductCandidatesResponse,
 } from "@/types";
 import { getAuthHeader, clearAuth } from "./auth";
 
@@ -539,6 +548,22 @@ class ApiClient {
     return this.request<Job>(`/api/v1/jobs/${id}/cancel`, { method: "POST" });
   }
 
+  async cancelJobsBatch(params?: {
+    job_ids?: string[];
+    job_type?: string;
+  }): Promise<{ cancelled_count: number; failed_count: number; errors: string[] }> {
+    return this.request("/api/v1/jobs/batch/cancel", {
+      method: "POST",
+      body: params || {},
+    });
+  }
+
+  async getActiveJobsCount(type?: string): Promise<{ count: number }> {
+    return this.request<{ count: number }>("/api/v1/jobs/active/count", {
+      params: type ? { job_type: type } : undefined,
+    });
+  }
+
   // ===========================================
   // Training
   // ===========================================
@@ -700,6 +725,180 @@ class ApiClient {
     return this.request<ResourceLock>(`/api/v1/locks/${lockId}/refresh`, {
       method: "POST",
     });
+  }
+
+  // ===========================================
+  // Cutout Images (Matching System)
+  // ===========================================
+
+  async getCutouts(params?: {
+    page?: number;
+    limit?: number;
+    has_embedding?: boolean;
+    is_matched?: boolean;
+    predicted_upc?: string;
+  }): Promise<CutoutsResponse> {
+    return this.request<CutoutsResponse>("/api/v1/cutouts", { params });
+  }
+
+  async getCutout(id: string): Promise<CutoutImage> {
+    return this.request<CutoutImage>(`/api/v1/cutouts/${id}`);
+  }
+
+  async getCutoutStats(): Promise<CutoutStats> {
+    return this.request<CutoutStats>("/api/v1/cutouts/stats");
+  }
+
+  async syncCutouts(params?: {
+    max_pages?: number;
+    page_size?: number;
+  }): Promise<CutoutSyncResponse> {
+    return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync", {
+      method: "POST",
+      body: params || {},
+    });
+  }
+
+  async matchCutout(
+    cutoutId: string,
+    productId: string,
+    similarity?: number
+  ): Promise<CutoutImage> {
+    return this.request<CutoutImage>(`/api/v1/cutouts/${cutoutId}/match`, {
+      method: "POST",
+      body: { product_id: productId, similarity },
+    });
+  }
+
+  async unmatchCutout(cutoutId: string): Promise<CutoutImage> {
+    return this.request<CutoutImage>(`/api/v1/cutouts/${cutoutId}/unmatch`, {
+      method: "POST",
+    });
+  }
+
+  async deleteCutout(id: string): Promise<void> {
+    await this.request<void>(`/api/v1/cutouts/${id}`, { method: "DELETE" });
+  }
+
+  // ===========================================
+  // Product Matching (New Product-Centric)
+  // ===========================================
+
+  async getProductCandidates(
+    productId: string,
+    params?: { min_similarity?: number; include_matched?: boolean; limit?: number }
+  ): Promise<ProductCandidatesResponse> {
+    return this.request<ProductCandidatesResponse>(
+      `/api/v1/matching/products/${productId}/candidates`,
+      { params }
+    );
+  }
+
+  async bulkMatchCutouts(
+    productId: string,
+    cutoutIds: string[],
+    similarityScores?: number[]
+  ): Promise<{ matched_count: number; images_added: number }> {
+    return this.request(`/api/v1/matching/products/${productId}/match`, {
+      method: "POST",
+      body: {
+        cutout_ids: cutoutIds,
+        similarity_scores: similarityScores,
+      },
+    });
+  }
+
+  async bulkUnmatchCutouts(
+    productId: string,
+    cutoutIds: string[]
+  ): Promise<{ unmatched_count: number }> {
+    return this.request(`/api/v1/matching/products/${productId}/unmatch`, {
+      method: "POST",
+      body: cutoutIds,
+    });
+  }
+
+  // ===========================================
+  // Embedding Models (Matching System)
+  // ===========================================
+
+  async getEmbeddingModels(): Promise<EmbeddingModel[]> {
+    return this.request<EmbeddingModel[]>("/api/v1/embeddings/models");
+  }
+
+  async getEmbeddingModel(id: string): Promise<EmbeddingModel> {
+    return this.request<EmbeddingModel>(`/api/v1/embeddings/models/${id}`);
+  }
+
+  async getActiveEmbeddingModel(): Promise<EmbeddingModel | null> {
+    try {
+      return await this.request<EmbeddingModel>("/api/v1/embeddings/models/active");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async activateEmbeddingModel(modelId: string): Promise<EmbeddingModel> {
+    return this.request<EmbeddingModel>(
+      `/api/v1/embeddings/models/${modelId}/activate`,
+      { method: "POST" }
+    );
+  }
+
+  async deleteEmbeddingModel(modelId: string): Promise<void> {
+    await this.request<void>(`/api/v1/embeddings/models/${modelId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // ===========================================
+  // Embedding Jobs (Matching System)
+  // ===========================================
+
+  async getEmbeddingJobs(status?: string): Promise<EmbeddingJob[]> {
+    return this.request<EmbeddingJob[]>("/api/v1/embeddings/jobs", {
+      params: status ? { status } : undefined,
+    });
+  }
+
+  async getEmbeddingJob(id: string): Promise<EmbeddingJob> {
+    return this.request<EmbeddingJob>(`/api/v1/embeddings/jobs/${id}`);
+  }
+
+  async startEmbeddingJob(params: {
+    model_id: string;
+    job_type: "full" | "incremental";
+    source: "cutouts" | "products" | "both";
+  }): Promise<EmbeddingJob> {
+    return this.request<EmbeddingJob>("/api/v1/embeddings/jobs", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // ===========================================
+  // Embedding Exports (Matching System)
+  // ===========================================
+
+  async getEmbeddingExports(): Promise<EmbeddingExport[]> {
+    return this.request<EmbeddingExport[]>("/api/v1/embeddings/exports");
+  }
+
+  async createEmbeddingExport(params: {
+    model_id: string;
+    format: "json" | "numpy" | "faiss" | "qdrant_snapshot";
+  }): Promise<EmbeddingExport> {
+    return this.request<EmbeddingExport>("/api/v1/embeddings/exports", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async downloadEmbeddingExport(exportId: string): Promise<Blob> {
+    return this.requestBlob(`/api/v1/embeddings/exports/${exportId}/download`);
   }
 }
 

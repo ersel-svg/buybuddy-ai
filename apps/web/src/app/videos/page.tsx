@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -44,6 +44,10 @@ import {
   Video,
   ExternalLink,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 import type { Video as VideoType, Job } from "@/types";
 import {
@@ -58,6 +62,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
+const ITEMS_PER_PAGE = 50;
+
 export default function VideosPage() {
   const queryClient = useQueryClient();
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<number>>(
@@ -66,19 +72,30 @@ export default function VideosPage() {
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [syncLimit, setSyncLimit] = useState<string>("");
   const [syncAll, setSyncAll] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
-  // Fetch videos
+  // Fetch videos with smart polling
   const { data: videos, isLoading: isLoadingVideos } = useQuery({
     queryKey: ["videos"],
     queryFn: () => apiClient.getVideos(),
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const hasProcessing = data?.some((v) => v.status === "processing");
+      return hasProcessing ? 5000 : 30000; // 5s if processing, 30s if idle
+    },
   });
 
-  // Fetch running jobs
+  // Fetch running jobs with smart polling
   const { data: jobs } = useQuery({
     queryKey: ["jobs", "video_processing"],
     queryFn: () => apiClient.getJobs("video_processing"),
-    refetchInterval: 5000, // Refresh every 5 seconds
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const hasActive = data?.some((j) =>
+        ["running", "queued", "pending"].includes(j.status)
+      );
+      return hasActive ? 3000 : 30000; // 3s if active, 30s if idle
+    },
   });
 
   // Sync mutation
@@ -138,6 +155,32 @@ export default function VideosPage() {
     },
   });
 
+  // Cancel single job mutation
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) => apiClient.cancelJob(jobId),
+    onSuccess: () => {
+      toast.success("Job cancelled");
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: () => {
+      toast.error("Failed to cancel job");
+    },
+  });
+
+  // Cancel all processing jobs mutation
+  const cancelAllMutation = useMutation({
+    mutationFn: () => apiClient.cancelJobsBatch({ job_type: "video_processing" }),
+    onSuccess: (result) => {
+      toast.success(`Cancelled ${result.cancelled_count} jobs`);
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: () => {
+      toast.error("Failed to cancel jobs");
+    },
+  });
+
   // Calculate stats
   const stats = {
     pending: videos?.filter((v) => v.status === "pending").length || 0,
@@ -149,6 +192,21 @@ export default function VideosPage() {
   // Get processing videos with their jobs
   const processingVideos = videos?.filter((v) => v.status === "processing") || [];
   const pendingVideos = videos?.filter((v) => v.status === "pending") || [];
+
+  // Pagination for pending videos
+  const totalPages = Math.ceil(pendingVideos.length / ITEMS_PER_PAGE);
+  const paginatedPendingVideos = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    const end = start + ITEMS_PER_PAGE;
+    return pendingVideos.slice(start, end);
+  }, [pendingVideos, currentPage]);
+
+  // Reset page when videos change significantly
+  useMemo(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
 
   // Status icons
   const statusConfig: Record<
@@ -174,12 +232,29 @@ export default function VideosPage() {
   };
 
   // Selection helpers
-  const toggleSelectAll = () => {
-    if (selectedVideoIds.size === pendingVideos.length) {
-      setSelectedVideoIds(new Set());
+  const toggleSelectPage = () => {
+    const pageIds = paginatedPendingVideos.map((v) => v.id);
+    const allPageSelected = pageIds.every((id) => selectedVideoIds.has(id));
+
+    if (allPageSelected) {
+      // Deselect all on current page
+      const newSet = new Set(selectedVideoIds);
+      pageIds.forEach((id) => newSet.delete(id));
+      setSelectedVideoIds(newSet);
     } else {
-      setSelectedVideoIds(new Set(pendingVideos.map((v) => v.id)));
+      // Select all on current page
+      const newSet = new Set(selectedVideoIds);
+      pageIds.forEach((id) => newSet.add(id));
+      setSelectedVideoIds(newSet);
     }
+  };
+
+  const selectAllVideos = () => {
+    setSelectedVideoIds(new Set(pendingVideos.map((v) => v.id)));
+  };
+
+  const deselectAll = () => {
+    setSelectedVideoIds(new Set());
   };
 
   const toggleSelect = (id: number) => {
@@ -191,6 +266,10 @@ export default function VideosPage() {
     }
     setSelectedVideoIds(newSet);
   };
+
+  // Check if all on current page are selected
+  const allPageSelected = paginatedPendingVideos.length > 0 &&
+    paginatedPendingVideos.every((v) => selectedVideoIds.has(v.id));
 
   return (
     <div className="space-y-6">
@@ -275,13 +354,51 @@ export default function VideosPage() {
       {processingVideos.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-              Currently Processing
-            </CardTitle>
-            <CardDescription>
-              Videos being processed by Runpod workers
-            </CardDescription>
+            <div className="flex justify-between items-start">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
+                  Currently Processing ({processingVideos.length})
+                </CardTitle>
+                <CardDescription>
+                  Videos being processed by Runpod workers
+                </CardDescription>
+              </div>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={cancelAllMutation.isPending}
+                  >
+                    {cancelAllMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <XCircle className="h-4 w-4 mr-2" />
+                    )}
+                    Cancel All
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Cancel All Processing Jobs?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will cancel all {processingVideos.length} processing videos
+                      and reset them to pending status. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => cancelAllMutation.mutate()}
+                      className="bg-destructive text-destructive-foreground"
+                    >
+                      Cancel All Jobs
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -293,17 +410,28 @@ export default function VideosPage() {
                 );
                 return (
                   <div key={video.id} className="flex items-center gap-4">
-                    <Loader2 className="h-5 w-5 text-blue-500 animate-spin" />
-                    <div className="flex-1">
-                      <p className="font-medium font-mono">{video.barcode}</p>
+                    <Loader2 className="h-5 w-5 text-blue-500 animate-spin flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium font-mono truncate">{video.barcode}</p>
                       <Progress
                         value={job?.progress || 0}
                         className="h-2 mt-1"
                       />
                     </div>
-                    <span className="text-sm text-gray-500">
+                    <span className="text-sm text-gray-500 w-12 text-right">
                       {job?.progress || 0}%
                     </span>
+                    {job && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => cancelJobMutation.mutate(job.id)}
+                        disabled={cancelJobMutation.isPending}
+                        className="flex-shrink-0"
+                      >
+                        <XCircle className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
                   </div>
                 );
               })}
@@ -315,11 +443,36 @@ export default function VideosPage() {
       {/* Pending Videos */}
       <Card>
         <CardHeader>
-          <CardTitle>Pending Videos</CardTitle>
-          <CardDescription>
-            Videos ready to be processed. Select and click &quot;Process
-            Selected&quot; to start.
-          </CardDescription>
+          <div className="flex justify-between items-start">
+            <div>
+              <CardTitle>Pending Videos</CardTitle>
+              <CardDescription>
+                Videos ready to be processed. Select and click &quot;Process
+                Selected&quot; to start.
+              </CardDescription>
+            </div>
+            {pendingVideos.length > 0 && (
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={selectAllVideos}
+                  disabled={selectedVideoIds.size === pendingVideos.length}
+                >
+                  Select All ({pendingVideos.length})
+                </Button>
+                {selectedVideoIds.size > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={deselectAll}
+                  >
+                    Clear Selection
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {isLoadingVideos ? (
@@ -335,67 +488,123 @@ export default function VideosPage() {
               </p>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12">
-                    <Checkbox
-                      checked={
-                        pendingVideos.length > 0 &&
-                        selectedVideoIds.size === pendingVideos.length
-                      }
-                      onCheckedChange={toggleSelectAll}
-                    />
-                  </TableHead>
-                  <TableHead>Video ID</TableHead>
-                  <TableHead>Barcode</TableHead>
-                  <TableHead>Video URL</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Added</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {pendingVideos.map((video) => (
-                  <TableRow
-                    key={video.id}
-                    className={
-                      selectedVideoIds.has(video.id) ? "bg-blue-50" : ""
-                    }
-                  >
-                    <TableCell>
+            <>
+              {/* Selection info */}
+              {selectedVideoIds.size > 0 && (
+                <div className="mb-4 p-3 bg-blue-50 rounded-lg flex items-center justify-between">
+                  <span className="text-sm text-blue-700">
+                    {selectedVideoIds.size} of {pendingVideos.length} videos selected
+                  </span>
+                </div>
+              )}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12">
                       <Checkbox
-                        checked={selectedVideoIds.has(video.id)}
-                        onCheckedChange={() => toggleSelect(video.id)}
+                        checked={allPageSelected}
+                        onCheckedChange={toggleSelectPage}
                       />
-                    </TableCell>
-                    <TableCell>{video.id}</TableCell>
-                    <TableCell className="font-mono">{video.barcode}</TableCell>
-                    <TableCell>
-                      <a
-                        href={video.video_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline flex items-center gap-1"
-                      >
-                        View Video
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={statusConfig[video.status].color}>
-                        <span className="mr-1">
-                          {statusConfig[video.status].icon}
-                        </span>
-                        {video.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-gray-500 text-sm">
-                      {new Date(video.created_at).toLocaleDateString()}
-                    </TableCell>
+                    </TableHead>
+                    <TableHead>Video ID</TableHead>
+                    <TableHead>Barcode</TableHead>
+                    <TableHead>Video URL</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Added</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {paginatedPendingVideos.map((video) => (
+                    <TableRow
+                      key={video.id}
+                      className={
+                        selectedVideoIds.has(video.id) ? "bg-blue-50" : ""
+                      }
+                    >
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedVideoIds.has(video.id)}
+                          onCheckedChange={() => toggleSelect(video.id)}
+                        />
+                      </TableCell>
+                      <TableCell>{video.id}</TableCell>
+                      <TableCell className="font-mono">{video.barcode}</TableCell>
+                      <TableCell>
+                        <a
+                          href={video.video_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline flex items-center gap-1"
+                        >
+                          View Video
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={statusConfig[video.status].color}>
+                          <span className="mr-1">
+                            {statusConfig[video.status].icon}
+                          </span>
+                          {video.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-gray-500 text-sm">
+                        {new Date(video.created_at).toLocaleDateString()}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                  <div className="text-sm text-gray-500">
+                    Showing {(currentPage - 1) * ITEMS_PER_PAGE + 1} to{" "}
+                    {Math.min(currentPage * ITEMS_PER_PAGE, pendingVideos.length)} of{" "}
+                    {pendingVideos.length} videos
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(1)}
+                      disabled={currentPage === 1}
+                    >
+                      <ChevronsLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <span className="text-sm px-2">
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={currentPage === totalPages}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(totalPages)}
+                      disabled={currentPage === totalPages}
+                    >
+                      <ChevronsRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
