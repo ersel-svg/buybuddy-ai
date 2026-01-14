@@ -202,6 +202,10 @@ class AugmentationConfig:
     HSV_VAL_LIMIT: int = 12
     RGB_SHIFT_LIMIT: int = 8
 
+    # Geometric transform limits (degrees)
+    ROTATION_LIMIT: int = 15  # ±15° default, can go up to ±180° for fallen products
+    SHEAR_LIMIT: int = 10     # ±10° default shear
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'AugmentationConfig':
         """Create config from dictionary (e.g., from API request)."""
@@ -652,19 +656,23 @@ class ProductAugmentor:
     def _get_transforms(self):
         """Get augmentation transforms - 3 different pipelines."""
         h, w = self.config.TARGET_SIZE
+        rot = self.config.ROTATION_LIMIT
+        shear = self.config.SHEAR_LIMIT
 
-        # Light transforms for synthetic
+        # Light transforms for synthetic (use ~30% of configured limits)
+        light_rot = max(3, rot // 3)
+        light_shear = max(3, shear // 3)
         light = A.Compose([
-            A.Affine(shear=(-3, 3), rotate=(-3, 3), p=0.4),
+            A.Affine(shear=(-light_shear, light_shear), rotate=(-light_rot, light_rot), p=0.4),
             mk_Resize(h, w, always_apply=True)
         ], is_check_shapes=False)
 
-        # Heavy transforms for synthetic
+        # Heavy transforms for synthetic (use full configured limits)
         heavy = A.Compose([
             A.Perspective(scale=(0.01, 0.05), p=0.5),
             A.GridDistortion(p=0.2, distort_limit=0.2),
             A.OpticalDistortion(distort_limit=0.2, p=0.2),
-            A.Affine(shear=(-7, 7), rotate=(-7, 7), p=0.5),
+            A.Affine(shear=(-shear, shear), rotate=(-rot, rot), p=0.5),
             A.OneOf([
                 A.MotionBlur(blur_limit=4, p=1),
                 A.GaussianBlur(blur_limit=3, p=1)
@@ -673,10 +681,12 @@ class ProductAugmentor:
             mk_Resize(h, w, always_apply=True)
         ], is_check_shapes=False)
 
-        # Real image transforms
+        # Real image transforms (use ~70% of configured limits)
+        real_rot = max(5, int(rot * 0.7))
+        real_shear = max(5, int(shear * 0.7))
         real = A.Compose([
             A.OneOf([
-                A.Affine(shear=(-5, 5), rotate=(-5, 5), p=0.6),
+                A.Affine(shear=(-real_shear, real_shear), rotate=(-real_rot, real_rot), p=0.6),
                 A.Perspective(scale=(0.01, 0.06), p=0.4),
                 A.GridDistortion(p=0.2, distort_limit=0.2),
                 A.OpticalDistortion(distort_limit=0.2, p=0.2),

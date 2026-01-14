@@ -210,6 +210,10 @@ export interface AugmentationConfig {
   HSV_SAT_LIMIT?: number;
   HSV_VAL_LIMIT?: number;
   RGB_SHIFT_LIMIT?: number;
+
+  // Geometric transform limits (degrees)
+  ROTATION_LIMIT?: number;
+  SHEAR_LIMIT?: number;
 }
 
 export interface AugmentationRequest {
