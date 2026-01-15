@@ -25,6 +25,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY pyproject.toml .
 
+# Debug: verify files are copied
+RUN echo "=== Checking /app/src structure ===" && \
+    ls -la /app/src/ && \
+    echo "=== Checking auth directory ===" && \
+    ls -la /app/src/auth/ && \
+    echo "=== All files copied successfully ==="
+
 # Set Python path and default port
 ENV PYTHONPATH=/app/src
 ENV PORT=8000
