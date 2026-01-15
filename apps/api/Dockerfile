@@ -1,4 +1,5 @@
 # BuyBuddy API - Production Dockerfile
+# Build version: 2026-01-16-v2
 FROM python:3.11-slim
 
 # Set working directory
