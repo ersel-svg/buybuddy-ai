@@ -33,6 +33,12 @@ export interface Product {
   // New fields for multiple identifiers and custom fields
   identifiers_list?: ProductIdentifier[];
   custom_fields?: Record<string, string>;
+  // Frame counts by type (when include_frame_counts=true)
+  frame_counts?: {
+    synthetic: number;
+    real: number;
+    augmented: number;
+  };
 }
 
 export interface PackConfiguration {
@@ -107,6 +113,46 @@ export interface ProductsResponse {
   total: number;
   page: number;
   limit: number;
+}
+
+export interface FilterOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface BooleanFilterCounts {
+  trueCount: number;
+  falseCount: number;
+}
+
+export interface RangeFilterValues {
+  min: number;
+  max: number;
+}
+
+export interface FilterOptionsResponse {
+  status: FilterOption[];
+  category: FilterOption[];
+  brand: FilterOption[];
+  subBrand: FilterOption[];
+  productName: FilterOption[];
+  flavor: FilterOption[];
+  container: FilterOption[];
+  netQuantity: FilterOption[];
+  packType: FilterOption[];
+  country: FilterOption[];
+  claims: FilterOption[];
+  issueTypes: FilterOption[];
+  hasVideo: BooleanFilterCounts;
+  hasImage: BooleanFilterCounts;
+  hasNutrition: BooleanFilterCounts;
+  hasDescription: BooleanFilterCounts;
+  hasPrompt: BooleanFilterCounts;
+  hasIssues: BooleanFilterCounts;
+  frameCount: RangeFilterValues;
+  visibilityScore: RangeFilterValues;
+  totalProducts: number;
 }
 
 // ===========================================
@@ -417,4 +463,139 @@ export interface ResourceLock {
   user_email?: string;
   locked_at: string;
   expires_at: string;
+}
+
+// ===========================================
+// Cutout Image Types (Matching System)
+// ===========================================
+
+export interface CutoutImage {
+  id: string;
+  external_id: number;
+  image_url: string;
+  predicted_upc?: string;
+  qdrant_point_id?: string;
+  embedding_model_id?: string;
+  has_embedding: boolean;
+  matched_product_id?: string;
+  match_similarity?: number;
+  matched_by?: string;
+  matched_at?: string;
+  synced_at: string;
+  created_at: string;
+}
+
+export interface CutoutStats {
+  total: number;
+  with_embedding: number;
+  without_embedding: number;
+  matched: number;
+  unmatched: number;
+}
+
+export interface CutoutSyncResponse {
+  synced_count: number;
+  skipped_count: number;
+  total_fetched: number;
+  highest_external_id?: number;
+  lowest_external_id?: number;
+  stopped_early?: boolean;
+  last_page?: number;
+}
+
+export interface CutoutSyncState {
+  min_synced_external_id?: number;
+  max_synced_external_id?: number;
+  total_synced: number;
+  backfill_completed: boolean;
+  last_sync_new_at?: string;
+  last_backfill_at?: string;
+  last_backfill_page?: number;
+  buybuddy_max_id?: number;
+  estimated_remaining?: number;
+}
+
+export interface CutoutsResponse {
+  items: CutoutImage[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// ===========================================
+// Product Matching Types
+// ===========================================
+
+export type CandidateMatchType = "barcode" | "similarity" | "both";
+
+export interface CutoutCandidate {
+  id: string;
+  external_id: number;
+  image_url: string;
+  predicted_upc?: string;
+  similarity?: number;
+  match_type: CandidateMatchType;
+  has_embedding: boolean;
+  is_matched: boolean;
+}
+
+export interface ProductCandidatesResponse {
+  product: Product;
+  candidates: CutoutCandidate[];
+  barcode_match_count: number;
+  similarity_match_count: number;
+  total_count: number;
+  has_product_embedding: boolean;
+}
+
+// ===========================================
+// Embedding Model Types (Matching System)
+// ===========================================
+
+export type EmbeddingModelType = "dinov2-base" | "dinov2-large" | "custom";
+
+export interface EmbeddingModel {
+  id: string;
+  name: string;
+  model_type: EmbeddingModelType;
+  model_path?: string;
+  checkpoint_url?: string;
+  embedding_dim: number;
+  config?: Record<string, unknown>;
+  qdrant_collection?: string;
+  qdrant_vector_count: number;
+  is_matching_active: boolean;
+  training_job_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EmbeddingJobStatus = "pending" | "running" | "completed" | "failed";
+export type EmbeddingJobType = "full" | "incremental";
+export type EmbeddingSource = "cutouts" | "products" | "both";
+
+export interface EmbeddingJob {
+  id: string;
+  embedding_model_id: string;
+  job_type: EmbeddingJobType;
+  source: EmbeddingSource;
+  status: EmbeddingJobStatus;
+  total_images: number;
+  processed_images: number;
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+}
+
+export type ExportFormat = "json" | "numpy" | "faiss" | "qdrant_snapshot";
+
+export interface EmbeddingExport {
+  id: string;
+  embedding_model_id: string;
+  format: ExportFormat;
+  file_url?: string;
+  vector_count: number;
+  file_size_bytes?: number;
+  created_at: string;
 }

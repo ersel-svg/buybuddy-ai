@@ -56,6 +56,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Trash2,
+  Search,
 } from "lucide-react";
 import type { Video as VideoType, Job } from "@/types";
 import {
@@ -87,6 +88,7 @@ export default function VideosPage() {
   const [maxFrames, setMaxFrames] = useState<number | null>(null);
   const [geminiModel, setGeminiModel] = useState<string>("gemini-2.0-flash");
   const [processModalOpen, setProcessModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Fetch videos with smart polling
   const { data: videos, isLoading: isLoadingVideos } = useQuery({
@@ -268,7 +270,17 @@ export default function VideosPage() {
 
   // Get processing videos with their jobs
   const processingVideos = videos?.filter((v) => v.status === "processing") || [];
-  const pendingVideos = videos?.filter((v) => v.status === "pending") || [];
+  const pendingVideos = useMemo(() => {
+    const pending = videos?.filter((v) => v.status === "pending") || [];
+    if (!searchQuery.trim()) return pending;
+
+    const query = searchQuery.toLowerCase().trim();
+    return pending.filter(
+      (v) =>
+        v.barcode?.toLowerCase().includes(query) ||
+        v.id.toString().includes(query)
+    );
+  }, [videos, searchQuery]);
 
   // Pagination for processing videos
   const processingTotalPages = Math.ceil(processingVideos.length / PROCESSING_ITEMS_PER_PAGE);
@@ -518,14 +530,14 @@ export default function VideosPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {paginatedProcessingVideos.map((video) => {
+              {paginatedProcessingVideos.map((video, index) => {
                 const job = jobs?.find(
                   (j) =>
                     j.type === "video_processing" &&
                     j.config?.video_id === video.id
                 );
                 return (
-                  <div key={video.id} className="flex items-center gap-4">
+                  <div key={`processing-${video.id}-${index}`} className="flex items-center gap-4">
                     <Loader2 className="h-5 w-5 text-blue-500 animate-spin flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="font-medium font-mono truncate">{video.barcode}</p>
@@ -615,27 +627,43 @@ export default function VideosPage() {
                 Selected&quot; to start.
               </CardDescription>
             </div>
-            {pendingVideos.length > 0 && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={selectAllVideos}
-                  disabled={selectedVideoIds.size === pendingVideos.length}
-                >
-                  Select All ({pendingVideos.length})
-                </Button>
-                {selectedVideoIds.size > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={deselectAll}
-                  >
-                    Clear Selection
-                  </Button>
-                )}
+            <div className="flex gap-2 items-center">
+              {/* Search Input */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  type="text"
+                  placeholder="Search barcode or ID..."
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentPage(1); // Reset to first page on search
+                  }}
+                  className="pl-9 w-[200px]"
+                />
               </div>
-            )}
+              {pendingVideos.length > 0 && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={selectAllVideos}
+                    disabled={selectedVideoIds.size === pendingVideos.length}
+                  >
+                    Select All ({pendingVideos.length})
+                  </Button>
+                  {selectedVideoIds.size > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={deselectAll}
+                    >
+                      Clear Selection
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -646,10 +674,21 @@ export default function VideosPage() {
           ) : pendingVideos.length === 0 ? (
             <div className="text-center py-8">
               <Video className="h-12 w-12 mx-auto text-gray-300 mb-2" />
-              <p className="text-gray-500">No pending videos</p>
-              <p className="text-gray-400 text-sm">
-                Click &quot;Sync from Buybuddy&quot; to fetch new videos
-              </p>
+              {searchQuery ? (
+                <>
+                  <p className="text-gray-500">No videos found for &quot;{searchQuery}&quot;</p>
+                  <p className="text-gray-400 text-sm">
+                    Try a different barcode or video ID
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-gray-500">No pending videos</p>
+                  <p className="text-gray-400 text-sm">
+                    Click &quot;Sync from Buybuddy&quot; to fetch new videos
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             <>
@@ -679,9 +718,9 @@ export default function VideosPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paginatedPendingVideos.map((video) => (
+                  {paginatedPendingVideos.map((video, index) => (
                     <TableRow
-                      key={video.id}
+                      key={`pending-${video.id}-${index}`}
                       className={
                         selectedVideoIds.has(video.id) ? "bg-blue-50" : ""
                       }
@@ -798,8 +837,8 @@ export default function VideosPage() {
                 {videos
                   ?.filter((v) => v.status === "completed")
                   .slice(0, 10)
-                  .map((video) => (
-                    <TableRow key={video.id}>
+                  .map((video, index) => (
+                    <TableRow key={`completed-${video.id}-${index}`}>
                       <TableCell>{video.id}</TableCell>
                       <TableCell className="font-mono">
                         {video.barcode}

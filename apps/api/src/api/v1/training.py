@@ -8,8 +8,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.supabase import SupabaseService, supabase_service
+from auth.dependencies import get_current_user
 
-router = APIRouter()
+# Router with authentication required for all endpoints
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ===========================================

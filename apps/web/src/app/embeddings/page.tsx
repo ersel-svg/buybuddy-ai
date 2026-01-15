@@ -12,9 +12,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -22,6 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -32,97 +39,131 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  Plus,
-  Layers,
-  RefreshCw,
+  Play,
   Loader2,
-  MoreHorizontal,
-  Trash2,
-  Database,
+  RefreshCw,
+  Layers,
+  CheckCircle,
+  Clock,
+  XCircle,
+  AlertCircle,
+  ImageIcon,
+  Package,
 } from "lucide-react";
-import type { EmbeddingIndex } from "@/types";
+import type { EmbeddingJob, EmbeddingModel } from "@/types";
 
 export default function EmbeddingsPage() {
   const queryClient = useQueryClient();
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [indexToDelete, setIndexToDelete] = useState<EmbeddingIndex | null>(
-    null
-  );
-  const [newIndex, setNewIndex] = useState({ name: "", model_id: "" });
+  const [isStartJobOpen, setIsStartJobOpen] = useState(false);
+  const [jobSource, setJobSource] = useState<"cutouts" | "products" | "both">("both");
+  const [jobType, setJobType] = useState<"full" | "incremental">("incremental");
 
-  // Fetch embedding indexes
+  // Fetch cutout stats for progress
+  const { data: cutoutStats } = useQuery({
+    queryKey: ["cutout-stats"],
+    queryFn: () => apiClient.getCutoutStats(),
+  });
+
+  // Fetch embedding models
+  const { data: models, isLoading: modelsLoading } = useQuery({
+    queryKey: ["embedding-models"],
+    queryFn: () => apiClient.getEmbeddingModels(),
+  });
+
+  // Fetch active model
+  const { data: activeModel } = useQuery({
+    queryKey: ["active-embedding-model"],
+    queryFn: () => apiClient.getActiveEmbeddingModel(),
+  });
+
+  // Fetch embedding jobs
   const {
-    data: indexes,
-    isLoading,
-    refetch,
+    data: jobs,
+    isLoading: jobsLoading,
     isFetching,
   } = useQuery({
-    queryKey: ["embedding-indexes"],
-    queryFn: () => apiClient.getEmbeddingIndexes(),
+    queryKey: ["embedding-jobs"],
+    queryFn: () => apiClient.getEmbeddingJobs(),
+    refetchInterval: 5000, // Poll every 5 seconds for job updates
   });
 
-  // Fetch available models
-  const { data: models } = useQuery({
-    queryKey: ["training-models"],
-    queryFn: () => apiClient.getTrainingModels(),
-  });
-
-  // Create index mutation
-  const createMutation = useMutation({
-    mutationFn: (data: { name: string; model_id: string }) =>
-      apiClient.createEmbeddingIndex(data.name, data.model_id),
+  // Start job mutation
+  const startJobMutation = useMutation({
+    mutationFn: (params: { model_id: string; job_type: "full" | "incremental"; source: "cutouts" | "products" | "both" }) =>
+      apiClient.startEmbeddingJob(params),
     onSuccess: () => {
-      toast.success("Index created");
-      queryClient.invalidateQueries({ queryKey: ["embedding-indexes"] });
-      setIsCreateOpen(false);
-      setNewIndex({ name: "", model_id: "" });
+      toast.success("Embedding extraction job started");
+      queryClient.invalidateQueries({ queryKey: ["embedding-jobs"] });
+      setIsStartJobOpen(false);
     },
-    onError: () => {
-      toast.error("Failed to create index");
+    onError: (error) => {
+      toast.error(`Failed to start job: ${error.message}`);
     },
   });
 
-  // Delete index mutation (placeholder - would need API method)
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      // API method would go here
-      throw new Error("Not implemented");
-    },
+  // Activate model mutation
+  const activateModelMutation = useMutation({
+    mutationFn: (modelId: string) => apiClient.activateEmbeddingModel(modelId),
     onSuccess: () => {
-      toast.success("Index deleted");
-      queryClient.invalidateQueries({ queryKey: ["embedding-indexes"] });
-      setDeleteDialogOpen(false);
-      setIndexToDelete(null);
+      toast.success("Model activated");
+      queryClient.invalidateQueries({ queryKey: ["embedding-models"] });
+      queryClient.invalidateQueries({ queryKey: ["active-embedding-model"] });
     },
-    onError: () => {
-      toast.error("Failed to delete index");
+    onError: (error) => {
+      toast.error(`Failed to activate model: ${error.message}`);
     },
   });
+
+  const getJobStatusBadge = (status: string) => {
+    switch (status) {
+      case "completed":
+        return (
+          <Badge variant="default" className="bg-green-600">
+            <CheckCircle className="h-3 w-3 mr-1" />
+            Completed
+          </Badge>
+        );
+      case "running":
+        return (
+          <Badge variant="default" className="bg-blue-600">
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Running
+          </Badge>
+        );
+      case "pending":
+        return (
+          <Badge variant="secondary">
+            <Clock className="h-3 w-3 mr-1" />
+            Pending
+          </Badge>
+        );
+      case "failed":
+        return (
+          <Badge variant="destructive">
+            <XCircle className="h-3 w-3 mr-1" />
+            Failed
+          </Badge>
+        );
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const getSourceIcon = (source: string) => {
+    switch (source) {
+      case "cutouts":
+        return <ImageIcon className="h-4 w-4" />;
+      case "products":
+        return <Package className="h-4 w-4" />;
+      default:
+        return <Layers className="h-4 w-4" />;
+    }
+  };
+
+  // Calculate product embedding coverage (would need API endpoint)
+  const cutoutCoverage = cutoutStats
+    ? Math.round((cutoutStats.with_embedding / cutoutStats.total) * 100) || 0
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -130,92 +171,84 @@ export default function EmbeddingsPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Embeddings</h1>
-          <p className="text-gray-500">
-            Manage FAISS indexes for product matching
+          <p className="text-muted-foreground">
+            Extract DINOv2 embeddings for similarity matching
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
-            size="icon"
-            onClick={() => refetch()}
+            onClick={() => {
+              queryClient.invalidateQueries({ queryKey: ["embedding-jobs"] });
+              queryClient.invalidateQueries({ queryKey: ["cutout-stats"] });
+            }}
             disabled={isFetching}
           >
-            <RefreshCw
-              className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`}
-            />
+            <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
           </Button>
-          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+          <Dialog open={isStartJobOpen} onOpenChange={setIsStartJobOpen}>
             <DialogTrigger asChild>
-              <Button>
-                <Plus className="h-4 w-4 mr-2" />
-                New Index
+              <Button disabled={!activeModel}>
+                <Play className="h-4 w-4 mr-2" />
+                Start Extraction
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Embedding Index</DialogTitle>
+                <DialogTitle>Start Embedding Extraction</DialogTitle>
                 <DialogDescription>
-                  Create a new FAISS index using a trained model
+                  Extract embeddings using the active model ({activeModel?.name || "none"})
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
-                  <Label htmlFor="name">Index Name</Label>
-                  <Input
-                    id="name"
-                    value={newIndex.name}
-                    onChange={(e) =>
-                      setNewIndex({ ...newIndex, name: e.target.value })
-                    }
-                    placeholder="e.g., Beverages Index v1"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Model</Label>
-                  <Select
-                    value={newIndex.model_id}
-                    onValueChange={(value) =>
-                      setNewIndex({ ...newIndex, model_id: value })
-                    }
-                  >
+                  <label className="text-sm font-medium">Source</label>
+                  <Select value={jobSource} onValueChange={(v: "cutouts" | "products" | "both") => setJobSource(v)}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select a trained model..." />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {models?.map((model) => (
-                        <SelectItem key={model.id} value={model.id}>
-                          {model.name} (v{model.version})
-                          {model.is_active && (
-                            <Badge className="ml-2" variant="secondary">
-                              Active
-                            </Badge>
-                          )}
-                        </SelectItem>
-                      ))}
+                      <SelectItem value="cutouts">Cutouts only</SelectItem>
+                      <SelectItem value="products">Products only</SelectItem>
+                      <SelectItem value="both">Both (Cutouts + Products)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Job Type</label>
+                  <Select value={jobType} onValueChange={(v: "full" | "incremental") => setJobType(v)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="incremental">Incremental (new items only)</SelectItem>
+                      <SelectItem value="full">Full (re-extract all)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
               <DialogFooter>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsCreateOpen(false)}
-                >
+                <Button variant="outline" onClick={() => setIsStartJobOpen(false)}>
                   Cancel
                 </Button>
                 <Button
-                  onClick={() => createMutation.mutate(newIndex)}
-                  disabled={
-                    !newIndex.name.trim() ||
-                    !newIndex.model_id ||
-                    createMutation.isPending
+                  onClick={() =>
+                    activeModel &&
+                    startJobMutation.mutate({
+                      model_id: activeModel.id,
+                      job_type: jobType,
+                      source: jobSource,
+                    })
                   }
+                  disabled={startJobMutation.isPending || !activeModel}
                 >
-                  {createMutation.isPending ? (
+                  {startJobMutation.isPending ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : null}
-                  Create
+                  ) : (
+                    <Play className="h-4 w-4 mr-2" />
+                  )}
+                  Start
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -223,122 +256,101 @@ export default function EmbeddingsPage() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats Cards */}
       <div className="grid grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-gray-500">
-              Total Indexes
-            </CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Active Model</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold">{indexes?.length || 0}</p>
+            {activeModel ? (
+              <div>
+                <p className="text-lg font-bold">{activeModel.name}</p>
+                <p className="text-sm text-muted-foreground">{activeModel.embedding_dim}d vectors</p>
+              </div>
+            ) : (
+              <p className="text-lg font-bold text-orange-600">No active model</p>
+            )}
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-gray-500">
-              Total Vectors
-            </CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Cutout Coverage</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{cutoutCoverage}%</p>
+            <Progress value={cutoutCoverage} className="h-2 mt-2" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Running Jobs</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold">
-              {indexes?.reduce((sum, idx) => sum + idx.vector_count, 0) || 0}
+              {jobs?.filter((j) => j.status === "running").length || 0}
             </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-gray-500">
-              Available Models
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{models?.length || 0}</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Indexes Table */}
+      {/* Models Section */}
       <Card>
         <CardHeader>
-          <CardTitle>Embedding Indexes</CardTitle>
+          <CardTitle>Embedding Models</CardTitle>
           <CardDescription>
-            FAISS indexes for similarity search
+            DINOv2 models available for embedding extraction
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {modelsLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
-          ) : indexes?.length === 0 ? (
+          ) : models?.length === 0 ? (
             <div className="text-center py-8">
-              <Layers className="h-12 w-12 mx-auto text-gray-300 mb-2" />
-              <p className="text-gray-500">No embedding indexes yet</p>
-              <p className="text-gray-400 text-sm mt-1">
-                Train a model first, then create an index
+              <Layers className="h-12 w-12 mx-auto text-muted-foreground mb-2" />
+              <p className="text-muted-foreground">No embedding models available</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Models are auto-registered when first used
               </p>
-              <Button
-                className="mt-4"
-                variant="outline"
-                onClick={() => setIsCreateOpen(true)}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Create Index
-              </Button>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Model</TableHead>
-                  <TableHead>Vectors</TableHead>
-                  <TableHead>Index Path</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="w-12"></TableHead>
+                  <TableHead>Dimension</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {indexes?.map((index: EmbeddingIndex) => (
-                  <TableRow key={index.id}>
-                    <TableCell className="font-medium">{index.name}</TableCell>
+                {models?.map((model: EmbeddingModel) => (
+                  <TableRow key={model.id}>
+                    <TableCell className="font-medium">{model.name}</TableCell>
+                    <TableCell>{model.embedding_dim}d</TableCell>
                     <TableCell>
-                      {index.model_name || index.model_artifact_id}
+                      {model.is_matching_active ? (
+                        <Badge variant="default" className="bg-green-600">
+                          <CheckCircle className="h-3 w-3 mr-1" />
+                          Active
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary">Inactive</Badge>
+                      )}
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">
-                        <Database className="h-3 w-3 mr-1" />
-                        {index.vector_count.toLocaleString()}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-gray-500 font-mono text-sm">
-                      {index.index_path}
-                    </TableCell>
-                    <TableCell className="text-gray-500 text-sm">
-                      {new Date(index.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            className="text-red-600"
-                            onClick={() => {
-                              setIndexToDelete(index);
-                              setDeleteDialogOpen(true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                    <TableCell className="text-right">
+                      {!model.is_matching_active && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => activateModelMutation.mutate(model.id)}
+                          disabled={activateModelMutation.isPending}
+                        >
+                          Activate
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -348,33 +360,77 @@ export default function EmbeddingsPage() {
         </CardContent>
       </Card>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Index</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &quot;{indexToDelete?.name}&quot;?
-              This will remove the index and all its vectors.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700"
-              onClick={() =>
-                indexToDelete && deleteMutation.mutate(indexToDelete.id)
-              }
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : null}
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Jobs Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Extraction Jobs</CardTitle>
+          <CardDescription>
+            Recent embedding extraction jobs and their status
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {jobsLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : jobs?.length === 0 ? (
+            <div className="text-center py-8">
+              <AlertCircle className="h-12 w-12 mx-auto text-muted-foreground mb-2" />
+              <p className="text-muted-foreground">No extraction jobs yet</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Start a job to extract embeddings from cutouts or products
+              </p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Progress</TableHead>
+                  <TableHead>Started</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {jobs?.map((job: EmbeddingJob) => (
+                  <TableRow key={job.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {getSourceIcon(job.source)}
+                        <span className="capitalize">{job.source}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="capitalize">
+                        {job.job_type}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{getJobStatusBadge(job.status)}</TableCell>
+                    <TableCell>
+                      {job.status === "running" && job.total_images > 0 ? (
+                        <div className="w-32">
+                          <Progress value={(job.processed_images / job.total_images) * 100} className="h-2" />
+                          <span className="text-xs text-muted-foreground">
+                            {Math.round((job.processed_images / job.total_images) * 100)}%
+                          </span>
+                        </div>
+                      ) : job.status === "completed" ? (
+                        <span className="text-green-600">100%</span>
+                      ) : (
+                        "-"
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {new Date(job.created_at).toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

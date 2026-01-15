@@ -1,0 +1,42 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+// Routes that don't require authentication
+const publicRoutes = ["/login"];
+
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Check if route is public
+  const isPublicRoute = publicRoutes.some((route) =>
+    pathname.startsWith(route)
+  );
+
+  // Get token from cookie (middleware can't access localStorage)
+  // We'll check auth client-side, middleware just handles initial redirect
+  const token = request.cookies.get("buybuddy_auth_token")?.value;
+
+  // If accessing a protected route without a token cookie, check client-side
+  // The actual auth check happens in the API client which redirects to /login
+  // This middleware is optional and provides an extra layer
+
+  // If on login page with a token, redirect to home
+  if (pathname === "/login" && token) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - public folder
+     */
+    "/((?!_next/static|_next/image|favicon.ico|.*\\..*|api).*)",
+  ],
+};

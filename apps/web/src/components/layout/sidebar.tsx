@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
@@ -15,6 +16,8 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  ImageIcon,
+  Triangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -25,46 +28,72 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const navigation = [
+// Navigation groups for different workflows
+const navigationGroups = [
   {
-    name: "Dashboard",
-    href: "/",
-    icon: LayoutDashboard,
+    title: "Overview",
+    items: [
+      {
+        name: "Dashboard",
+        href: "/",
+        icon: LayoutDashboard,
+      },
+    ],
   },
   {
-    name: "Videos",
-    href: "/videos",
-    icon: Video,
+    title: "Real-Synthetic Matching",
+    items: [
+      {
+        name: "Videos",
+        href: "/videos",
+        icon: Video,
+      },
+      {
+        name: "Products",
+        href: "/products",
+        icon: Package,
+      },
+      {
+        name: "Cutouts",
+        href: "/cutouts",
+        icon: ImageIcon,
+      },
+      {
+        name: "Embeddings",
+        href: "/embeddings",
+        icon: Layers,
+      },
+      {
+        name: "Matching",
+        href: "/matching",
+        icon: GitCompare,
+      },
+    ],
   },
   {
-    name: "Products",
-    href: "/products",
-    icon: Package,
-  },
-  {
-    name: "Datasets",
-    href: "/datasets",
-    icon: Database,
-  },
-  {
-    name: "Matching",
-    href: "/matching",
-    icon: GitCompare,
-  },
-  {
-    name: "Augmentation",
-    href: "/augmentation",
-    icon: Sparkles,
-  },
-  {
-    name: "Training",
-    href: "/training",
-    icon: Brain,
-  },
-  {
-    name: "Embeddings",
-    href: "/embeddings",
-    icon: Layers,
+    title: "Model Training",
+    items: [
+      {
+        name: "Datasets",
+        href: "/datasets",
+        icon: Database,
+      },
+      {
+        name: "Triplets",
+        href: "/triplets",
+        icon: Triangle,
+      },
+      {
+        name: "Training",
+        href: "/training",
+        icon: Brain,
+      },
+      {
+        name: "Augmentation",
+        href: "/augmentation",
+        icon: Sparkles,
+      },
+    ],
   },
 ];
 
@@ -82,50 +111,68 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex items-center h-16 px-4 border-b">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-              <Package className="w-5 h-5 text-primary-foreground" />
-            </div>
-            {!collapsed && (
-              <span className="font-semibold text-lg">BuyBuddy AI</span>
+          <Link href="/" className="flex items-center">
+            {collapsed ? (
+              <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+                <span className="text-primary-foreground font-bold text-sm">B</span>
+              </div>
+            ) : (
+              <Image
+                src="/logo.svg"
+                alt="BuyBuddy"
+                width={140}
+                height={26}
+                priority
+              />
             )}
           </Link>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
-          {navigation.map((item) => {
-            const isActive =
-              pathname === item.href ||
-              (item.href !== "/" && pathname.startsWith(item.href));
+        <nav className="flex-1 p-2 space-y-4 overflow-y-auto">
+          {navigationGroups.map((group) => (
+            <div key={group.title}>
+              {!collapsed && (
+                <h3 className="px-3 mb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  {group.title}
+                </h3>
+              )}
+              <div className="space-y-1">
+                {group.items.map((item) => {
+                  const isActive =
+                    pathname === item.href ||
+                    (item.href !== "/" && pathname.startsWith(item.href));
 
-            const NavLink = (
-              <Link
-                key={item.name}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                )}
-              >
-                <item.icon className="w-5 h-5 flex-shrink-0" />
-                {!collapsed && <span>{item.name}</span>}
-              </Link>
-            );
+                  const NavLink = (
+                    <Link
+                      key={item.name}
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                        isActive
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                      )}
+                    >
+                      <item.icon className="w-5 h-5 flex-shrink-0" />
+                      {!collapsed && <span>{item.name}</span>}
+                    </Link>
+                  );
 
-            if (collapsed) {
-              return (
-                <Tooltip key={item.name}>
-                  <TooltipTrigger asChild>{NavLink}</TooltipTrigger>
-                  <TooltipContent side="right">{item.name}</TooltipContent>
-                </Tooltip>
-              );
-            }
+                  if (collapsed) {
+                    return (
+                      <Tooltip key={item.name}>
+                        <TooltipTrigger asChild>{NavLink}</TooltipTrigger>
+                        <TooltipContent side="right">{item.name}</TooltipContent>
+                      </Tooltip>
+                    );
+                  }
 
-            return NavLink;
-          })}
+                  return NavLink;
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Footer */}

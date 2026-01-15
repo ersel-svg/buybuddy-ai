@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Sun, Moon, Bell, User, LogOut, RefreshCw, XCircle, Loader2 } from "lucide-react";
+import { Sun, Moon, User, LogOut, RefreshCw, XCircle, Loader2 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { logout, getUser } from "@/lib/auth";
@@ -109,19 +109,6 @@ export function Header() {
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-
-        {/* Notifications */}
-        <Button variant="ghost" size="icon" className="relative">
-          <Bell className="w-5 h-5" />
-          {activeJobsCount > 0 && (
-            <Badge
-              variant="destructive"
-              className="absolute -top-1 -right-1 h-5 w-5 p-0 flex items-center justify-center text-xs"
-            >
-              {activeJobsCount > 99 ? "99+" : activeJobsCount}
-            </Badge>
-          )}
-        </Button>
 
         {/* Theme Toggle */}
         <DropdownMenu>

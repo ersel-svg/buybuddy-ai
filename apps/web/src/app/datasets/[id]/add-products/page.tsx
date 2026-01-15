@@ -176,7 +176,7 @@ export default function AddProductsPage() {
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col">
       {/* Header */}
-      <div className="border-b bg-white px-6 py-4 flex items-center justify-between shrink-0">
+      <div className="border-b bg-card px-6 py-4 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
           <Link href={`/datasets/${id}`}>
             <Button variant="ghost" size="icon">
@@ -329,7 +329,7 @@ export default function AddProductsPage() {
           <Separator />
 
           {/* Stats */}
-          <div className="bg-white rounded-lg p-4 border space-y-2">
+          <div className="bg-card rounded-lg p-4 border space-y-2">
             <p className="text-xs text-gray-500">
               Total available: <span className="font-semibold text-gray-900">{productsNotInDataset.length}</span>
             </p>
@@ -345,7 +345,7 @@ export default function AddProductsPage() {
         {/* Products Grid */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Action Bar */}
-          <div className="px-6 py-3 border-b bg-white flex items-center justify-between shrink-0">
+          <div className="px-6 py-3 border-b bg-card flex items-center justify-between shrink-0">
             <div className="flex items-center gap-3">
               <Button
                 variant="outline"
@@ -416,7 +416,7 @@ export default function AddProductsPage() {
                     className={`relative p-3 border rounded-xl cursor-pointer transition-all hover:shadow-lg ${
                       selectedProducts.has(product.id)
                         ? "border-blue-500 bg-blue-50 ring-2 ring-blue-500"
-                        : "bg-white border-gray-200 hover:border-gray-300"
+                        : "bg-card border-gray-200 hover:border-gray-300"
                     }`}
                     onClick={() => toggleProduct(product.id)}
                   >

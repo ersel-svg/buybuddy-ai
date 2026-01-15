@@ -36,8 +36,14 @@ import {
   X,
   Pencil,
   Package,
+  Trash2,
+  CheckSquare,
+  Square,
+  Star,
 } from "lucide-react";
-import type { Product, ProductStatus } from "@/types";
+import type { Product, ProductStatus, ProductIdentifierCreate } from "@/types";
+import { IdentifiersEditor } from "@/components/products/identifiers-editor";
+import { CustomFieldsEditor } from "@/components/products/custom-fields-editor";
 
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +55,11 @@ export default function ProductDetailPage() {
   );
   const [editData, setEditData] = useState<Partial<Product>>({});
   const [selectedFrame, setSelectedFrame] = useState<string | null>(null);
+  const [frameTab, setFrameTab] = useState<"synthetic" | "real" | "augmented">("synthetic");
+  const [selectedFrameIds, setSelectedFrameIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [editIdentifiers, setEditIdentifiers] = useState<ProductIdentifierCreate[]>([]);
+  const [editCustomFields, setEditCustomFields] = useState<Record<string, string>>({});
 
   // Fetch product
   const {
@@ -72,16 +83,29 @@ export default function ProductDetailPage() {
   const updateMutation = useMutation({
     mutationFn: (data: Partial<Product>) =>
       apiClient.updateProduct(id, data, product?.version),
-    onSuccess: () => {
-      toast.success("Product updated");
-      queryClient.invalidateQueries({ queryKey: ["product", id] });
-      setIsEditing(false);
-    },
     onError: (error) => {
       if (error instanceof Error && error.message.includes("409")) {
         toast.error("Product was modified by another user. Please refresh.");
       } else {
         toast.error("Failed to update product");
+      }
+    },
+  });
+
+  // Set primary image mutation
+  const setPrimaryMutation = useMutation({
+    mutationFn: (imageUrl: string) =>
+      apiClient.setPrimaryImage(id, imageUrl, product?.version),
+    onSuccess: () => {
+      toast.success("Primary image updated");
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: (error) => {
+      if (error instanceof Error && error.message.includes("409")) {
+        toast.error("Product was modified. Please refresh and try again.");
+      } else {
+        toast.error("Failed to set primary image");
       }
     },
   });
@@ -116,8 +140,31 @@ export default function ProductDetailPage() {
     );
   }
 
-  const handleSave = () => {
-    updateMutation.mutate(editData);
+  const handleSave = async () => {
+    try {
+      // Save product data
+      await updateMutation.mutateAsync(editData);
+
+      // Save identifiers
+      await apiClient.updateProductIdentifiers(id, editIdentifiers);
+
+      // Save custom fields
+      await apiClient.updateCustomFields(id, editCustomFields);
+
+      // Refetch to get updated data
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+
+      // Reset edit state
+      setIsEditing(false);
+      setEditData({});
+      setEditIdentifiers([]);
+      setEditCustomFields({});
+
+      toast.success("Product saved successfully");
+    } catch (error) {
+      // Error handling is done in mutation onError
+      console.error("Save error:", error);
+    }
   };
 
   const handleDownloadFrames = async () => {
@@ -158,7 +205,11 @@ export default function ProductDetailPage() {
               {product.brand_name || "Unknown Brand"}{" "}
               {product.product_name || "Unknown Product"}
             </h1>
-            <p className="text-gray-500 font-mono">{product.barcode}</p>
+            <p className="text-gray-500 font-mono">
+              {product.identifiers_list?.find((i) => i.is_primary)?.identifier_value ||
+                product.barcode ||
+                "No identifier"}
+            </p>
           </div>
           <Badge className={statusColors[product.status]}>
             {product.status.replace("_", " ")}
@@ -176,6 +227,8 @@ export default function ProductDetailPage() {
                 onClick={() => {
                   setIsEditing(false);
                   setEditData({});
+                  setEditIdentifiers([]);
+                  setEditCustomFields({});
                 }}
               >
                 <X className="h-4 w-4 mr-2" />
@@ -197,6 +250,16 @@ export default function ProductDetailPage() {
             <Button
               onClick={() => {
                 setEditData(product);
+                // Initialize identifier and custom field state from product
+                setEditIdentifiers(
+                  (product.identifiers_list || []).map((i) => ({
+                    identifier_type: i.identifier_type,
+                    identifier_value: i.identifier_value,
+                    custom_label: i.custom_label,
+                    is_primary: i.is_primary,
+                  }))
+                );
+                setEditCustomFields(product.custom_fields || {});
                 setIsEditing(true);
               }}
             >
@@ -307,7 +370,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.brand_name || "-"}
                         </p>
                       )}
@@ -325,7 +388,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.sub_brand || "-"}
                         </p>
                       )}
@@ -343,7 +406,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.product_name || "-"}
                         </p>
                       )}
@@ -361,7 +424,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.variant_flavor || "-"}
                         </p>
                       )}
@@ -379,7 +442,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.category || "-"}
                         </p>
                       )}
@@ -397,7 +460,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.container_type || "-"}
                         </p>
                       )}
@@ -415,7 +478,7 @@ export default function ProductDetailPage() {
                           }
                         />
                       ) : (
-                        <p className="p-2 bg-gray-50 rounded">
+                        <p className="p-2 bg-muted rounded">
                           {product.net_quantity || "-"}
                         </p>
                       )}
@@ -455,6 +518,129 @@ export default function ProductDetailPage() {
                     </div>
                   </div>
 
+                  {/* Second Row of Fields */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Manufacturer Country</Label>
+                      {isEditing ? (
+                        <Input
+                          value={editData.manufacturer_country || ""}
+                          onChange={(e) =>
+                            setEditData({
+                              ...editData,
+                              manufacturer_country: e.target.value,
+                            })
+                          }
+                        />
+                      ) : (
+                        <p className="p-2 bg-muted rounded">
+                          {product.manufacturer_country || "-"}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Visibility Score</Label>
+                      {isEditing ? (
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={editData.visibility_score ?? ""}
+                          onChange={(e) =>
+                            setEditData({
+                              ...editData,
+                              visibility_score: e.target.value ? parseInt(e.target.value) : undefined,
+                            })
+                          }
+                        />
+                      ) : (
+                        <p className="p-2 bg-muted rounded">
+                          {product.visibility_score !== undefined ? `${product.visibility_score}%` : "-"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Pack Configuration */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Pack Type</Label>
+                      {isEditing ? (
+                        <Select
+                          value={editData.pack_configuration?.type || ""}
+                          onValueChange={(value) =>
+                            setEditData({
+                              ...editData,
+                              pack_configuration: {
+                                ...editData.pack_configuration,
+                                type: value as "single_unit" | "multipack",
+                                item_count: editData.pack_configuration?.item_count || 1,
+                              },
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="single_unit">Single Unit</SelectItem>
+                            <SelectItem value="multipack">Multipack</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <p className="p-2 bg-muted rounded">
+                          {product.pack_configuration?.type?.replace("_", " ") || "-"}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Item Count</Label>
+                      {isEditing ? (
+                        <Input
+                          type="number"
+                          min={1}
+                          value={editData.pack_configuration?.item_count ?? ""}
+                          onChange={(e) =>
+                            setEditData({
+                              ...editData,
+                              pack_configuration: {
+                                ...editData.pack_configuration,
+                                type: editData.pack_configuration?.type || "single_unit",
+                                item_count: e.target.value ? parseInt(e.target.value) : 1,
+                              },
+                            })
+                          }
+                        />
+                      ) : (
+                        <p className="p-2 bg-muted rounded">
+                          {product.pack_configuration?.item_count || "-"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Marketing Description */}
+                  <div className="space-y-2">
+                    <Label>Marketing Description</Label>
+                    {isEditing ? (
+                      <Textarea
+                        value={editData.marketing_description || ""}
+                        onChange={(e) =>
+                          setEditData({
+                            ...editData,
+                            marketing_description: e.target.value,
+                          })
+                        }
+                        rows={3}
+                        placeholder="Marketing copy or product description..."
+                      />
+                    ) : (
+                      <p className="p-2 bg-muted rounded text-sm">
+                        {product.marketing_description || "-"}
+                      </p>
+                    )}
+                  </div>
+
                   {/* Grounding Prompt */}
                   <div className="space-y-2">
                     <Label>Grounding Prompt (for SAM3 segmentation)</Label>
@@ -470,16 +656,28 @@ export default function ProductDetailPage() {
                         rows={3}
                       />
                     ) : (
-                      <p className="p-2 bg-gray-50 rounded font-mono text-sm">
+                      <p className="p-2 bg-muted rounded font-mono text-sm">
                         {product.grounding_prompt || "-"}
                       </p>
                     )}
                   </div>
 
                   {/* Claims */}
-                  {product.claims && product.claims.length > 0 && (
-                    <div className="space-y-2">
-                      <Label>Claims</Label>
+                  <div className="space-y-2">
+                    <Label>Claims</Label>
+                    {isEditing ? (
+                      <Textarea
+                        value={(editData.claims || []).join(", ")}
+                        onChange={(e) =>
+                          setEditData({
+                            ...editData,
+                            claims: e.target.value.split(",").map((c) => c.trim()).filter(Boolean),
+                          })
+                        }
+                        rows={2}
+                        placeholder="Enter claims separated by commas..."
+                      />
+                    ) : product.claims && product.claims.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
                         {product.claims.map((claim, i) => (
                           <Badge key={i} variant="secondary">
@@ -487,47 +685,264 @@ export default function ProductDetailPage() {
                           </Badge>
                         ))}
                       </div>
+                    ) : (
+                      <p className="p-2 bg-muted rounded text-sm text-gray-500">No claims</p>
+                    )}
+                  </div>
+
+                  {/* Issues Detected */}
+                  {(product.issues_detected && product.issues_detected.length > 0) || isEditing ? (
+                    <div className="space-y-2">
+                      <Label>Issues Detected</Label>
+                      {isEditing ? (
+                        <Textarea
+                          value={(editData.issues_detected || []).join(", ")}
+                          onChange={(e) =>
+                            setEditData({
+                              ...editData,
+                              issues_detected: e.target.value.split(",").map((c) => c.trim()).filter(Boolean),
+                            })
+                          }
+                          rows={2}
+                          placeholder="Enter issues separated by commas..."
+                        />
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {product.issues_detected?.map((issue, i) => (
+                            <Badge key={i} variant="destructive">
+                              {issue}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  ) : null}
                 </CardContent>
               </Card>
+
+              {/* Product Identifiers */}
+              <div className="mt-4">
+                <IdentifiersEditor
+                  identifiers={product.identifiers_list || []}
+                  isEditing={isEditing}
+                  onUpdate={setEditIdentifiers}
+                />
+              </div>
+
+              {/* Custom Fields */}
+              <div className="mt-4">
+                <CustomFieldsEditor
+                  fields={product.custom_fields || {}}
+                  isEditing={isEditing}
+                  onUpdate={setEditCustomFields}
+                />
+              </div>
             </TabsContent>
 
             {/* Frames Tab */}
             <TabsContent value="frames" className="mt-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>Extracted Frames</CardTitle>
-                  <CardDescription>
-                    Synthetic frames segmented using SAM3
-                  </CardDescription>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle>Product Frames</CardTitle>
+                      <CardDescription>
+                        All image types: synthetic, real, and augmented
+                      </CardDescription>
+                    </div>
+                    {selectedFrameIds.size > 0 && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={isDeleting}
+                        onClick={async () => {
+                          const ids = Array.from(selectedFrameIds);
+                          if (ids.some(id => id === null)) {
+                            toast.error("Legacy frames without DB records cannot be deleted");
+                            return;
+                          }
+                          setIsDeleting(true);
+                          try {
+                            await apiClient.deleteProductFrames(id, ids.filter(Boolean) as string[]);
+                            toast.success(`Deleted ${ids.length} frames`);
+                            setSelectedFrameIds(new Set());
+                            queryClient.invalidateQueries({ queryKey: ["product-frames", id] });
+                          } catch {
+                            toast.error("Failed to delete frames");
+                          } finally {
+                            setIsDeleting(false);
+                          }
+                        }}
+                      >
+                        {isDeleting ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4 mr-2" />
+                        )}
+                        Delete {selectedFrameIds.size} selected
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent>
-                  {frames?.frames && frames.frames.length > 0 ? (
-                    <div className="grid grid-cols-6 gap-2">
-                      {frames.frames.map((frame, i) => (
-                        <div
-                          key={i}
-                          className="aspect-square bg-gray-100 rounded overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
-                          onClick={() => setSelectedFrame(frame.url)}
-                        >
-                          <img
-                            src={frame.url}
-                            alt={`Frame ${frame.index}`}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <ImageIcon className="h-12 w-12 mx-auto text-gray-300" />
-                      <p className="text-gray-500 mt-2">No frames extracted</p>
-                      <p className="text-gray-400 text-sm">
-                        Process the video to extract frames
-                      </p>
-                    </div>
-                  )}
+                  {/* Frame Type Tabs */}
+                  <Tabs value={frameTab} onValueChange={(v) => {
+                    setFrameTab(v as typeof frameTab);
+                    setSelectedFrameIds(new Set());
+                  }}>
+                    <TabsList className="mb-4">
+                      <TabsTrigger value="synthetic" className="gap-2">
+                        Synthetic
+                        <Badge variant="secondary" className="ml-1">
+                          {frames?.counts?.synthetic || 0}
+                        </Badge>
+                      </TabsTrigger>
+                      <TabsTrigger value="real" className="gap-2">
+                        Real
+                        <Badge variant="secondary" className="ml-1">
+                          {frames?.counts?.real || 0}
+                        </Badge>
+                      </TabsTrigger>
+                      <TabsTrigger value="augmented" className="gap-2">
+                        Augmented
+                        <Badge variant="secondary" className="ml-1">
+                          {frames?.counts?.augmented || 0}
+                        </Badge>
+                      </TabsTrigger>
+                    </TabsList>
+
+                    {/* Frame Grid */}
+                    {(() => {
+                      const filteredFrames = frames?.frames?.filter(f => f.image_type === frameTab) || [];
+                      const selectableFrames = filteredFrames.filter(f => f.id !== null);
+                      const allSelected = selectableFrames.length > 0 &&
+                        selectableFrames.every(f => selectedFrameIds.has(f.id!));
+
+                      return (
+                        <>
+                          {filteredFrames.length > 0 && selectableFrames.length > 0 && (
+                            <div className="flex items-center gap-2 mb-3">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  if (allSelected) {
+                                    setSelectedFrameIds(new Set());
+                                  } else {
+                                    setSelectedFrameIds(new Set(selectableFrames.map(f => f.id!)));
+                                  }
+                                }}
+                              >
+                                {allSelected ? (
+                                  <CheckSquare className="h-4 w-4 mr-2" />
+                                ) : (
+                                  <Square className="h-4 w-4 mr-2" />
+                                )}
+                                {allSelected ? "Deselect All" : "Select All"}
+                              </Button>
+                              <span className="text-sm text-muted-foreground">
+                                {selectedFrameIds.size} of {selectableFrames.length} selected
+                              </span>
+                            </div>
+                          )}
+
+                          {filteredFrames.length > 0 ? (
+                            <div className="grid grid-cols-6 gap-2">
+                              {filteredFrames.map((frame, i) => {
+                                const isSelected = frame.id ? selectedFrameIds.has(frame.id) : false;
+                                const canSelect = frame.id !== null;
+
+                                return (
+                                  <div
+                                    key={frame.id || i}
+                                    className={`relative aspect-square bg-gray-100 rounded overflow-hidden cursor-pointer transition-all ${
+                                      isSelected ? "ring-2 ring-blue-500" : "hover:ring-2 hover:ring-gray-300"
+                                    }`}
+                                  >
+                                    {/* Selection checkbox */}
+                                    {canSelect && (
+                                      <div
+                                        className="absolute top-1 left-1 z-10"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const newSet = new Set(selectedFrameIds);
+                                          if (isSelected) {
+                                            newSet.delete(frame.id!);
+                                          } else {
+                                            newSet.add(frame.id!);
+                                          }
+                                          setSelectedFrameIds(newSet);
+                                        }}
+                                      >
+                                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
+                                          isSelected ? "bg-blue-500 border-blue-500" : "bg-white/80 border-gray-400"
+                                        }`}>
+                                          {isSelected && <X className="h-3 w-3 text-white" />}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Legacy badge */}
+                                    {!canSelect && (
+                                      <div className="absolute top-1 left-1 z-10">
+                                        <Badge variant="outline" className="text-xs bg-white/80">
+                                          Legacy
+                                        </Badge>
+                                      </div>
+                                    )}
+
+                                    {/* Set as Primary button */}
+                                    <div
+                                      className="absolute top-1 right-1 z-10"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!setPrimaryMutation.isPending) {
+                                          setPrimaryMutation.mutate(frame.url);
+                                        }
+                                      }}
+                                    >
+                                      <div
+                                        className={`w-6 h-6 rounded-full flex items-center justify-center cursor-pointer transition-all ${
+                                          product.primary_image_url === frame.url
+                                            ? "bg-yellow-400 text-yellow-900"
+                                            : "bg-white/80 text-gray-400 hover:bg-yellow-100 hover:text-yellow-600"
+                                        }`}
+                                        title={product.primary_image_url === frame.url ? "Current thumbnail" : "Set as thumbnail"}
+                                      >
+                                        <Star
+                                          className={`h-4 w-4 ${product.primary_image_url === frame.url ? "fill-current" : ""}`}
+                                        />
+                                      </div>
+                                    </div>
+
+                                    {/* Image */}
+                                    <img
+                                      src={frame.url}
+                                      alt={`${frameTab} frame ${frame.index}`}
+                                      className="w-full h-full object-cover"
+                                      onClick={() => setSelectedFrame(frame.url)}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-center py-8">
+                              <ImageIcon className="h-12 w-12 mx-auto text-gray-300" />
+                              <p className="text-gray-500 mt-2">
+                                No {frameTab} frames
+                              </p>
+                              <p className="text-gray-400 text-sm">
+                                {frameTab === "synthetic" && "Process the video to extract frames"}
+                                {frameTab === "real" && "Add real images via matching"}
+                                {frameTab === "augmented" && "Run augmentation to generate variants"}
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </Tabs>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -548,7 +963,7 @@ export default function ProductDetailPage() {
                         ([key, value]) => (
                           <div
                             key={key}
-                            className="flex justify-between p-2 bg-gray-50 rounded"
+                            className="flex justify-between p-2 bg-muted rounded"
                           >
                             <span className="text-gray-600 capitalize">
                               {key.replace("_", " ")}
