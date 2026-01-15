@@ -32,5 +32,6 @@ ENV PORT=8000
 # Expose port (Railway overrides this with $PORT)
 EXPOSE $PORT
 
-# Run the application - Railway provides PORT env var
+# Change to src directory and run the application
+WORKDIR /app/src
 CMD uvicorn main:app --host 0.0.0.0 --port $PORT
