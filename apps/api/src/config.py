@@ -48,11 +48,19 @@ class Settings(BaseSettings):
     buybuddy_username: str = ""
     buybuddy_password: str = ""
 
+    # Qdrant Vector Database
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+
     # Processing defaults
     target_resolution: int = 518
 
-    # CORS
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # CORS - can be overridden with CORS_ORIGINS env var (comma-separated)
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://*.vercel.app",  # Vercel preview deployments
+    ]
 
 
 @lru_cache

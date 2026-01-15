@@ -1,0 +1,20 @@
+# BuyBuddy API - Python Dependencies
+# Generated from pyproject.toml
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Data Validation
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+# HTTP & Multipart
+python-multipart>=0.0.12
+httpx>=0.28.0
+
+# Database
+supabase>=2.10.0
+
+# Environment
+python-dotenv>=1.0.0
