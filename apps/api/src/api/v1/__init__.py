@@ -1,11 +1,14 @@
 """API v1 routers."""
 
-from . import datasets, embeddings, jobs, matching, products, training, videos, webhooks
+from . import auth, cutouts, datasets, embeddings, jobs, locks, matching, products, training, videos, webhooks
 
 __all__ = [
+    "auth",
+    "cutouts",
     "datasets",
     "embeddings",
     "jobs",
+    "locks",
     "matching",
     "products",
     "training",
