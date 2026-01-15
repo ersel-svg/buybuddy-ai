@@ -64,7 +64,7 @@ app.add_middleware(
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
-    return {"status": "healthy", "app": settings.app_name}
+    return {"status": "healthy", "app": settings.app_name, "version": "2026-01-16-v3"}
 
 
 # Include API routers
