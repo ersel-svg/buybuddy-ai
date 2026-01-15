@@ -62,10 +62,10 @@ def extract_product_data_from_metadata(metadata: dict) -> dict[str, Any]:
     if nutrition:
         product_data["nutrition_facts"] = nutrition
 
-    # Visual grounding
+    # Visual grounding (Gemini returns grounding_prompts as array)
     visual = metadata.get("visual_grounding", {})
-    if visual.get("grounding_prompt"):
-        product_data["grounding_prompt"] = visual["grounding_prompt"]
+    if visual.get("grounding_prompts"):
+        product_data["grounding_prompts"] = visual["grounding_prompts"]
 
     # Extraction metadata
     extraction = metadata.get("extraction_metadata", {})

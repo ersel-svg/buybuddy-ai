@@ -7,7 +7,8 @@ Input:
     "barcode": "123456789",
     "video_id": 12345,
     "product_id": "uuid-...",  # Our system's product UUID
-    "target_frames": 60,  # Optional: number of frames to extract (evenly distributed)
+    "sample_rate": 1,  # Optional: extract every Nth frame (1 = every frame)
+    "max_frames": null,  # Optional: maximum frames to extract (null = all)
 }
 
 Output (returned to RunPod, sent via webhook automatically):
@@ -98,7 +99,8 @@ def handler(job):
         barcode = job_input.get("barcode", "unknown")
         video_id = job_input.get("video_id")
         product_id = job_input.get("product_id")
-        target_frames = job_input.get("target_frames")  # Optional: evenly distributed frame count
+        sample_rate = job_input.get("sample_rate")  # Optional: extract every Nth frame
+        max_frames = job_input.get("max_frames")  # Optional: max frames to extract
 
         # Validate product_id is provided (required for storage)
         if not product_id:
@@ -108,7 +110,8 @@ def handler(job):
         print(f"Processing: {barcode}")
         print(f"Video URL: {video_url[:80]}...")
         print(f"Product ID: {product_id}")
-        print(f"Target Frames: {target_frames or 'auto (MAX_FRAMES)'}")
+        print(f"Sample Rate: {sample_rate or 'config default'}")
+        print(f"Max Frames: {max_frames or 'config default (all)'}")
         print(f"{'=' * 60}\n")
 
         # Get pipeline and process
@@ -118,7 +121,8 @@ def handler(job):
             barcode=barcode,
             video_id=video_id,
             product_id=product_id,
-            target_frames=target_frames,
+            sample_rate=sample_rate,
+            max_frames=max_frames,
         )
 
         print(f"\n{'=' * 60}")
@@ -132,7 +136,8 @@ def handler(job):
             "barcode": barcode,
             "video_id": video_id,
             "product_id": product_id,
-            "target_frames_requested": target_frames,
+            "sample_rate": sample_rate,
+            "max_frames": max_frames,
             "metadata": result["metadata"],
             "frame_count": result["frame_count"],
             "frames_url": result.get("frames_url"),
@@ -172,8 +177,21 @@ def health_check():
     return {"status": "healthy", "worker": "video-segmentation"}
 
 
+# Concurrency modifier - only allow 1 job per worker at a time
+# This prevents OOM errors when multiple jobs try to use GPU simultaneously
+def concurrency_modifier(current_concurrency: int) -> int:
+    """
+    Limit concurrent jobs to 1 per worker.
+    SAM3 uses ~17-20GB GPU memory, so we can't run multiple jobs on a 24GB GPU.
+    """
+    return 1  # Max 1 concurrent job per worker
+
+
 # Start Runpod serverless worker
 if __name__ == "__main__":
     print("Starting Video Segmentation Worker...")
     print(f"CUDA Available: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
-    runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({
+        "handler": handler,
+        "concurrency_modifier": concurrency_modifier,
+    })
