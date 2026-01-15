@@ -25,15 +25,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY pyproject.toml .
 
-# Set Python path
+# Set Python path and default port
 ENV PYTHONPATH=/app/src
+ENV PORT=8000
 
-# Expose port
-EXPOSE 8000
+# Expose port (Railway overrides this with $PORT)
+EXPOSE $PORT
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application - Railway provides PORT env var
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
