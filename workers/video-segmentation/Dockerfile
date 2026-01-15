@@ -33,8 +33,8 @@ ENV SUPABASE_KEY=""
 # CUDA memory optimization - reduces fragmentation
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Default max frames (can be overridden)
-ENV MAX_FRAMES=100
+# Default max frames (0 = all frames, can be overridden per-job)
+ENV MAX_FRAMES=0
 
 # Run handler
 CMD ["python", "-u", "src/handler.py"]

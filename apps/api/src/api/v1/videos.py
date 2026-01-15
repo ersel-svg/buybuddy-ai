@@ -3,7 +3,8 @@
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+import httpx
+from fastapi import APIRouter, HTTPException, Depends, Request, Query
 from pydantic import BaseModel
 
 from services.supabase import SupabaseService, supabase_service
@@ -33,6 +34,8 @@ class ProcessVideoRequest(BaseModel):
     video_id: int
     barcode: Optional[str] = None
     product_id: Optional[str] = None
+    sample_rate: Optional[int] = None  # Extract every Nth frame (1 = every frame)
+    max_frames: Optional[int] = None  # Maximum frames to extract (None = all)
 
 
 class ProcessVideosRequest(BaseModel):
@@ -40,6 +43,8 @@ class ProcessVideosRequest(BaseModel):
 
     video_ids: list[int]
     chunk_size: int = 25  # Process in chunks to avoid rate limits
+    sample_rate: Optional[int] = None  # Extract every Nth frame (1 = every frame)
+    max_frames: Optional[int] = None  # Maximum frames to extract per video (None = all)
 
 
 class ProcessVideoByUrlRequest(BaseModel):
@@ -96,11 +101,16 @@ async def list_videos(
 
 @router.post("/sync")
 async def sync_videos(
-    limit: int = 50,
+    limit: Optional[int] = Query(default=None, description="Max videos to sync (None = all)"),
     db: SupabaseService = Depends(get_supabase),
     buybuddy: BuybuddyService = Depends(get_buybuddy),
 ) -> VideoSyncResponse:
-    """Sync videos from Buybuddy API."""
+    """
+    Sync videos from Buybuddy API.
+
+    Fetches ALL products from BuyBuddy and checks against our DB.
+    Only videos not already in our system (by video_url) will be added.
+    """
     if not buybuddy.is_configured():
         raise HTTPException(
             status_code=400,
@@ -108,8 +118,9 @@ async def sync_videos(
         )
 
     try:
-        # Fetch products from BuyBuddy API
-        products = await buybuddy.get_unprocessed_products(limit=limit)
+        # Fetch ALL products from BuyBuddy API (ignore their processed flag)
+        # Our sync_videos_from_buybuddy will check against our DB by video_url
+        products = await buybuddy.get_products(limit=limit)
 
         if not products:
             return VideoSyncResponse(synced_count=0)
@@ -128,6 +139,11 @@ async def sync_videos(
         synced_count = await db.sync_videos_from_buybuddy(videos)
         return VideoSyncResponse(synced_count=synced_count)
 
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="BuyBuddy API timeout - too many products. Try with a smaller limit.",
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -164,6 +180,11 @@ async def process_video(
         product_id = product["id"]
         print(f"[Videos] Created product {product_id} for barcode {barcode}")
 
+    # Update video status to processing
+    db.client.table("videos").update({
+        "status": "processing"
+    }).eq("id", request_data.video_id).execute()
+
     # Create video processing job
     job = await db.create_job({
         "type": "video_processing",
@@ -172,6 +193,8 @@ async def process_video(
             "video_url": video.get("video_url"),
             "barcode": barcode,
             "product_id": product_id,
+            "sample_rate": request_data.sample_rate,
+            "max_frames": request_data.max_frames,
         },
     })
 
@@ -179,15 +202,22 @@ async def process_video(
     if runpod.is_configured(EndpointType.VIDEO):
         try:
             webhook_url = get_webhook_url(request)
+            input_data = {
+                "video_url": video.get("video_url"),
+                "barcode": barcode,
+                "video_id": request_data.video_id,
+                "product_id": product_id,
+                "job_id": job["id"],
+            }
+            # Add frame extraction settings if specified
+            if request_data.sample_rate is not None:
+                input_data["sample_rate"] = request_data.sample_rate
+            if request_data.max_frames is not None:
+                input_data["max_frames"] = request_data.max_frames
+
             runpod_response = await runpod.submit_job(
                 endpoint_type=EndpointType.VIDEO,
-                input_data={
-                    "video_url": video.get("video_url"),
-                    "barcode": barcode,
-                    "video_id": request_data.video_id,
-                    "product_id": product_id,
-                    "job_id": job["id"],
-                },
+                input_data=input_data,
                 webhook_url=webhook_url,
             )
 
@@ -337,6 +367,11 @@ async def process_videos_batch(
             product_id = product["id"]
             print(f"[Videos] Created product {product_id} for barcode {barcode}")
 
+            # Update video status to processing
+            db.client.table("videos").update({
+                "status": "processing"
+            }).eq("id", video_id).execute()
+
             # Create job
             job = await db.create_job({
                 "type": "video_processing",
@@ -345,21 +380,30 @@ async def process_videos_batch(
                     "video_url": video.get("video_url"),
                     "barcode": barcode,
                     "product_id": product_id,
+                    "sample_rate": request_data.sample_rate,
+                    "max_frames": request_data.max_frames,
                 },
             })
 
             # Dispatch to Runpod
             if webhook_url and runpod.is_configured(EndpointType.VIDEO):
                 try:
+                    input_data = {
+                        "video_url": video.get("video_url"),
+                        "barcode": barcode,
+                        "video_id": video_id,
+                        "product_id": product_id,
+                        "job_id": job["id"],
+                    }
+                    # Add frame extraction settings if specified
+                    if request_data.sample_rate is not None:
+                        input_data["sample_rate"] = request_data.sample_rate
+                    if request_data.max_frames is not None:
+                        input_data["max_frames"] = request_data.max_frames
+
                     runpod_response = await runpod.submit_job(
                         endpoint_type=EndpointType.VIDEO,
-                        input_data={
-                            "video_url": video.get("video_url"),
-                            "barcode": barcode,
-                            "video_id": video_id,
-                            "product_id": product_id,
-                            "job_id": job["id"],
-                        },
+                        input_data=input_data,
                         webhook_url=webhook_url,
                     )
 

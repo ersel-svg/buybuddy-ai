@@ -199,6 +199,14 @@ class ProductPipeline:
             processed_frames = self._process_frames(all_frames, all_frame_outputs, video_indices)
             print(f"      Processed {len(processed_frames)} frames to {self.target_resolution}x{self.target_resolution}")
 
+            # Check if any frames were successfully segmented
+            if len(processed_frames) == 0:
+                raise ValueError(
+                    f"Segmentation failed: 0 frames passed quality threshold. "
+                    f"Tried prompts: {grounding_prompts if self.video_predictor else 'N/A'}. "
+                    f"Video may have poor visibility or unsupported product type."
+                )
+
             # Add pipeline info to metadata
             metadata["_pipeline"] = {
                 "barcode": barcode,
