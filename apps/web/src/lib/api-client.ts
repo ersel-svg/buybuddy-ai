@@ -1,6 +1,7 @@
 import type {
   Product,
   ProductsResponse,
+  FilterOptionsResponse,
   ProductSummary,
   RealImage,
   Dataset,
@@ -197,16 +198,40 @@ class ApiClient {
     page?: number;
     limit?: number;
     search?: string;
+    // Sorting parameters
+    sort_by?: string;
+    sort_order?: "asc" | "desc";
+    // All filter parameters (comma-separated for multiple values)
     status?: string;
     category?: string;
+    brand?: string;
+    sub_brand?: string;
+    product_name?: string;
+    variant_flavor?: string;
     container_type?: string;
+    net_quantity?: string;
     pack_type?: string;
+    manufacturer_country?: string;
+    claims?: string;
+    // Boolean filters
+    has_video?: boolean;
+    has_image?: boolean;
+    has_nutrition?: boolean;
+    has_description?: boolean;
+    has_prompt?: boolean;
+    has_issues?: boolean;
+    // Range filters
+    frame_count_min?: number;
+    frame_count_max?: number;
     visibility_score_min?: number;
     visibility_score_max?: number;
-    manufacturer_country?: string;
     include_frame_counts?: boolean;
   }): Promise<ProductsResponse> {
     return this.request<ProductsResponse>("/api/v1/products", { params });
+  }
+
+  async getFilterOptions(): Promise<FilterOptionsResponse> {
+    return this.request<FilterOptionsResponse>("/api/v1/products/filter-options");
   }
 
   async getProduct(id: string): Promise<Product> {
@@ -835,6 +860,7 @@ class ApiClient {
   async backfillCutouts(params?: {
     max_items?: number;
     page_size?: number;
+    start_page?: number;
   }): Promise<CutoutSyncResponse> {
     return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync/backfill", {
       method: "POST",
