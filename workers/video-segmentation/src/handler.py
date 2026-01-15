@@ -9,6 +9,7 @@ Input:
     "product_id": "uuid-...",  # Our system's product UUID
     "sample_rate": 1,  # Optional: extract every Nth frame (1 = every frame)
     "max_frames": null,  # Optional: maximum frames to extract (null = all)
+    "gemini_model": "gemini-2.0-flash"  # Optional: Gemini model for metadata extraction
 }
 
 Output (returned to RunPod, sent via webhook automatically):
@@ -101,6 +102,7 @@ def handler(job):
         product_id = job_input.get("product_id")
         sample_rate = job_input.get("sample_rate")  # Optional: extract every Nth frame
         max_frames = job_input.get("max_frames")  # Optional: max frames to extract
+        gemini_model = job_input.get("gemini_model")  # Optional: Gemini model for metadata
 
         # Validate product_id is provided (required for storage)
         if not product_id:
@@ -112,6 +114,7 @@ def handler(job):
         print(f"Product ID: {product_id}")
         print(f"Sample Rate: {sample_rate or 'config default'}")
         print(f"Max Frames: {max_frames or 'config default (all)'}")
+        print(f"Gemini Model: {gemini_model or 'config default (gemini-2.0-flash)'}")
         print(f"{'=' * 60}\n")
 
         # Get pipeline and process
@@ -123,6 +126,7 @@ def handler(job):
             product_id=product_id,
             sample_rate=sample_rate,
             max_frames=max_frames,
+            gemini_model=gemini_model,
         )
 
         print(f"\n{'=' * 60}")
@@ -138,6 +142,7 @@ def handler(job):
             "product_id": product_id,
             "sample_rate": sample_rate,
             "max_frames": max_frames,
+            "gemini_model": gemini_model,
             "metadata": result["metadata"],
             "frame_count": result["frame_count"],
             "frames_url": result.get("frames_url"),

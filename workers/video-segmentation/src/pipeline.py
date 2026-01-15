@@ -63,14 +63,12 @@ class ProductPipeline:
         self.target_resolution = TARGET_RESOLUTION
         self.temp_dir = TEMP_DIR
 
-        # Initialize Gemini
+        # Initialize Gemini API
         print("[Pipeline] Configuring Gemini...")
         if GEMINI_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
-            self.gemini_model = genai.GenerativeModel(GEMINI_MODEL)
-            print("[Pipeline] Gemini ready!")
+            print(f"[Pipeline] Gemini API ready! Default model: {GEMINI_MODEL}")
         else:
-            self.gemini_model = None
             print("[Pipeline] WARNING: Gemini not configured (no API key)")
 
         # Initialize SAM3
@@ -122,6 +120,7 @@ class ProductPipeline:
         product_id: Optional[str] = None,
         sample_rate: Optional[int] = None,
         max_frames: Optional[int] = None,
+        gemini_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Main processing method (same as notebook).
@@ -133,6 +132,7 @@ class ProductPipeline:
             product_id: Product UUID (required for storage)
             sample_rate: Extract every Nth frame (1 = every frame). Default from config.
             max_frames: Maximum frames to extract. Default from config (None = all).
+            gemini_model: Gemini model name to use. Default from config (gemini-2.0-flash).
 
         Returns:
             {
@@ -174,8 +174,8 @@ class ProductPipeline:
 
             # 3. Gemini metadata extraction
             print("\n[3/7] Extracting metadata with Gemini...")
-            if self.gemini_model:
-                metadata = self._extract_metadata(video_path)
+            if GEMINI_API_KEY:
+                metadata = self._extract_metadata(video_path, gemini_model=gemini_model)
                 print(f"      Brand: {metadata.get('brand_info', {}).get('brand_name', 'N/A')}")
                 print(f"      Product: {metadata.get('product_identity', {}).get('product_name', 'N/A')}")
             else:
@@ -218,6 +218,7 @@ class ProductPipeline:
                 "frame_count": len(processed_frames),
                 "grounding_prompts": grounding_prompts if self.video_predictor else None,
                 "model": "SAM3",
+                "gemini_model": gemini_model or GEMINI_MODEL,
             }
 
             # 6. Save frames to storage
@@ -313,10 +314,21 @@ class ProductPipeline:
         print(f"      Extracted frames at video indices: [0:{video_indices[-1] if video_indices else 0}] (step={sample_rate})")
         return frames, video_indices
 
-    def _extract_metadata(self, video_path: Path, max_retries: int = 3) -> dict:
-        """Extract metadata using Gemini with rate limit protection."""
+    def _extract_metadata(self, video_path: Path, max_retries: int = 3, gemini_model: Optional[str] = None) -> dict:
+        """Extract metadata using Gemini with rate limit protection.
+
+        Args:
+            video_path: Path to the video file
+            max_retries: Maximum retry attempts for rate limit errors
+            gemini_model: Gemini model name to use (default: from config or gemini-2.0-flash)
+        """
         last_error = None
         video_file = None
+
+        # Use provided model or fall back to config default
+        model_name = gemini_model or GEMINI_MODEL
+        print(f"      Using Gemini model: {model_name}")
+        model = genai.GenerativeModel(model_name)
 
         for attempt in range(max_retries):
             try:
@@ -338,7 +350,7 @@ class ProductPipeline:
 
                 # Generate metadata
                 prompt = self._get_extraction_prompt()
-                response = self.gemini_model.generate_content([video_file, prompt])
+                response = model.generate_content([video_file, prompt])
 
                 # Parse JSON response
                 text = response.text.strip()

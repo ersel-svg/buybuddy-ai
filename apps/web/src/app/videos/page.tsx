@@ -32,6 +32,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -48,6 +55,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Trash2,
 } from "lucide-react";
 import type { Video as VideoType, Job } from "@/types";
 import {
@@ -63,6 +71,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const ITEMS_PER_PAGE = 50;
+const PROCESSING_ITEMS_PER_PAGE = 20;
 
 export default function VideosPage() {
   const queryClient = useQueryClient();
@@ -73,6 +82,11 @@ export default function VideosPage() {
   const [syncLimit, setSyncLimit] = useState<string>("");
   const [syncAll, setSyncAll] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [processingPage, setProcessingPage] = useState(1);
+  const [sampleRate, setSampleRate] = useState<number>(1);
+  const [maxFrames, setMaxFrames] = useState<number | null>(null);
+  const [geminiModel, setGeminiModel] = useState<string>("gemini-2.0-flash");
+  const [processModalOpen, setProcessModalOpen] = useState(false);
 
   // Fetch videos with smart polling
   const { data: videos, isLoading: isLoadingVideos } = useQuery({
@@ -129,17 +143,45 @@ export default function VideosPage() {
 
   // Process mutation
   const processMutation = useMutation({
-    mutationFn: (videoIds: number[]) => apiClient.processVideos(videoIds),
+    mutationFn: ({
+      videoIds,
+      sampleRate,
+      maxFrames,
+      geminiModel,
+    }: {
+      videoIds: number[];
+      sampleRate?: number;
+      maxFrames?: number | null;
+      geminiModel?: string;
+    }) =>
+      apiClient.processVideos(videoIds, {
+        sampleRate,
+        maxFrames: maxFrames ?? undefined,
+        geminiModel,
+      }),
     onSuccess: (result) => {
       toast.success(`Started processing ${result.length} videos`);
       setSelectedVideoIds(new Set());
+      setProcessModalOpen(false);
       queryClient.invalidateQueries({ queryKey: ["videos"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
-    onError: () => {
-      toast.error("Failed to start processing");
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to start processing: ${message}`);
+      console.error("Process error:", error);
     },
   });
+
+  // Handle process submit
+  const handleProcessSubmit = () => {
+    processMutation.mutate({
+      videoIds: Array.from(selectedVideoIds),
+      sampleRate,
+      maxFrames,
+      geminiModel,
+    });
+  };
 
   // Reprocess mutation
   const reprocessMutation = useMutation({
@@ -181,6 +223,41 @@ export default function VideosPage() {
     },
   });
 
+  // Sync Runpod status mutation
+  const syncStatusMutation = useMutation({
+    mutationFn: () => apiClient.syncRunpodStatus(),
+    onSuccess: (result) => {
+      const message = result.updated > 0
+        ? `Synced ${result.checked} jobs: ${result.updated} updated (${result.completed} completed, ${result.failed} failed, ${result.still_running} running)`
+        : `Checked ${result.checked} jobs - all are up to date`;
+      toast.success(message);
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: () => {
+      toast.error("Failed to sync Runpod status");
+    },
+  });
+
+  // Clear stuck videos mutation
+  const clearStuckMutation = useMutation({
+    mutationFn: () => apiClient.clearStuckVideos(),
+    onSuccess: (result) => {
+      if (result.cleared > 0) {
+        toast.success(`Cleared ${result.cleared} stuck videos (${result.no_job} without jobs, ${result.job_finished} with finished jobs)`);
+      } else {
+        toast.info(`No stuck videos found (checked ${result.checked})`);
+      }
+      queryClient.invalidateQueries({ queryKey: ["videos"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+    onError: () => {
+      toast.error("Failed to clear stuck videos");
+    },
+  });
+
   // Calculate stats
   const stats = {
     pending: videos?.filter((v) => v.status === "pending").length || 0,
@@ -192,6 +269,14 @@ export default function VideosPage() {
   // Get processing videos with their jobs
   const processingVideos = videos?.filter((v) => v.status === "processing") || [];
   const pendingVideos = videos?.filter((v) => v.status === "pending") || [];
+
+  // Pagination for processing videos
+  const processingTotalPages = Math.ceil(processingVideos.length / PROCESSING_ITEMS_PER_PAGE);
+  const paginatedProcessingVideos = useMemo(() => {
+    const start = (processingPage - 1) * PROCESSING_ITEMS_PER_PAGE;
+    const end = start + PROCESSING_ITEMS_PER_PAGE;
+    return processingVideos.slice(start, end);
+  }, [processingVideos, processingPage]);
 
   // Pagination for pending videos
   const totalPages = Math.ceil(pendingVideos.length / ITEMS_PER_PAGE);
@@ -206,7 +291,10 @@ export default function VideosPage() {
     if (currentPage > totalPages && totalPages > 0) {
       setCurrentPage(1);
     }
-  }, [totalPages, currentPage]);
+    if (processingPage > processingTotalPages && processingTotalPages > 0) {
+      setProcessingPage(1);
+    }
+  }, [totalPages, currentPage, processingTotalPages, processingPage]);
 
   // Status icons
   const statusConfig: Record<
@@ -295,9 +383,7 @@ export default function VideosPage() {
             Sync from Buybuddy
           </Button>
           <Button
-            onClick={() =>
-              processMutation.mutate(Array.from(selectedVideoIds))
-            }
+            onClick={() => setProcessModalOpen(true)}
             disabled={selectedVideoIds.size === 0 || processMutation.isPending}
           >
             {processMutation.isPending ? (
@@ -364,45 +450,75 @@ export default function VideosPage() {
                   Videos being processed by Runpod workers
                 </CardDescription>
               </div>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={cancelAllMutation.isPending}
-                  >
-                    {cancelAllMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <XCircle className="h-4 w-4 mr-2" />
-                    )}
-                    Cancel All
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Cancel All Processing Jobs?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will cancel all {processingVideos.length} processing videos
-                      and reset them to pending status. This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Keep Running</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => cancelAllMutation.mutate()}
-                      className="bg-destructive text-destructive-foreground"
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => syncStatusMutation.mutate()}
+                  disabled={syncStatusMutation.isPending}
+                  title="Check actual job status from Runpod"
+                >
+                  {syncStatusMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                  )}
+                  Sync Status
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => clearStuckMutation.mutate()}
+                  disabled={clearStuckMutation.isPending}
+                  title="Mark stuck videos as failed"
+                >
+                  {clearStuckMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4 mr-2" />
+                  )}
+                  Clear Stuck
+                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={cancelAllMutation.isPending}
                     >
-                      Cancel All Jobs
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                      {cancelAllMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <XCircle className="h-4 w-4 mr-2" />
+                      )}
+                      Cancel All
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel All Processing Jobs?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will cancel all {processingVideos.length} processing videos
+                        and reset them to pending status. This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => cancelAllMutation.mutate()}
+                        className="bg-destructive text-destructive-foreground"
+                      >
+                        Cancel All Jobs
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {processingVideos.map((video) => {
+              {paginatedProcessingVideos.map((video) => {
                 const job = jobs?.find(
                   (j) =>
                     j.type === "video_processing" &&
@@ -436,6 +552,54 @@ export default function VideosPage() {
                 );
               })}
             </div>
+
+            {/* Pagination for processing videos */}
+            {processingTotalPages > 1 && (
+              <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                <div className="text-sm text-gray-500">
+                  Showing {(processingPage - 1) * PROCESSING_ITEMS_PER_PAGE + 1} to{" "}
+                  {Math.min(processingPage * PROCESSING_ITEMS_PER_PAGE, processingVideos.length)} of{" "}
+                  {processingVideos.length} videos
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProcessingPage(1)}
+                    disabled={processingPage === 1}
+                  >
+                    <ChevronsLeft className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProcessingPage((p) => Math.max(1, p - 1))}
+                    disabled={processingPage === 1}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="text-sm px-2">
+                    Page {processingPage} of {processingTotalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProcessingPage((p) => Math.min(processingTotalPages, p + 1))}
+                    disabled={processingPage === processingTotalPages}
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setProcessingPage(processingTotalPages)}
+                    disabled={processingPage === processingTotalPages}
+                  >
+                    <ChevronsRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -757,6 +921,112 @@ export default function VideosPage() {
                 <RefreshCw className="h-4 w-4 mr-2" />
               )}
               {syncAll ? "Sync All" : `Sync ${syncLimit || "..."}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Process Modal */}
+      <Dialog open={processModalOpen} onOpenChange={setProcessModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Process Videos</DialogTitle>
+            <DialogDescription>
+              Configure processing settings for {selectedVideoIds.size} selected videos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-6 py-4">
+            {/* Sample Rate */}
+            <div className="space-y-2">
+              <Label htmlFor="sample-rate">
+                Sample Rate: <span className="font-bold">{sampleRate}</span>
+              </Label>
+              <input
+                id="sample-rate"
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={sampleRate}
+                onChange={(e) => setSampleRate(Number(e.target.value))}
+                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+              />
+              <p className="text-sm text-gray-500">
+                Extract every Nth frame. 1 = every frame, 2 = every 2nd frame, etc.
+                Higher values = faster processing, fewer frames.
+              </p>
+            </div>
+
+            {/* Max Frames */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="max-frames">
+                  Max Frames: <span className="font-bold">{maxFrames ?? "All"}</span>
+                </Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setMaxFrames(maxFrames ? null : 100)}
+                >
+                  {maxFrames ? "Use All Frames" : "Set Limit"}
+                </Button>
+              </div>
+              {maxFrames !== null && (
+                <input
+                  id="max-frames"
+                  type="range"
+                  min={50}
+                  max={500}
+                  step={10}
+                  value={maxFrames}
+                  onChange={(e) => setMaxFrames(Number(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                />
+              )}
+              <p className="text-sm text-gray-500">
+                Maximum number of frames to extract per video.
+                &quot;All&quot; = no limit, extract all sampled frames.
+              </p>
+            </div>
+
+            {/* Gemini Model */}
+            <div className="space-y-2">
+              <Label htmlFor="gemini-model">Gemini Model</Label>
+              <Select value={geminiModel} onValueChange={setGeminiModel}>
+                <SelectTrigger id="gemini-model">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="gemini-2.0-flash">
+                    gemini-2.0-flash (Unlimited)
+                  </SelectItem>
+                  <SelectItem value="gemini-2.5-flash">
+                    gemini-2.5-flash (10K/day)
+                  </SelectItem>
+                  <SelectItem value="gemini-2.0-flash-exp">
+                    gemini-2.0-flash-exp (500/day)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-gray-500">
+                AI model for video analysis. Use &quot;gemini-2.0-flash&quot; for unlimited requests.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProcessModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleProcessSubmit}
+              disabled={processMutation.isPending}
+            >
+              {processMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4 mr-2" />
+              )}
+              Process {selectedVideoIds.size} Videos
             </Button>
           </DialogFooter>
         </DialogContent>

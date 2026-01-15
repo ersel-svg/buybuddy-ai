@@ -1,6 +1,7 @@
 """Videos API router for syncing and processing videos."""
 
 import asyncio
+from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -36,6 +37,7 @@ class ProcessVideoRequest(BaseModel):
     product_id: Optional[str] = None
     sample_rate: Optional[int] = None  # Extract every Nth frame (1 = every frame)
     max_frames: Optional[int] = None  # Maximum frames to extract (None = all)
+    gemini_model: Optional[str] = None  # Gemini model to use (default: gemini-2.0-flash)
 
 
 class ProcessVideosRequest(BaseModel):
@@ -45,6 +47,7 @@ class ProcessVideosRequest(BaseModel):
     chunk_size: int = 25  # Process in chunks to avoid rate limits
     sample_rate: Optional[int] = None  # Extract every Nth frame (1 = every frame)
     max_frames: Optional[int] = None  # Maximum frames to extract per video (None = all)
+    gemini_model: Optional[str] = None  # Gemini model to use (default: gemini-2.0-flash)
 
 
 class ProcessVideoByUrlRequest(BaseModel):
@@ -169,16 +172,19 @@ async def process_video(
     barcode = request_data.barcode or video.get("barcode")
     product_id = request_data.product_id
 
-    # Create product first if not provided (so pipeline has product_id for storage)
+    # Get or create product (handles duplicate barcodes gracefully)
     if not product_id:
-        product = await db.create_product({
+        product, created = await db.get_or_create_product({
             "barcode": barcode,
             "video_id": request_data.video_id,
             "video_url": video.get("video_url"),
             "status": "processing",
         })
         product_id = product["id"]
-        print(f"[Videos] Created product {product_id} for barcode {barcode}")
+        if created:
+            print(f"[Videos] Created product {product_id} for barcode {barcode}")
+        else:
+            print(f"[Videos] Using existing product {product_id} for barcode {barcode}")
 
     # Update video status to processing
     db.client.table("videos").update({
@@ -195,6 +201,7 @@ async def process_video(
             "product_id": product_id,
             "sample_rate": request_data.sample_rate,
             "max_frames": request_data.max_frames,
+            "gemini_model": request_data.gemini_model,
         },
     })
 
@@ -214,6 +221,8 @@ async def process_video(
                 input_data["sample_rate"] = request_data.sample_rate
             if request_data.max_frames is not None:
                 input_data["max_frames"] = request_data.max_frames
+            if request_data.gemini_model is not None:
+                input_data["gemini_model"] = request_data.gemini_model
 
             runpod_response = await runpod.submit_job(
                 endpoint_type=EndpointType.VIDEO,
@@ -259,15 +268,18 @@ async def process_video_by_url(
     """Process a video directly by URL (without syncing first)."""
     product_id = request_data.product_id
 
-    # Create product first if not provided (so pipeline has product_id for storage)
+    # Get or create product (handles duplicate barcodes gracefully)
     if not product_id:
-        product = await db.create_product({
+        product, created = await db.get_or_create_product({
             "barcode": request_data.barcode,
             "video_url": request_data.video_url,
             "status": "processing",
         })
         product_id = product["id"]
-        print(f"[Videos] Created product {product_id} for barcode {request_data.barcode}")
+        if created:
+            print(f"[Videos] Created product {product_id} for barcode {request_data.barcode}")
+        else:
+            print(f"[Videos] Using existing product {product_id} for barcode {request_data.barcode}")
 
     # Create video processing job
     job = await db.create_job({
@@ -357,15 +369,18 @@ async def process_videos_batch(
 
             barcode = video.get("barcode")
 
-            # Create product first (so pipeline has product_id for storage)
-            product = await db.create_product({
+            # Get or create product (handles duplicate barcodes gracefully)
+            product, created = await db.get_or_create_product({
                 "barcode": barcode,
                 "video_id": video_id,
                 "video_url": video.get("video_url"),
                 "status": "processing",
             })
             product_id = product["id"]
-            print(f"[Videos] Created product {product_id} for barcode {barcode}")
+            if created:
+                print(f"[Videos] Created product {product_id} for barcode {barcode}")
+            else:
+                print(f"[Videos] Using existing product {product_id} for barcode {barcode}")
 
             # Update video status to processing
             db.client.table("videos").update({
@@ -382,6 +397,7 @@ async def process_videos_batch(
                     "product_id": product_id,
                     "sample_rate": request_data.sample_rate,
                     "max_frames": request_data.max_frames,
+                    "gemini_model": request_data.gemini_model,
                 },
             })
 
@@ -400,6 +416,8 @@ async def process_videos_batch(
                         input_data["sample_rate"] = request_data.sample_rate
                     if request_data.max_frames is not None:
                         input_data["max_frames"] = request_data.max_frames
+                    if request_data.gemini_model is not None:
+                        input_data["gemini_model"] = request_data.gemini_model
 
                     runpod_response = await runpod.submit_job(
                         endpoint_type=EndpointType.VIDEO,
@@ -547,3 +565,157 @@ async def reprocess_video(
         "cleanup": cleanup_result,
         "message": f"Reprocessing video {video_id}",
     }
+
+
+@router.post("/sync-runpod-status")
+async def sync_runpod_status(
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
+    """
+    Sync job statuses from Runpod for all processing videos.
+    Queries Runpod API to get actual job status and updates local database.
+    """
+    if not runpod.is_configured(EndpointType.VIDEO):
+        raise HTTPException(status_code=400, detail="Runpod not configured")
+
+    # Get all jobs that are queued or running
+    jobs = await db.get_jobs(job_type="video_processing")
+    active_jobs = [j for j in jobs if j.get("status") in ("queued", "running", "pending")]
+
+    results = {
+        "checked": 0,
+        "updated": 0,
+        "completed": 0,
+        "failed": 0,
+        "still_running": 0,
+        "errors": [],
+    }
+
+    for job in active_jobs:
+        runpod_job_id = job.get("runpod_job_id")
+        if not runpod_job_id:
+            continue
+
+        results["checked"] += 1
+
+        try:
+            # Query Runpod for actual status
+            status_response = await runpod.get_job_status(EndpointType.VIDEO, runpod_job_id)
+            runpod_status = status_response.get("status", "").upper()
+
+            # Map Runpod status to our status
+            # Runpod statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT
+            if runpod_status in ("COMPLETED",):
+                # Job completed but webhook didn't arrive - mark as failed (data lost)
+                await db.update_job(job["id"], {
+                    "status": "failed",
+                    "error": "Completed on Runpod but webhook not received - data may be lost",
+                })
+                # Update video status
+                video_id = job.get("config", {}).get("video_id")
+                if video_id:
+                    db.client.table("videos").update({"status": "failed"}).eq("id", video_id).execute()
+                # Update product status
+                product_id = job.get("config", {}).get("product_id")
+                if product_id:
+                    await db.update_product(product_id, {"status": "failed"})
+                results["updated"] += 1
+                results["completed"] += 1
+
+            elif runpod_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                await db.update_job(job["id"], {
+                    "status": "failed",
+                    "error": f"Runpod status: {runpod_status}",
+                })
+                video_id = job.get("config", {}).get("video_id")
+                if video_id:
+                    db.client.table("videos").update({"status": "failed"}).eq("id", video_id).execute()
+                product_id = job.get("config", {}).get("product_id")
+                if product_id:
+                    await db.update_product(product_id, {"status": "failed"})
+                results["updated"] += 1
+                results["failed"] += 1
+
+            elif runpod_status in ("IN_QUEUE", "IN_PROGRESS"):
+                # Still running, update our status to match
+                new_status = "queued" if runpod_status == "IN_QUEUE" else "running"
+                if job.get("status") != new_status:
+                    await db.update_job(job["id"], {"status": new_status})
+                    results["updated"] += 1
+                results["still_running"] += 1
+
+        except Exception as e:
+            results["errors"].append(f"Job {job['id']}: {str(e)}")
+
+    return results
+
+
+@router.post("/clear-stuck")
+async def clear_stuck_videos(
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Clear stuck videos by marking them as failed.
+    A video is considered stuck if:
+    - It's in 'processing' status but has no associated job
+    - It's in 'processing' status but its job is completed/failed
+    """
+    # Get all processing videos
+    videos = await db.get_videos()
+    processing_videos = [v for v in videos if v.get("status") == "processing"]
+
+    # Get all video processing jobs
+    jobs = await db.get_jobs(job_type="video_processing")
+    job_by_video_id = {}
+    for job in jobs:
+        video_id = job.get("config", {}).get("video_id")
+        if video_id:
+            # Keep the most recent job for each video
+            existing = job_by_video_id.get(video_id)
+            if not existing or job.get("created_at", "") > existing.get("created_at", ""):
+                job_by_video_id[video_id] = job
+
+    results = {
+        "checked": len(processing_videos),
+        "cleared": 0,
+        "no_job": 0,
+        "job_finished": 0,
+    }
+
+    for video in processing_videos:
+        video_id = video.get("id")
+        job = job_by_video_id.get(video_id)
+
+        should_clear = False
+        reason = ""
+
+        if not job:
+            # No job found for this video
+            should_clear = True
+            reason = "No associated job found"
+            results["no_job"] += 1
+        elif job.get("status") in ("completed", "failed"):
+            # Job finished but video still processing
+            should_clear = True
+            reason = f"Job status is {job.get('status')}"
+            results["job_finished"] += 1
+
+        if should_clear:
+            # Mark video as failed
+            db.client.table("videos").update({
+                "status": "failed"
+            }).eq("id", video_id).execute()
+
+            # Also update product if exists
+            product_id = job.get("config", {}).get("product_id") if job else None
+            if product_id:
+                try:
+                    await db.update_product(product_id, {"status": "failed"})
+                except Exception:
+                    pass  # Product might not exist
+
+            results["cleared"] += 1
+            print(f"[Videos] Cleared stuck video {video_id}: {reason}")
+
+    return results

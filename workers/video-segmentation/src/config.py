@@ -28,7 +28,7 @@ CALLBACK_URL = os.environ.get("CALLBACK_URL", "")  # e.g., https://api.buybuddy.
 # ===========================================
 
 TARGET_RESOLUTION = 518  # DINOv2 optimal input size
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")  # Default to unlimited tier
 
 # Frame extraction settings (same as notebook)
 # MAX_FRAMES: Maximum frames to extract (None = all frames)

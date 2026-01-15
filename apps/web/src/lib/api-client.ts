@@ -23,6 +23,7 @@ import type {
   CutoutsResponse,
   CutoutStats,
   CutoutSyncResponse,
+  CutoutSyncState,
   EmbeddingModel,
   EmbeddingJob,
   EmbeddingExport,
@@ -203,6 +204,7 @@ class ApiClient {
     visibility_score_min?: number;
     visibility_score_max?: number;
     manufacturer_country?: string;
+    include_frame_counts?: boolean;
   }): Promise<ProductsResponse> {
     return this.request<ProductsResponse>("/api/v1/products", { params });
   }
@@ -234,6 +236,17 @@ class ApiClient {
         body: { product_ids: ids },
       }
     );
+  }
+
+  async setPrimaryImage(
+    productId: string,
+    imageUrl: string,
+    version?: number
+  ): Promise<Product> {
+    return this.request<Product>(`/api/v1/products/${productId}`, {
+      method: "PATCH",
+      body: { primary_image_url: imageUrl, version },
+    });
   }
 
   async getProductFrames(
@@ -422,22 +435,67 @@ class ApiClient {
     });
   }
 
-  async processVideo(videoId: number): Promise<Job> {
+  async processVideo(
+    videoId: number,
+    options?: { sampleRate?: number; maxFrames?: number }
+  ): Promise<Job> {
     return this.request<Job>("/api/v1/videos/process", {
       method: "POST",
-      body: { video_id: videoId },
+      body: {
+        video_id: videoId,
+        sample_rate: options?.sampleRate,
+        max_frames: options?.maxFrames,
+      },
     });
   }
 
-  async processVideos(videoIds: number[]): Promise<Job[]> {
+  async processVideos(
+    videoIds: number[],
+    options?: { sampleRate?: number; maxFrames?: number; geminiModel?: string }
+  ): Promise<Job[]> {
     return this.request<Job[]>("/api/v1/videos/process/batch", {
       method: "POST",
-      body: { video_ids: videoIds },
+      body: {
+        video_ids: videoIds,
+        sample_rate: options?.sampleRate,
+        max_frames: options?.maxFrames,
+        gemini_model: options?.geminiModel,
+      },
     });
   }
 
   async reprocessVideo(videoId: number): Promise<{ job: Job; cleanup: { frames_deleted: number; files_deleted: number }; message: string }> {
     return this.request(`/api/v1/videos/${videoId}/reprocess`, {
+      method: "POST",
+    });
+  }
+
+  async reprocessProduct(productId: string): Promise<{ job: Job; cleanup: { frames_deleted: number; files_deleted: number }; message: string }> {
+    return this.request(`/api/v1/products/${productId}/reprocess`, {
+      method: "POST",
+    });
+  }
+
+  async syncRunpodStatus(): Promise<{
+    checked: number;
+    updated: number;
+    completed: number;
+    failed: number;
+    still_running: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/videos/sync-runpod-status", {
+      method: "POST",
+    });
+  }
+
+  async clearStuckVideos(): Promise<{
+    checked: number;
+    cleared: number;
+    no_job: number;
+    job_finished: number;
+  }> {
+    return this.request("/api/v1/videos/clear-stuck", {
       method: "POST",
     });
   }
@@ -752,8 +810,33 @@ class ApiClient {
   async syncCutouts(params?: {
     max_pages?: number;
     page_size?: number;
+    sort_order?: "asc" | "desc";  // "desc" for newest first, "asc" for oldest first
   }): Promise<CutoutSyncResponse> {
     return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync", {
+      method: "POST",
+      body: params || {},
+    });
+  }
+
+  async getSyncState(): Promise<CutoutSyncState> {
+    return this.request<CutoutSyncState>("/api/v1/cutouts/sync/state");
+  }
+
+  async syncNewCutouts(params?: {
+    max_items?: number;
+    page_size?: number;
+  }): Promise<CutoutSyncResponse> {
+    return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync/new", {
+      method: "POST",
+      body: params || {},
+    });
+  }
+
+  async backfillCutouts(params?: {
+    max_items?: number;
+    page_size?: number;
+  }): Promise<CutoutSyncResponse> {
+    return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync/backfill", {
       method: "POST",
       body: params || {},
     });
