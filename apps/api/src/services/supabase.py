@@ -67,9 +67,22 @@ class SupabaseService:
         frame_count_max: Optional[int] = None,
         visibility_score_min: Optional[int] = None,
         visibility_score_max: Optional[int] = None,
+        # Exclusion filters
+        exclude_dataset_id: Optional[str] = None,
         include_frame_counts: bool = False,
     ) -> dict[str, Any]:
         """Get products with pagination and comprehensive filters."""
+        # If excluding products from a dataset, first get those product IDs
+        excluded_product_ids: set[str] = set()
+        if exclude_dataset_id:
+            dp_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", exclude_dataset_id)
+                .execute()
+            )
+            excluded_product_ids = {row["product_id"] for row in dp_response.data}
+
         query = self.client.table("products").select("*", count="exact")
 
         # Helper to parse comma-separated values
@@ -83,6 +96,11 @@ class SupabaseService:
             query = query.or_(
                 f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
             )
+
+        # Exclude products from dataset (if specified)
+        if excluded_product_ids:
+            # PostgREST supports not_.in_ for negation
+            query = query.not_.in_("id", list(excluded_product_ids))
 
         # List filters (comma-separated -> in_ query)
         status_list = parse_csv(status)
@@ -513,24 +531,182 @@ class SupabaseService:
         categories = set(item["category"] for item in response.data if item["category"])
         return sorted(list(categories))
 
-    async def get_product_filter_options(self) -> dict[str, Any]:
-        """Get all unique values for filterable fields across entire database."""
-        # Fetch all products with only the fields we need for filters
-        response = (
-            self.client.table("products")
-            .select(
-                "status, category, brand_name, sub_brand, product_name, "
+    async def get_product_filter_options(
+        self,
+        # Current filter selections (for cascading filters)
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+        brand: Optional[str] = None,
+        sub_brand: Optional[str] = None,
+        product_name: Optional[str] = None,
+        variant_flavor: Optional[str] = None,
+        container_type: Optional[str] = None,
+        net_quantity: Optional[str] = None,
+        pack_type: Optional[str] = None,
+        manufacturer_country: Optional[str] = None,
+        claims_filter: Optional[str] = None,
+        has_video: Optional[bool] = None,
+        has_image: Optional[bool] = None,
+        has_nutrition: Optional[bool] = None,
+        has_description: Optional[bool] = None,
+        has_prompt: Optional[bool] = None,
+        has_issues: Optional[bool] = None,
+        frame_count_min: Optional[int] = None,
+        frame_count_max: Optional[int] = None,
+        visibility_score_min: Optional[int] = None,
+        visibility_score_max: Optional[int] = None,
+        exclude_dataset_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Get unique values for filterable fields using disjunctive faceting.
+
+        Each filter section's options are calculated with that section's own filter EXCLUDED,
+        allowing multi-select within each section. This is the standard approach used by
+        e-commerce platforms (Amazon, Algolia, Elasticsearch faceted search).
+
+        Example: If category=Beverages and brand=Coca-Cola,Pepsi:
+        - Brand options are filtered by category only (not brand) -> shows all Beverage brands
+        - Category options are filtered by brand only (not category) -> shows categories containing Coca-Cola or Pepsi
+        - SubBrand options are filtered by both category and brand -> shows sub-brands for selected brands in Beverages
+        """
+
+        # Helper to parse comma-separated values
+        def parse_csv(value: Optional[str]) -> list[str]:
+            if not value:
+                return []
+            return [v.strip() for v in value.split(",") if v.strip()]
+
+        # Parse all filter values upfront
+        status_list = parse_csv(status)
+        category_list = parse_csv(category)
+        brand_list = parse_csv(brand)
+        sub_brand_list = parse_csv(sub_brand)
+        product_name_list = parse_csv(product_name)
+        variant_list = parse_csv(variant_flavor)
+        container_list = parse_csv(container_type)
+        net_quantity_list = parse_csv(net_quantity)
+        pack_type_list = parse_csv(pack_type)
+        country_list = parse_csv(manufacturer_country)
+        claims_list = parse_csv(claims_filter)
+
+        # Get excluded product IDs if filtering by dataset
+        excluded_ids: set[str] = set()
+        if exclude_dataset_id:
+            dp_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", exclude_dataset_id)
+                .execute()
+            )
+            excluded_ids = {row["product_id"] for row in dp_response.data}
+
+        def build_query(exclude_section: Optional[str] = None):
+            """
+            Build a query with all filters applied EXCEPT the specified section.
+            This enables disjunctive faceting - each section can show all available
+            options for multi-select while still respecting other filters.
+            """
+            query = self.client.table("products").select(
+                "id, status, category, brand_name, sub_brand, product_name, "
                 "variant_flavor, container_type, net_quantity, pack_configuration, "
                 "manufacturer_country, claims, issues_detected, video_url, "
                 "primary_image_url, nutrition_facts, marketing_description, "
                 "grounding_prompt, frame_count, visibility_score"
             )
-            .execute()
-        )
-        items = response.data
 
-        # Helper to extract unique values with counts
-        def extract_unique(key: str) -> list[dict]:
+            # Apply checkbox filters (excluding the specified section)
+            if exclude_section != "status" and status_list:
+                query = query.in_("status", status_list)
+            if exclude_section != "category" and category_list:
+                query = query.in_("category", category_list)
+            if exclude_section != "brand" and brand_list:
+                query = query.in_("brand_name", brand_list)
+            if exclude_section != "subBrand" and sub_brand_list:
+                query = query.in_("sub_brand", sub_brand_list)
+            if exclude_section != "productName" and product_name_list:
+                query = query.in_("product_name", product_name_list)
+            if exclude_section != "flavor" and variant_list:
+                query = query.in_("variant_flavor", variant_list)
+            if exclude_section != "container" and container_list:
+                query = query.in_("container_type", container_list)
+            if exclude_section != "netQuantity" and net_quantity_list:
+                query = query.in_("net_quantity", net_quantity_list)
+            if exclude_section != "country" and country_list:
+                query = query.in_("manufacturer_country", country_list)
+
+            # Pack type filter (JSONB) - exclude if needed
+            if exclude_section != "packType" and pack_type_list:
+                if len(pack_type_list) == 1:
+                    query = query.eq("pack_configuration->>type", pack_type_list[0])
+                else:
+                    conditions = ",".join([f"pack_configuration->>type.eq.{pt}" for pt in pack_type_list])
+                    query = query.or_(conditions)
+
+            # Boolean filters (these are not multi-select, so always apply)
+            if has_video is True:
+                query = query.not_.is_("video_url", "null")
+            elif has_video is False:
+                query = query.is_("video_url", "null")
+
+            if has_image is True:
+                query = query.not_.is_("primary_image_url", "null")
+            elif has_image is False:
+                query = query.is_("primary_image_url", "null")
+
+            if has_description is True:
+                query = query.not_.is_("marketing_description", "null")
+            elif has_description is False:
+                query = query.is_("marketing_description", "null")
+
+            if has_prompt is True:
+                query = query.not_.is_("grounding_prompt", "null")
+            elif has_prompt is False:
+                query = query.is_("grounding_prompt", "null")
+
+            # Range filters (these are not multi-select, so always apply)
+            if frame_count_min is not None:
+                query = query.gte("frame_count", frame_count_min)
+            if frame_count_max is not None:
+                query = query.lte("frame_count", frame_count_max)
+            if visibility_score_min is not None:
+                query = query.gte("visibility_score", visibility_score_min)
+            if visibility_score_max is not None:
+                query = query.lte("visibility_score", visibility_score_max)
+
+            return query
+
+        def apply_client_side_filters(items: list[dict], exclude_section: Optional[str] = None) -> list[dict]:
+            """Apply filters that require client-side processing."""
+            result = items
+
+            # Exclude dataset products
+            if excluded_ids:
+                result = [item for item in result if item["id"] not in excluded_ids]
+
+            # Claims filter (array field - requires client-side)
+            if exclude_section != "claims" and claims_list:
+                result = [
+                    item for item in result
+                    if item.get("claims") and any(c in item["claims"] for c in claims_list)
+                ]
+
+            # has_nutrition (complex check)
+            if has_nutrition is True:
+                result = [item for item in result if item.get("nutrition_facts") and len(item.get("nutrition_facts", {})) > 0]
+            elif has_nutrition is False:
+                result = [item for item in result if not item.get("nutrition_facts") or len(item.get("nutrition_facts", {})) == 0]
+
+            # has_issues (complex check) - exclude if getting issueTypes options
+            if exclude_section != "issueTypes":
+                if has_issues is True:
+                    result = [item for item in result if item.get("issues_detected") and len(item.get("issues_detected", [])) > 0]
+                elif has_issues is False:
+                    result = [item for item in result if not item.get("issues_detected") or len(item.get("issues_detected", [])) == 0]
+
+            return result
+
+        def extract_unique(items: list[dict], key: str) -> list[dict]:
+            """Extract unique values with counts from items."""
             counts: dict[str, int] = {}
             for item in items:
                 value = item.get(key)
@@ -538,8 +714,8 @@ class SupabaseService:
                     counts[value] = counts.get(value, 0) + 1
             return [{"value": k, "label": k, "count": v} for k, v in sorted(counts.items())]
 
-        # Helper for nested field
-        def extract_nested(key: str, nested_key: str) -> list[dict]:
+        def extract_nested(items: list[dict], key: str, nested_key: str) -> list[dict]:
+            """Extract unique values from nested field with counts."""
             counts: dict[str, int] = {}
             for item in items:
                 obj = item.get(key) or {}
@@ -548,8 +724,8 @@ class SupabaseService:
                     counts[value] = counts.get(value, 0) + 1
             return [{"value": k, "label": k, "count": v} for k, v in sorted(counts.items())]
 
-        # Helper for array fields
-        def extract_array(key: str) -> list[dict]:
+        def extract_array(items: list[dict], key: str) -> list[dict]:
+            """Extract unique values from array field with counts."""
             counts: dict[str, int] = {}
             for item in items:
                 values = item.get(key) or []
@@ -558,44 +734,75 @@ class SupabaseService:
                         counts[value] = counts.get(value, 0) + 1
             return [{"value": k, "label": k, "count": v} for k, v in sorted(counts.items())]
 
-        # Boolean counts
-        def count_boolean(predicate) -> dict:
+        def count_boolean(items: list[dict], predicate) -> dict:
+            """Count true/false for boolean field."""
             true_count = sum(1 for item in items if predicate(item))
             false_count = len(items) - true_count
             return {"trueCount": true_count, "falseCount": false_count}
 
-        # Range calculations
-        def calc_range(key: str) -> dict:
+        def calc_range(items: list[dict], key: str) -> dict:
+            """Calculate min/max range for numeric field."""
             values = [item.get(key) for item in items if item.get(key) is not None]
             if not values:
                 return {"min": 0, "max": 100}
             return {"min": min(values), "max": max(values)}
 
+        # Define which sections need disjunctive faceting (checkbox/multi-select sections)
+        # Each section will be queried with its own filter excluded
+        disjunctive_sections = [
+            ("status", "status"),
+            ("category", "category"),
+            ("brand", "brand_name"),
+            ("subBrand", "sub_brand"),
+            ("productName", "product_name"),
+            ("flavor", "variant_flavor"),
+            ("container", "container_type"),
+            ("netQuantity", "net_quantity"),
+            ("packType", None),  # Special handling for nested field
+            ("country", "manufacturer_country"),
+            ("claims", None),  # Special handling for array field
+            ("issueTypes", None),  # Special handling for array field
+        ]
+
+        # Fetch data for each disjunctive section
+        section_results: dict[str, list[dict]] = {}
+        for section_id, _ in disjunctive_sections:
+            query = build_query(exclude_section=section_id)
+            response = query.execute()
+            items = apply_client_side_filters(response.data, exclude_section=section_id)
+            section_results[section_id] = items
+
+        # Fetch data with ALL filters applied (for boolean counts, ranges, and total)
+        all_filters_query = build_query(exclude_section=None)
+        all_filters_response = all_filters_query.execute()
+        all_filtered_items = apply_client_side_filters(all_filters_response.data, exclude_section=None)
+
         return {
-            "status": extract_unique("status"),
-            "category": extract_unique("category"),
-            "brand": extract_unique("brand_name"),
-            "subBrand": extract_unique("sub_brand"),
-            "productName": extract_unique("product_name"),
-            "flavor": extract_unique("variant_flavor"),
-            "container": extract_unique("container_type"),
-            "netQuantity": extract_unique("net_quantity"),
-            "packType": extract_nested("pack_configuration", "type"),
-            "country": extract_unique("manufacturer_country"),
-            "claims": extract_array("claims"),
-            "issueTypes": extract_array("issues_detected"),
-            # Boolean fields
-            "hasVideo": count_boolean(lambda x: bool(x.get("video_url"))),
-            "hasImage": count_boolean(lambda x: bool(x.get("primary_image_url"))),
-            "hasNutrition": count_boolean(lambda x: bool(x.get("nutrition_facts") and len(x.get("nutrition_facts", {})) > 0)),
-            "hasDescription": count_boolean(lambda x: bool(x.get("marketing_description"))),
-            "hasPrompt": count_boolean(lambda x: bool(x.get("grounding_prompt"))),
-            "hasIssues": count_boolean(lambda x: bool(x.get("issues_detected") and len(x.get("issues_detected", [])) > 0)),
-            # Ranges
-            "frameCount": calc_range("frame_count"),
-            "visibilityScore": calc_range("visibility_score"),
-            # Total count
-            "totalProducts": len(items),
+            # Checkbox sections (disjunctive faceting)
+            "status": extract_unique(section_results["status"], "status"),
+            "category": extract_unique(section_results["category"], "category"),
+            "brand": extract_unique(section_results["brand"], "brand_name"),
+            "subBrand": extract_unique(section_results["subBrand"], "sub_brand"),
+            "productName": extract_unique(section_results["productName"], "product_name"),
+            "flavor": extract_unique(section_results["flavor"], "variant_flavor"),
+            "container": extract_unique(section_results["container"], "container_type"),
+            "netQuantity": extract_unique(section_results["netQuantity"], "net_quantity"),
+            "packType": extract_nested(section_results["packType"], "pack_configuration", "type"),
+            "country": extract_unique(section_results["country"], "manufacturer_country"),
+            "claims": extract_array(section_results["claims"], "claims"),
+            "issueTypes": extract_array(section_results["issueTypes"], "issues_detected"),
+            # Boolean fields (use all filters applied - not multi-select)
+            "hasVideo": count_boolean(all_filtered_items, lambda x: bool(x.get("video_url"))),
+            "hasImage": count_boolean(all_filtered_items, lambda x: bool(x.get("primary_image_url"))),
+            "hasNutrition": count_boolean(all_filtered_items, lambda x: bool(x.get("nutrition_facts") and len(x.get("nutrition_facts", {})) > 0)),
+            "hasDescription": count_boolean(all_filtered_items, lambda x: bool(x.get("marketing_description"))),
+            "hasPrompt": count_boolean(all_filtered_items, lambda x: bool(x.get("grounding_prompt"))),
+            "hasIssues": count_boolean(all_filtered_items, lambda x: bool(x.get("issues_detected") and len(x.get("issues_detected", [])) > 0)),
+            # Ranges (use all filters applied - not multi-select)
+            "frameCount": calc_range(all_filtered_items, "frame_count"),
+            "visibilityScore": calc_range(all_filtered_items, "visibility_score"),
+            # Total count (with all filters applied)
+            "totalProducts": len(all_filtered_items),
         }
 
     # =========================================
@@ -701,8 +908,41 @@ class SupabaseService:
         )
         return response.data
 
-    async def get_dataset(self, dataset_id: str) -> Optional[dict[str, Any]]:
-        """Get dataset with products and frame counts."""
+    async def get_dataset(
+        self,
+        dataset_id: str,
+        page: int = 1,
+        limit: int = 100,
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = "desc",
+        # Comma-separated list filters
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+        brand: Optional[str] = None,
+        sub_brand: Optional[str] = None,
+        product_name: Optional[str] = None,
+        variant_flavor: Optional[str] = None,
+        container_type: Optional[str] = None,
+        net_quantity: Optional[str] = None,
+        pack_type: Optional[str] = None,
+        manufacturer_country: Optional[str] = None,
+        claims: Optional[str] = None,
+        # Boolean filters
+        has_video: Optional[bool] = None,
+        has_image: Optional[bool] = None,
+        has_nutrition: Optional[bool] = None,
+        has_description: Optional[bool] = None,
+        has_prompt: Optional[bool] = None,
+        has_issues: Optional[bool] = None,
+        # Range filters
+        frame_count_min: Optional[int] = None,
+        frame_count_max: Optional[int] = None,
+        visibility_score_min: Optional[int] = None,
+        visibility_score_max: Optional[int] = None,
+        include_frame_counts: bool = True,
+    ) -> Optional[dict[str, Any]]:
+        """Get dataset with filtered products and frame counts."""
         # Get dataset
         dataset_response = (
             self.client.table("datasets")
@@ -717,32 +957,303 @@ class SupabaseService:
 
         dataset = dataset_response.data
 
-        # Get products in dataset
-        products_response = (
+        # Helper to parse comma-separated values
+        def parse_csv(value: Optional[str]) -> list[str]:
+            if not value:
+                return []
+            return [v.strip() for v in value.split(",") if v.strip()]
+
+        # First, get all product IDs in this dataset
+        product_ids_response = (
             self.client.table("dataset_products")
-            .select("product_id, products(*)")
+            .select("product_id")
             .eq("dataset_id", dataset_id)
             .execute()
         )
+        dataset_product_ids = [item["product_id"] for item in product_ids_response.data]
 
-        products = []
-        for item in products_response.data:
-            product = item.get("products")
-            if product:
-                # Get frame counts for each product
+        if not dataset_product_ids:
+            dataset["products"] = []
+            dataset["products_total"] = 0
+            dataset["total_synthetic"] = 0
+            dataset["total_real"] = 0
+            dataset["total_augmented"] = 0
+            return dataset
+
+        # Build query for products with filters
+        query = self.client.table("products").select("*", count="exact")
+
+        # Filter by products in this dataset
+        query = query.in_("id", dataset_product_ids)
+
+        # Search filter
+        if search:
+            query = query.or_(
+                f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
+            )
+
+        # List filters
+        status_list = parse_csv(status)
+        if status_list:
+            query = query.in_("status", status_list)
+
+        category_list = parse_csv(category)
+        if category_list:
+            query = query.in_("category", category_list)
+
+        brand_list = parse_csv(brand)
+        if brand_list:
+            query = query.in_("brand_name", brand_list)
+
+        sub_brand_list = parse_csv(sub_brand)
+        if sub_brand_list:
+            query = query.in_("sub_brand", sub_brand_list)
+
+        product_name_list = parse_csv(product_name)
+        if product_name_list:
+            query = query.in_("product_name", product_name_list)
+
+        variant_list = parse_csv(variant_flavor)
+        if variant_list:
+            query = query.in_("variant_flavor", variant_list)
+
+        container_list = parse_csv(container_type)
+        if container_list:
+            query = query.in_("container_type", container_list)
+
+        net_quantity_list = parse_csv(net_quantity)
+        if net_quantity_list:
+            query = query.in_("net_quantity", net_quantity_list)
+
+        manufacturer_country_list = parse_csv(manufacturer_country)
+        if manufacturer_country_list:
+            query = query.in_("manufacturer_country", manufacturer_country_list)
+
+        # Boolean filters
+        if has_video is not None:
+            if has_video:
+                query = query.not_.is_("video_url", "null")
+            else:
+                query = query.is_("video_url", "null")
+
+        if has_image is not None:
+            if has_image:
+                query = query.not_.is_("primary_image_url", "null")
+            else:
+                query = query.is_("primary_image_url", "null")
+
+        if has_nutrition is not None:
+            if has_nutrition:
+                query = query.not_.is_("nutrition_facts", "null")
+            else:
+                query = query.is_("nutrition_facts", "null")
+
+        if has_description is not None:
+            if has_description:
+                query = query.not_.is_("marketing_description", "null")
+            else:
+                query = query.is_("marketing_description", "null")
+
+        if has_prompt is not None:
+            if has_prompt:
+                query = query.not_.is_("grounding_prompt", "null")
+            else:
+                query = query.is_("grounding_prompt", "null")
+
+        if has_issues is not None:
+            if has_issues:
+                query = query.not_.is_("issues_detected", "null")
+            else:
+                query = query.is_("issues_detected", "null")
+
+        # Range filters
+        if frame_count_min is not None:
+            query = query.gte("frame_count", frame_count_min)
+        if frame_count_max is not None:
+            query = query.lte("frame_count", frame_count_max)
+
+        if visibility_score_min is not None:
+            query = query.gte("visibility_score", visibility_score_min)
+        if visibility_score_max is not None:
+            query = query.lte("visibility_score", visibility_score_max)
+
+        # Sorting
+        if sort_by:
+            is_desc = sort_order == "desc"
+            query = query.order(sort_by, desc=is_desc)
+        else:
+            query = query.order("created_at", desc=True)
+
+        # Pagination
+        offset = (page - 1) * limit
+        query = query.range(offset, offset + limit - 1)
+
+        # Execute query
+        products_response = query.execute()
+
+        products = products_response.data or []
+        products_total = products_response.count or 0
+
+        # Add frame counts if requested
+        if include_frame_counts and products:
+            for product in products:
                 counts = await self.get_product_frame_counts(product["id"])
                 product["frame_counts"] = counts
                 product["total_frames"] = sum(counts.values())
-                products.append(product)
 
         dataset["products"] = products
+        dataset["products_total"] = products_total
 
-        # Calculate dataset totals
-        dataset["total_synthetic"] = sum(p.get("frame_counts", {}).get("synthetic", 0) for p in products)
-        dataset["total_real"] = sum(p.get("frame_counts", {}).get("real", 0) for p in products)
-        dataset["total_augmented"] = sum(p.get("frame_counts", {}).get("augmented", 0) for p in products)
+        # Calculate dataset totals (from all products, not just filtered)
+        # This requires getting all products' frame counts
+        all_products_totals = {"synthetic": 0, "real": 0, "augmented": 0}
+        for product_id in dataset_product_ids:
+            counts = await self.get_product_frame_counts(product_id)
+            all_products_totals["synthetic"] += counts.get("synthetic", 0)
+            all_products_totals["real"] += counts.get("real", 0)
+            all_products_totals["augmented"] += counts.get("augmented", 0)
+
+        dataset["total_synthetic"] = all_products_totals["synthetic"]
+        dataset["total_real"] = all_products_totals["real"]
+        dataset["total_augmented"] = all_products_totals["augmented"]
 
         return dataset
+
+    async def get_dataset_filter_options(self, dataset_id: str) -> Optional[dict[str, Any]]:
+        """Get available filter options for products in a dataset."""
+        # Check if dataset exists
+        dataset_response = (
+            self.client.table("datasets")
+            .select("id")
+            .eq("id", dataset_id)
+            .single()
+            .execute()
+        )
+
+        if not dataset_response.data:
+            return None
+
+        # Get all product IDs in this dataset
+        product_ids_response = (
+            self.client.table("dataset_products")
+            .select("product_id")
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+        dataset_product_ids = [item["product_id"] for item in product_ids_response.data]
+
+        if not dataset_product_ids:
+            # Return empty options
+            return {
+                "status": [],
+                "category": [],
+                "brand": [],
+                "subBrand": [],
+                "productName": [],
+                "flavor": [],
+                "container": [],
+                "netQuantity": [],
+                "packType": [],
+                "country": [],
+                "claims": [],
+                "issueTypes": [],
+                "frameCount": {"min": 0, "max": 0},
+                "visibilityScore": {"min": 0, "max": 100},
+                "hasVideo": {"trueCount": 0, "falseCount": 0},
+                "hasImage": {"trueCount": 0, "falseCount": 0},
+                "hasNutrition": {"trueCount": 0, "falseCount": 0},
+                "hasDescription": {"trueCount": 0, "falseCount": 0},
+                "hasPrompt": {"trueCount": 0, "falseCount": 0},
+                "hasIssues": {"trueCount": 0, "falseCount": 0},
+            }
+
+        # Get all products in this dataset
+        products_response = (
+            self.client.table("products")
+            .select("*")
+            .in_("id", dataset_product_ids)
+            .execute()
+        )
+        products = products_response.data or []
+
+        # Helper to count values
+        def count_values(field: str) -> list[dict]:
+            counts: dict[str, int] = {}
+            for p in products:
+                value = p.get(field)
+                if value:
+                    counts[value] = counts.get(value, 0) + 1
+            return [{"value": k, "label": k, "count": v} for k, v in sorted(counts.items())]
+
+        # Helper for boolean counts
+        def count_boolean(field: str, check_not_null: bool = True) -> dict:
+            true_count = 0
+            false_count = 0
+            for p in products:
+                value = p.get(field)
+                if check_not_null:
+                    if value is not None and value != "" and value != []:
+                        true_count += 1
+                    else:
+                        false_count += 1
+                else:
+                    if value:
+                        true_count += 1
+                    else:
+                        false_count += 1
+            return {"trueCount": true_count, "falseCount": false_count}
+
+        # Helper for array fields
+        def count_array_values(field: str) -> list[dict]:
+            counts: dict[str, int] = {}
+            for p in products:
+                values = p.get(field) or []
+                for value in values:
+                    if value:
+                        counts[value] = counts.get(value, 0) + 1
+            return [{"value": k, "label": k, "count": v} for k, v in sorted(counts.items())]
+
+        # Get frame count range
+        frame_counts = [p.get("frame_count", 0) for p in products]
+        visibility_scores = [p.get("visibility_score", 0) for p in products if p.get("visibility_score") is not None]
+
+        # Count pack types from JSONB field
+        pack_type_counts: dict[str, int] = {}
+        for p in products:
+            pack_config = p.get("pack_configuration")
+            if pack_config and isinstance(pack_config, dict):
+                pack_type = pack_config.get("type")
+                if pack_type:
+                    pack_type_counts[pack_type] = pack_type_counts.get(pack_type, 0) + 1
+
+        return {
+            "status": count_values("status"),
+            "category": count_values("category"),
+            "brand": count_values("brand_name"),
+            "subBrand": count_values("sub_brand"),
+            "productName": count_values("product_name"),
+            "flavor": count_values("variant_flavor"),
+            "container": count_values("container_type"),
+            "netQuantity": count_values("net_quantity"),
+            "packType": [{"value": k, "label": k, "count": v} for k, v in sorted(pack_type_counts.items())],
+            "country": count_values("manufacturer_country"),
+            "claims": count_array_values("claims"),
+            "issueTypes": count_array_values("issues_detected"),
+            "frameCount": {
+                "min": min(frame_counts) if frame_counts else 0,
+                "max": max(frame_counts) if frame_counts else 0,
+            },
+            "visibilityScore": {
+                "min": min(visibility_scores) if visibility_scores else 0,
+                "max": max(visibility_scores) if visibility_scores else 100,
+            },
+            "hasVideo": count_boolean("video_url"),
+            "hasImage": count_boolean("primary_image_url"),
+            "hasNutrition": count_boolean("nutrition_facts"),
+            "hasDescription": count_boolean("marketing_description"),
+            "hasPrompt": count_boolean("grounding_prompt"),
+            "hasIssues": count_boolean("issues_detected"),
+        }
 
     async def create_dataset(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create new dataset."""
@@ -1700,6 +2211,340 @@ class SupabaseService:
             .execute()
         )
         return response.data[0] if response.data else None
+
+    # =========================================
+    # Embedding Collections (Metadata)
+    # =========================================
+
+    async def get_embedding_collections(
+        self,
+        collection_type: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Get all embedding collection metadata."""
+        query = (
+            self.client.table("embedding_collections")
+            .select("*")
+            .order("created_at", desc=True)
+        )
+        if collection_type:
+            query = query.eq("collection_type", collection_type)
+        response = query.execute()
+        return response.data
+
+    async def get_embedding_collection(self, collection_id: str) -> Optional[dict[str, Any]]:
+        """Get single embedding collection by ID."""
+        response = (
+            self.client.table("embedding_collections")
+            .select("*")
+            .eq("id", collection_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def get_embedding_collection_by_name(self, name: str) -> Optional[dict[str, Any]]:
+        """Get embedding collection by name."""
+        response = (
+            self.client.table("embedding_collections")
+            .select("*")
+            .eq("name", name)
+            .maybe_single()
+            .execute()
+        )
+        return response.data
+
+    async def create_embedding_collection(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create embedding collection metadata."""
+        response = (
+            self.client.table("embedding_collections")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_embedding_collection(
+        self, collection_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update embedding collection metadata."""
+        response = (
+            self.client.table("embedding_collections")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", collection_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_embedding_collection(self, collection_id: str) -> bool:
+        """Delete embedding collection metadata."""
+        self.client.table("embedding_collections").delete().eq("id", collection_id).execute()
+        return True
+
+    # =========================================
+    # Matched Products (for Training)
+    # =========================================
+
+    async def get_matched_products(
+        self,
+        page: int = 1,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Get products that have at least one matched cutout.
+        Used for training extraction tab.
+        """
+        # Get distinct product IDs that have matches
+        matched_response = (
+            self.client.table("cutout_images")
+            .select("matched_product_id")
+            .not_.is_("matched_product_id", "null")
+            .execute()
+        )
+
+        # Get unique product IDs
+        matched_product_ids = list(set(
+            item["matched_product_id"]
+            for item in matched_response.data
+            if item.get("matched_product_id")
+        ))
+
+        if not matched_product_ids:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "limit": limit,
+            }
+
+        # Pagination
+        start = (page - 1) * limit
+        end = start + limit - 1
+
+        # Get products with their match counts
+        products_response = (
+            self.client.table("products")
+            .select("*", count="exact")
+            .in_("id", matched_product_ids)
+            .range(start, end)
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        items = products_response.data
+
+        # Add match counts for each product
+        for product in items:
+            count_response = (
+                self.client.table("cutout_images")
+                .select("*", count="exact")
+                .eq("matched_product_id", product["id"])
+                .execute()
+            )
+            product["matched_cutout_count"] = count_response.count or 0
+
+        return {
+            "items": items,
+            "total": len(matched_product_ids),
+            "page": page,
+            "limit": limit,
+        }
+
+    async def get_matched_products_count(self) -> int:
+        """Get count of products that have at least one matched cutout."""
+        response = (
+            self.client.table("cutout_images")
+            .select("matched_product_id")
+            .not_.is_("matched_product_id", "null")
+            .execute()
+        )
+        unique_ids = set(
+            item["matched_product_id"]
+            for item in response.data
+            if item.get("matched_product_id")
+        )
+        return len(unique_ids)
+
+    async def get_matched_cutouts_for_product(
+        self,
+        product_id: str,
+    ) -> list[dict[str, Any]]:
+        """Get all cutouts matched to a specific product."""
+        response = (
+            self.client.table("cutout_images")
+            .select("*")
+            .eq("matched_product_id", product_id)
+            .order("matched_at", desc=True)
+            .execute()
+        )
+        return response.data
+
+    async def get_product_images_by_types(
+        self,
+        product_id: str,
+        image_types: list[str],
+        frame_selection: str = "first",
+        frame_interval: int = 5,
+        max_frames: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Get product images filtered by type with frame selection logic.
+
+        Args:
+            product_id: Product UUID
+            image_types: List of types ('synthetic', 'real', 'augmented')
+            frame_selection: 'first', 'all', 'key_frames', 'interval'
+            frame_interval: For interval selection, pick every N frames
+            max_frames: Maximum frames to return per type
+        """
+        all_images = []
+
+        for img_type in image_types:
+            response = (
+                self.client.table("product_images")
+                .select("*")
+                .eq("product_id", product_id)
+                .eq("image_type", img_type)
+                .order("frame_index", desc=False)
+                .execute()
+            )
+            images = response.data
+
+            if not images:
+                continue
+
+            # Apply frame selection
+            if frame_selection == "first":
+                selected = images[:1]
+            elif frame_selection == "all":
+                selected = images[:max_frames]
+            elif frame_selection == "key_frames":
+                # Pick 0°, 90°, 180°, 270° angles (4 frames)
+                frame_count = len(images)
+                step = max(1, frame_count // 4)
+                indices = [0] + [i * step for i in range(1, 4) if i * step < frame_count]
+                selected = [images[i] for i in indices if i < len(images)]
+                selected = selected[:max_frames]
+            elif frame_selection == "interval":
+                selected = images[::frame_interval][:max_frames]
+            else:
+                selected = images[:1]
+
+            all_images.extend(selected)
+
+        return all_images
+
+    async def get_products_for_extraction(
+        self,
+        source_type: str,
+        source_product_ids: Optional[list[str]] = None,
+        source_dataset_id: Optional[str] = None,
+        source_filter: Optional[dict] = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """
+        Get products based on source configuration for extraction jobs.
+
+        Args:
+            source_type: 'all', 'selected', 'dataset', 'matched', 'filter', 'new'
+            source_product_ids: For 'selected' source_type
+            source_dataset_id: For 'dataset' source_type
+            source_filter: For 'filter' source_type (JSONB filter)
+            limit: Max products to return
+        """
+        if source_type == "all":
+            response = (
+                self.client.table("products")
+                .select("*")
+                .eq("status", "complete")
+                .limit(limit)
+                .execute()
+            )
+            return response.data
+
+        elif source_type == "selected" and source_product_ids:
+            response = (
+                self.client.table("products")
+                .select("*")
+                .in_("id", source_product_ids)
+                .execute()
+            )
+            return response.data
+
+        elif source_type == "dataset" and source_dataset_id:
+            # Get product IDs from dataset
+            dp_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", source_dataset_id)
+                .execute()
+            )
+            product_ids = [item["product_id"] for item in dp_response.data]
+            if not product_ids:
+                return []
+
+            response = (
+                self.client.table("products")
+                .select("*")
+                .in_("id", product_ids)
+                .execute()
+            )
+            return response.data
+
+        elif source_type == "matched":
+            # Get products with matched cutouts
+            matched_response = (
+                self.client.table("cutout_images")
+                .select("matched_product_id")
+                .not_.is_("matched_product_id", "null")
+                .execute()
+            )
+            product_ids = list(set(
+                item["matched_product_id"]
+                for item in matched_response.data
+                if item.get("matched_product_id")
+            ))
+            if not product_ids:
+                return []
+
+            response = (
+                self.client.table("products")
+                .select("*")
+                .in_("id", product_ids)
+                .execute()
+            )
+            return response.data
+
+        elif source_type == "filter" and source_filter:
+            # Build query from filter
+            query = self.client.table("products").select("*")
+
+            if source_filter.get("status"):
+                query = query.eq("status", source_filter["status"])
+            if source_filter.get("category"):
+                query = query.in_("category", source_filter["category"])
+            if source_filter.get("brand"):
+                query = query.in_("brand_name", source_filter["brand"])
+            if source_filter.get("has_video") is True:
+                query = query.not_.is_("video_url", "null")
+            if source_filter.get("min_frame_count"):
+                query = query.gte("frame_count", source_filter["min_frame_count"])
+
+            response = query.limit(limit).execute()
+            return response.data
+
+        elif source_type == "new":
+            # Products without embeddings (no qdrant_point_id or has_embedding)
+            # This requires checking which products don't have embeddings yet
+            response = (
+                self.client.table("products")
+                .select("*")
+                .eq("status", "complete")
+                .limit(limit)
+                .execute()
+            )
+            # Note: actual filtering for "new" would need to check Qdrant
+            return response.data
+
+        return []
 
     # =========================================
     # Cutout Sync State
