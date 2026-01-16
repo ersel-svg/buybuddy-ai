@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -8,27 +8,24 @@ import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
+  FilterDrawer,
+  FilterTrigger,
+  useFilterState,
+  FilterSection,
+} from "@/components/filters/filter-drawer";
 import {
   ArrowLeft,
   Plus,
   Search,
   Loader2,
   Package,
-  Filter,
   CheckSquare,
   Square,
-  X,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 export default function AddProductsPage() {
@@ -36,16 +33,33 @@ export default function AddProductsPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
+  // States
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedProducts, setSelectedProducts] = useState<Set<string>>(
     new Set()
   );
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const limit = 100;
 
-  // Filter states
-  const [filterCategory, setFilterCategory] = useState<string>("all");
-  const [filterBrand, setFilterBrand] = useState<string>("all");
-  const [filterStatus, setFilterStatus] = useState<string>("all");
-  const [filterContainerType, setFilterContainerType] = useState<string>("all");
+  // Filter state hook
+  const { filterState, setFilter, clearSection, clearAll, getTotalCount } =
+    useFilterState();
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [filterState]);
 
   // Fetch dataset info
   const { data: dataset } = useQuery({
@@ -54,10 +68,107 @@ export default function AddProductsPage() {
     enabled: !!id,
   });
 
-  // Fetch all products
-  const { data: allProducts, isLoading: isLoadingProducts, error: productsError } = useQuery({
-    queryKey: ["all-products"],
-    queryFn: () => apiClient.getProducts({ limit: 1000 }),
+  // Convert FilterState to API parameters (same as products page)
+  const apiFilters = useMemo(() => {
+    const params: Record<string, string | number | boolean | undefined> = {};
+
+    // Helper to convert Set to comma-separated string
+    const setToString = (key: string): string | undefined => {
+      const filter = filterState[key] as Set<string> | undefined;
+      if (filter?.size) {
+        return Array.from(filter).join(",");
+      }
+      return undefined;
+    };
+
+    // Checkbox filters -> comma-separated strings
+    params.status = setToString("status");
+    params.category = setToString("category");
+    params.brand = setToString("brand");
+    params.sub_brand = setToString("subBrand");
+    params.product_name = setToString("productName");
+    params.variant_flavor = setToString("flavor");
+    params.container_type = setToString("container");
+    params.net_quantity = setToString("netQuantity");
+    params.pack_type = setToString("packType");
+    params.manufacturer_country = setToString("country");
+    params.claims = setToString("claims");
+
+    // Boolean filters
+    const booleanKeys = [
+      "hasVideo",
+      "hasImage",
+      "hasNutrition",
+      "hasDescription",
+      "hasPrompt",
+      "hasIssues",
+    ];
+    const booleanApiKeys = [
+      "has_video",
+      "has_image",
+      "has_nutrition",
+      "has_description",
+      "has_prompt",
+      "has_issues",
+    ];
+    booleanKeys.forEach((key, i) => {
+      const value = filterState[key] as boolean | undefined;
+      if (value !== undefined) {
+        params[booleanApiKeys[i]] = value;
+      }
+    });
+
+    // Range filters
+    const frameRange = filterState["frameCount"] as
+      | { min: number; max: number }
+      | undefined;
+    if (frameRange) {
+      params.frame_count_min = frameRange.min;
+      params.frame_count_max = frameRange.max;
+    }
+
+    const visibilityRange = filterState["visibilityScore"] as
+      | { min: number; max: number }
+      | undefined;
+    if (visibilityRange) {
+      params.visibility_score_min = visibilityRange.min;
+      params.visibility_score_max = visibilityRange.max;
+    }
+
+    return params;
+  }, [filterState]);
+
+  // Fetch filter options - cascading based on current filters, excluding dataset products
+  const { data: filterOptions } = useQuery({
+    queryKey: ["filter-options", { ...apiFilters, exclude_dataset_id: id }],
+    queryFn: () =>
+      apiClient.getFilterOptions({
+        ...apiFilters,
+        exclude_dataset_id: id,
+      }),
+    staleTime: 30000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  // Fetch products with pagination and filters (excluding products already in dataset)
+  const {
+    data: productsData,
+    isLoading: isLoadingProducts,
+    error: productsError,
+  } = useQuery({
+    queryKey: [
+      "products-for-dataset",
+      id,
+      { page, search: debouncedSearch, ...apiFilters },
+    ],
+    queryFn: () =>
+      apiClient.getProducts({
+        page,
+        limit,
+        search: debouncedSearch || undefined,
+        exclude_dataset_id: id,
+        ...apiFilters,
+      }),
   });
 
   // Add products mutation
@@ -85,72 +196,15 @@ export default function AddProductsPage() {
     setSelectedProducts(newSet);
   };
 
-  // Filter out products already in dataset
-  const existingProductIds = useMemo(
-    () => new Set(dataset?.products?.map((p) => p.id) || []),
-    [dataset?.products]
-  );
-
-  const productsNotInDataset = useMemo(
-    () => (allProducts?.items || []).filter((p) => !existingProductIds.has(p.id)),
-    [allProducts?.items, existingProductIds]
-  );
-
-  // Extract unique values for filters
-  const filterOptions = useMemo(() => {
-    const categories = new Set<string>();
-    const brands = new Set<string>();
-    const statuses = new Set<string>();
-    const containerTypes = new Set<string>();
-
-    productsNotInDataset.forEach((p) => {
-      if (p.category) categories.add(p.category);
-      if (p.brand_name) brands.add(p.brand_name);
-      if (p.status) statuses.add(p.status);
-      if (p.container_type) containerTypes.add(p.container_type);
-    });
-
-    return {
-      categories: Array.from(categories).sort(),
-      brands: Array.from(brands).sort(),
-      statuses: Array.from(statuses).sort(),
-      containerTypes: Array.from(containerTypes).sort(),
-    };
-  }, [productsNotInDataset]);
-
-  // Apply all filters
-  const availableProducts = useMemo(() => {
-    return productsNotInDataset.filter((p) => {
-      // Search filter
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        const matchesSearch =
-          p.barcode?.toLowerCase().includes(query) ||
-          p.brand_name?.toLowerCase().includes(query) ||
-          p.product_name?.toLowerCase().includes(query);
-        if (!matchesSearch) return false;
-      }
-
-      // Category filter
-      if (filterCategory !== "all" && p.category !== filterCategory) return false;
-
-      // Brand filter
-      if (filterBrand !== "all" && p.brand_name !== filterBrand) return false;
-
-      // Status filter
-      if (filterStatus !== "all" && p.status !== filterStatus) return false;
-
-      // Container type filter
-      if (filterContainerType !== "all" && p.container_type !== filterContainerType) return false;
-
-      return true;
-    });
-  }, [productsNotInDataset, searchQuery, filterCategory, filterBrand, filterStatus, filterContainerType]);
+  // Products list
+  const products = productsData?.items || [];
+  const totalProducts = productsData?.total || 0;
+  const totalPages = Math.ceil(totalProducts / limit);
 
   // Select/Clear helpers
   const selectAllVisible = () => {
     const newSet = new Set(selectedProducts);
-    availableProducts.forEach((p) => newSet.add(p.id));
+    products.forEach((p) => newSet.add(p.id));
     setSelectedProducts(newSet);
   };
 
@@ -158,20 +212,208 @@ export default function AddProductsPage() {
     setSelectedProducts(new Set());
   };
 
-  const clearFilters = () => {
-    setSearchQuery("");
-    setFilterCategory("all");
-    setFilterBrand("all");
-    setFilterStatus("all");
-    setFilterContainerType("all");
-  };
+  // Build filter sections from options (same structure as products page)
+  const filterSections: FilterSection[] = useMemo(() => {
+    if (!filterOptions) return [];
 
-  const hasActiveFilters =
-    searchQuery ||
-    filterCategory !== "all" ||
-    filterBrand !== "all" ||
-    filterStatus !== "all" ||
-    filterContainerType !== "all";
+    return [
+      // Status
+      {
+        id: "status",
+        label: "Status",
+        type: "checkbox",
+        options: filterOptions.status,
+        defaultExpanded: true,
+      },
+      // Category
+      {
+        id: "category",
+        label: "Category",
+        type: "checkbox",
+        options: filterOptions.category,
+        searchable: true,
+        defaultExpanded: true,
+      },
+      // Brand
+      {
+        id: "brand",
+        label: "Brand",
+        type: "checkbox",
+        options: filterOptions.brand,
+        searchable: true,
+        defaultExpanded: true,
+      },
+      // Sub Brand
+      {
+        id: "subBrand",
+        label: "Sub Brand",
+        type: "checkbox",
+        options: filterOptions.subBrand,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Product Name
+      {
+        id: "productName",
+        label: "Product Name",
+        type: "checkbox",
+        options: filterOptions.productName,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Variant / Flavor
+      {
+        id: "flavor",
+        label: "Variant / Flavor",
+        type: "checkbox",
+        options: filterOptions.flavor,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Container Type
+      {
+        id: "container",
+        label: "Container Type",
+        type: "checkbox",
+        options: filterOptions.container,
+        defaultExpanded: false,
+      },
+      // Net Quantity
+      {
+        id: "netQuantity",
+        label: "Net Quantity",
+        type: "checkbox",
+        options: filterOptions.netQuantity,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Pack Type
+      {
+        id: "packType",
+        label: "Pack Type",
+        type: "checkbox",
+        options: filterOptions.packType,
+        defaultExpanded: false,
+      },
+      // Manufacturer Country
+      {
+        id: "country",
+        label: "Manufacturer Country",
+        type: "checkbox",
+        options: filterOptions.country,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Claims
+      {
+        id: "claims",
+        label: "Product Claims",
+        type: "checkbox",
+        options: filterOptions.claims,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Issue Types
+      {
+        id: "issueTypes",
+        label: "Issue Types",
+        type: "checkbox",
+        options: filterOptions.issueTypes,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      // Frame Count Range
+      {
+        id: "frameCount",
+        label: "Frame Count",
+        type: "range",
+        min: filterOptions.frameCount.min,
+        max: filterOptions.frameCount.max || 100,
+        step: 1,
+        defaultExpanded: false,
+      },
+      // Visibility Score Range
+      {
+        id: "visibilityScore",
+        label: "Visibility Score",
+        type: "range",
+        min: filterOptions.visibilityScore.min,
+        max: filterOptions.visibilityScore.max || 100,
+        step: 1,
+        unit: "%",
+        defaultExpanded: false,
+      },
+      // Has Video
+      {
+        id: "hasVideo",
+        label: "Video",
+        type: "boolean",
+        trueLabel: "Has Video",
+        falseLabel: "No Video",
+        trueCount: filterOptions.hasVideo.trueCount,
+        falseCount: filterOptions.hasVideo.falseCount,
+        defaultExpanded: false,
+      },
+      // Has Image
+      {
+        id: "hasImage",
+        label: "Primary Image",
+        type: "boolean",
+        trueLabel: "Has Image",
+        falseLabel: "No Image",
+        trueCount: filterOptions.hasImage.trueCount,
+        falseCount: filterOptions.hasImage.falseCount,
+        defaultExpanded: false,
+      },
+      // Has Nutrition Facts
+      {
+        id: "hasNutrition",
+        label: "Nutrition Facts",
+        type: "boolean",
+        trueLabel: "Has Nutrition Info",
+        falseLabel: "No Nutrition Info",
+        trueCount: filterOptions.hasNutrition.trueCount,
+        falseCount: filterOptions.hasNutrition.falseCount,
+        defaultExpanded: false,
+      },
+      // Has Marketing Description
+      {
+        id: "hasDescription",
+        label: "Marketing Description",
+        type: "boolean",
+        trueLabel: "Has Description",
+        falseLabel: "No Description",
+        trueCount: filterOptions.hasDescription.trueCount,
+        falseCount: filterOptions.hasDescription.falseCount,
+        defaultExpanded: false,
+      },
+      // Has Grounding Prompt
+      {
+        id: "hasPrompt",
+        label: "Grounding Prompt",
+        type: "boolean",
+        trueLabel: "Has Prompt",
+        falseLabel: "No Prompt",
+        trueCount: filterOptions.hasPrompt.trueCount,
+        falseCount: filterOptions.hasPrompt.falseCount,
+        defaultExpanded: false,
+      },
+      // Has Issues
+      {
+        id: "hasIssues",
+        label: "Has Issues",
+        type: "boolean",
+        trueLabel: "Has Issues",
+        falseLabel: "No Issues",
+        trueCount: filterOptions.hasIssues.trueCount,
+        falseCount: filterOptions.hasIssues.falseCount,
+        defaultExpanded: false,
+      },
+    ];
+  }, [filterOptions]);
+
+  const activeFilterCount = getTotalCount();
+  const hasActiveFilters = activeFilterCount > 0 || debouncedSearch;
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col">
@@ -203,273 +445,223 @@ export default function AddProductsPage() {
             Cancel
           </Button>
           <Button
-            onClick={() => addProductsMutation.mutate(Array.from(selectedProducts))}
-            disabled={selectedProducts.size === 0 || addProductsMutation.isPending}
+            onClick={() =>
+              addProductsMutation.mutate(Array.from(selectedProducts))
+            }
+            disabled={
+              selectedProducts.size === 0 || addProductsMutation.isPending
+            }
           >
             {addProductsMutation.isPending ? (
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
             ) : (
               <Plus className="h-4 w-4 mr-2" />
             )}
-            Add {selectedProducts.size || ""} Product{selectedProducts.size !== 1 ? "s" : ""}
+            Add {selectedProducts.size || ""} Product
+            {selectedProducts.size !== 1 ? "s" : ""}
           </Button>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex flex-1 min-h-0">
-        {/* Filters Sidebar */}
-        <div className="w-72 border-r bg-gray-50/50 p-6 flex flex-col gap-4 overflow-y-auto shrink-0">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Filter className="h-4 w-4" />
-              Filters
-            </h3>
-            {hasActiveFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="h-7 text-xs"
-              >
-                <X className="h-3 w-3 mr-1" />
-                Clear
-              </Button>
-            )}
-          </div>
-
-          <Separator />
-
+      {/* Toolbar */}
+      <div className="px-6 py-3 border-b bg-gray-50/50 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
           {/* Search */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-gray-600">Search</Label>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
-              <Input
-                placeholder="Barcode, name, brand..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 h-9 text-sm"
-              />
-            </div>
+          <div className="relative w-80">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Input
+              placeholder="Search barcode, name, brand..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 h-9"
+            />
           </div>
 
-          {/* Category Filter */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-gray-600">Category</Label>
-            <Select value={filterCategory} onValueChange={setFilterCategory}>
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue placeholder="All categories" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All categories ({filterOptions.categories.length})</SelectItem>
-                {filterOptions.categories.map((cat) => (
-                  <SelectItem key={cat} value={cat}>
-                    {cat}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Filter Trigger */}
+          <FilterTrigger
+            onClick={() => setFilterDrawerOpen(true)}
+            activeCount={activeFilterCount}
+          />
 
-          {/* Brand Filter */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-gray-600">Brand</Label>
-            <Select value={filterBrand} onValueChange={setFilterBrand}>
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue placeholder="All brands" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All brands ({filterOptions.brands.length})</SelectItem>
-                {filterOptions.brands.map((brand) => (
-                  <SelectItem key={brand} value={brand}>
-                    {brand}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Status Filter */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-gray-600">Status</Label>
-            <Select value={filterStatus} onValueChange={setFilterStatus}>
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue placeholder="All statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                {filterOptions.statuses.map((status) => (
-                  <SelectItem key={status} value={status}>
-                    {status.replace("_", " ")}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Container Type Filter */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium text-gray-600">Container Type</Label>
-            <Select value={filterContainerType} onValueChange={setFilterContainerType}>
-              <SelectTrigger className="h-9 text-sm">
-                <SelectValue placeholder="All types" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All types</SelectItem>
-                {filterOptions.containerTypes.map((type) => (
-                  <SelectItem key={type} value={type}>
-                    {type}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Separator />
-
-          {/* Stats */}
-          <div className="bg-card rounded-lg p-4 border space-y-2">
-            <p className="text-xs text-gray-500">
-              Total available: <span className="font-semibold text-gray-900">{productsNotInDataset.length}</span>
-            </p>
-            <p className="text-xs text-gray-500">
-              Filtered: <span className="font-semibold text-gray-900">{availableProducts.length}</span>
-            </p>
-            <p className="text-xs text-blue-600">
-              Selected: <span className="font-bold">{selectedProducts.size}</span>
-            </p>
+          {/* Selection actions */}
+          <div className="flex items-center gap-2 ml-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={selectAllVisible}
+              className="h-8"
+              disabled={products.length === 0}
+            >
+              <CheckSquare className="h-3.5 w-3.5 mr-1.5" />
+              Select Page
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearAllSelected}
+              disabled={selectedProducts.size === 0}
+              className="h-8"
+            >
+              <Square className="h-3.5 w-3.5 mr-1.5" />
+              Clear
+            </Button>
           </div>
         </div>
 
-        {/* Products Grid */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {/* Action Bar */}
-          <div className="px-6 py-3 border-b bg-card flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={selectAllVisible}
-                className="h-8"
-              >
-                <CheckSquare className="h-3.5 w-3.5 mr-1.5" />
-                Select All Visible ({availableProducts.length})
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={clearAllSelected}
-                disabled={selectedProducts.size === 0}
-                className="h-8"
-              >
-                <Square className="h-3.5 w-3.5 mr-1.5" />
-                Clear Selection
-              </Button>
-            </div>
-            <p className="text-sm text-gray-500">
-              Showing {availableProducts.length} of {productsNotInDataset.length} products
-            </p>
-          </div>
-
-          {/* Scrollable Grid */}
-          <div className="flex-1 overflow-y-auto p-6">
-            {productsError ? (
-              <div className="flex flex-col items-center justify-center h-64 text-red-500">
-                <p className="font-medium text-lg">Error loading products</p>
-                <p className="text-sm mt-1">
-                  {productsError instanceof Error ? productsError.message : JSON.stringify(productsError)}
-                </p>
-                <pre className="text-xs mt-2 bg-red-50 p-2 rounded max-w-md overflow-auto">
-                  {JSON.stringify(productsError, null, 2)}
-                </pre>
-              </div>
-            ) : isLoadingProducts ? (
-              <div className="flex items-center justify-center h-64">
-                <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-              </div>
-            ) : availableProducts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-64 text-gray-500">
-                <Package className="h-16 w-16 mb-4 opacity-30" />
-                <p className="font-medium text-lg">No products found</p>
-                <p className="text-sm mt-1">
-                  {hasActiveFilters
-                    ? "Try adjusting your filters"
-                    : "All products are already in this dataset"}
-                </p>
-                {hasActiveFilters && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={clearFilters}
-                    className="mt-4"
-                  >
-                    Clear filters
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
-                {availableProducts.map((product) => (
-                  <div
-                    key={product.id}
-                    className={`relative p-3 border rounded-xl cursor-pointer transition-all hover:shadow-lg ${
-                      selectedProducts.has(product.id)
-                        ? "border-blue-500 bg-blue-50 ring-2 ring-blue-500"
-                        : "bg-card border-gray-200 hover:border-gray-300"
-                    }`}
-                    onClick={() => toggleProduct(product.id)}
-                  >
-                    {/* Checkbox */}
-                    <div className="absolute top-2 right-2 z-10">
-                      <Checkbox
-                        checked={selectedProducts.has(product.id)}
-                        onCheckedChange={() => toggleProduct(product.id)}
-                      />
-                    </div>
-
-                    {/* Product Image */}
-                    <div className="w-full aspect-square bg-gray-50 rounded-lg mb-2 flex items-center justify-center overflow-hidden border">
-                      {product.primary_image_url ? (
-                        <img
-                          src={product.primary_image_url}
-                          alt=""
-                          className="w-full h-full object-contain"
-                        />
-                      ) : (
-                        <Package className="h-10 w-10 text-gray-300" />
-                      )}
-                    </div>
-
-                    {/* Product Info */}
-                    <div className="space-y-1">
-                      <p className="font-semibold text-xs line-clamp-1 leading-tight">
-                        {product.brand_name || "Unknown"}
-                      </p>
-                      <p className="text-xs text-gray-600 line-clamp-2 leading-tight min-h-[2rem]">
-                        {product.product_name || "-"}
-                      </p>
-                      <p className="text-[10px] text-gray-400 font-mono truncate">
-                        {product.barcode}
-                      </p>
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                          {product.frame_count}f
-                        </Badge>
-                        {product.category && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 truncate max-w-[80px]">
-                            {product.category}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Stats */}
+        <div className="flex items-center gap-4 text-sm text-gray-500">
+          <span>
+            Showing {products.length} of {totalProducts} products
+          </span>
+          {selectedProducts.size > 0 && (
+            <Badge className="bg-blue-600 text-white">
+              {selectedProducts.size} selected
+            </Badge>
+          )}
         </div>
       </div>
+
+      {/* Products Grid */}
+      <div className="flex-1 overflow-y-auto p-6">
+        {productsError ? (
+          <div className="flex flex-col items-center justify-center h-64 text-red-500">
+            <p className="font-medium text-lg">Error loading products</p>
+            <p className="text-sm mt-1">
+              {productsError instanceof Error
+                ? productsError.message
+                : JSON.stringify(productsError)}
+            </p>
+          </div>
+        ) : isLoadingProducts ? (
+          <div className="flex items-center justify-center h-64">
+            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+          </div>
+        ) : products.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-64 text-gray-500">
+            <Package className="h-16 w-16 mb-4 opacity-30" />
+            <p className="font-medium text-lg">No products found</p>
+            <p className="text-sm mt-1">
+              {hasActiveFilters
+                ? "Try adjusting your filters"
+                : "All products are already in this dataset"}
+            </p>
+            {hasActiveFilters && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  clearAll();
+                  setSearchQuery("");
+                }}
+                className="mt-4"
+              >
+                Clear filters
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
+            {products.map((product) => (
+              <div
+                key={product.id}
+                className={`relative p-3 border rounded-xl cursor-pointer transition-all hover:shadow-lg ${
+                  selectedProducts.has(product.id)
+                    ? "border-blue-500 bg-blue-50 ring-2 ring-blue-500"
+                    : "bg-card border-gray-200 hover:border-gray-300"
+                }`}
+                onClick={() => toggleProduct(product.id)}
+              >
+                {/* Checkbox */}
+                <div className="absolute top-2 right-2 z-10">
+                  <Checkbox
+                    checked={selectedProducts.has(product.id)}
+                    onCheckedChange={() => toggleProduct(product.id)}
+                  />
+                </div>
+
+                {/* Product Image */}
+                <div className="w-full aspect-square bg-gray-50 rounded-lg mb-2 flex items-center justify-center overflow-hidden border">
+                  {product.primary_image_url ? (
+                    <img
+                      src={product.primary_image_url}
+                      alt=""
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <Package className="h-10 w-10 text-gray-300" />
+                  )}
+                </div>
+
+                {/* Product Info */}
+                <div className="space-y-1">
+                  <p className="font-semibold text-xs line-clamp-1 leading-tight">
+                    {product.brand_name || "Unknown"}
+                  </p>
+                  <p className="text-xs text-gray-600 line-clamp-2 leading-tight min-h-[2rem]">
+                    {product.product_name || "-"}
+                  </p>
+                  <p className="text-[10px] text-gray-400 font-mono truncate">
+                    {product.barcode}
+                  </p>
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                      {product.frame_count}f
+                    </Badge>
+                    {product.category && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] px-1.5 py-0 truncate max-w-[80px]"
+                      >
+                        {product.category}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="px-6 py-4 border-t-2 bg-muted/50 flex items-center justify-between shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+          <p className="text-base font-medium text-foreground">
+            Page {page} of {totalPages}
+          </p>
+          <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+            >
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+            >
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Filter Drawer */}
+      <FilterDrawer
+        open={filterDrawerOpen}
+        onOpenChange={setFilterDrawerOpen}
+        sections={filterSections}
+        filterState={filterState}
+        onFilterChange={setFilter}
+        onClearAll={clearAll}
+        onClearSection={clearSection}
+        title="Filter Products"
+        description="Filter products to add to dataset"
+      />
     </div>
   );
 }

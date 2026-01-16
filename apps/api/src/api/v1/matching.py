@@ -260,6 +260,9 @@ async def get_product_candidates(
     min_similarity: float = Query(0.7, ge=0.0, le=1.0),
     include_matched: bool = Query(False, description="Include already matched cutouts"),
     limit: int = Query(100, ge=1, le=500),
+    match_type_filter: Optional[str] = Query(None, description="Filter by match type: 'barcode', 'similarity', 'both', or None for all"),
+    product_collection: Optional[str] = Query(None, description="Product embeddings collection (defaults to active model)"),
+    cutout_collection: Optional[str] = Query(None, description="Cutout embeddings collection (defaults to active model)"),
     db: SupabaseService = Depends(get_supabase),
 ):
     """
@@ -268,6 +271,11 @@ async def get_product_candidates(
     Returns cutouts that match by:
     1. Barcode match: cutout.predicted_upc == product.barcode
     2. Similarity match: embedding similarity >= min_similarity (if embeddings exist)
+
+    Supports multi-view products: if a product has multiple embeddings (different frames),
+    searches using all of them and returns the best match for each cutout.
+
+    Collections can be manually specified or will default to the active embedding model's collections.
 
     Candidates are sorted by: barcode matches first, then by similarity.
     """
@@ -307,62 +315,137 @@ async def get_product_candidates(
     # 2. Get similarity matches from Qdrant (if configured)
     if qdrant_service.is_configured():
         try:
-            # Get active embedding model
+            # Get active embedding model for default collections
             active_model = await db.get_active_embedding_model()
-            if active_model and active_model.get("qdrant_collection"):
-                collection_name = active_model["qdrant_collection"]
 
-                # Get product embedding from Qdrant (product_id is the point ID)
-                product_point = await qdrant_service.get_point(
-                    collection_name=collection_name,
-                    point_id=product_id,
-                    with_vector=True,
-                )
+            # Determine collections to use
+            # Priority: explicit parameter > model's separate collections > model's single collection
+            actual_product_collection = product_collection
+            actual_cutout_collection = cutout_collection
 
-                if product_point and product_point.get("vector"):
-                    has_product_embedding = True
-                    # Search for similar cutouts using product's embedding
-                    similar_results = await qdrant_service.search(
-                        collection_name=collection_name,
-                        query_vector=product_point["vector"],
-                        limit=limit * 2,  # Get more to filter
-                        score_threshold=min_similarity,
-                        filter_conditions={"source": "cutout"},  # Only cutouts
-                        with_payload=True,
+            if active_model:
+                if not actual_product_collection:
+                    actual_product_collection = (
+                        active_model.get("product_collection") or
+                        active_model.get("qdrant_collection")
+                    )
+                if not actual_cutout_collection:
+                    actual_cutout_collection = active_model.get("cutout_collection")
+
+                    # Auto-derive cutout collection from product collection name
+                    # products_dinov2_base -> cutouts_dinov2_base
+                    if not actual_cutout_collection and actual_product_collection:
+                        if actual_product_collection.startswith("products_"):
+                            actual_cutout_collection = actual_product_collection.replace("products_", "cutouts_", 1)
+                        else:
+                            actual_cutout_collection = active_model.get("qdrant_collection")
+
+            if actual_product_collection:
+                # Check if we're using separate collections
+                use_separate_collections = actual_product_collection != actual_cutout_collection
+
+                # Get product embeddings (multi-view support)
+                product_embeddings = []
+
+                if use_separate_collections:
+                    # Separate collections: get all product embeddings by product_id
+                    product_embeddings = await qdrant_service.get_product_embeddings(
+                        collection_name=actual_product_collection,
+                        product_id=product_id,
+                        with_vectors=True,
+                    )
+                else:
+                    # Single collection: try multi-view first, then fallback to single point
+                    product_embeddings = await qdrant_service.get_product_embeddings(
+                        collection_name=actual_product_collection,
+                        product_id=product_id,
+                        with_vectors=True,
                     )
 
-                    # Process similarity results
-                    for result in similar_results:
-                        cutout_id = result["payload"].get("cutout_id")
-                        if not cutout_id:
+                    # Fallback: try getting point directly by ID (legacy single embedding)
+                    if not product_embeddings:
+                        product_point = await qdrant_service.get_point(
+                            collection_name=actual_product_collection,
+                            point_id=product_id,
+                            with_vector=True,
+                        )
+                        if product_point and product_point.get("vector"):
+                            product_embeddings = [product_point]
+
+                if product_embeddings:
+                    has_product_embedding = True
+
+                    # Collect all similarity results from all product views
+                    # Key: cutout_id -> best score
+                    cutout_best_scores: dict[str, float] = {}
+
+                    for emb in product_embeddings:
+                        vector = emb.get("vector")
+                        if not vector:
                             continue
 
-                        # Skip if already in barcode matches
-                        if cutout_id in barcode_match_ids:
-                            # Update existing candidate with similarity score
-                            for c in candidates:
-                                if c.id == cutout_id:
-                                    c.similarity = max(c.similarity or 0, result["score"])
-                            similarity_match_ids.add(cutout_id)
-                            continue
+                        # Determine search collection and filter
+                        search_collection = actual_cutout_collection or actual_product_collection
+                        filter_conditions = None if use_separate_collections else {"source": "cutout"}
 
-                        # Skip if already matched to another product
-                        if not include_matched:
-                            cutout = await db.get_cutout(cutout_id)
-                            if cutout and cutout.get("matched_product_id"):
+                        similar_results = await qdrant_service.search(
+                            collection_name=search_collection,
+                            query_vector=vector,
+                            limit=limit,  # Optimized: don't fetch extra
+                            score_threshold=min_similarity,
+                            filter_conditions=filter_conditions,
+                            with_payload=True,
+                        )
+
+                        # Track best score per cutout across all product views
+                        for result in similar_results:
+                            cutout_id = result["payload"].get("cutout_id")
+                            if not cutout_id:
                                 continue
 
-                        similarity_match_ids.add(cutout_id)
+                            score = result["score"]
+                            if cutout_id not in cutout_best_scores or score > cutout_best_scores[cutout_id]:
+                                cutout_best_scores[cutout_id] = score
 
-                        # Get cutout details
-                        cutout = await db.get_cutout(cutout_id)
-                        if cutout:
+                    # Process deduplicated results with best scores
+                    # First, update barcode matches with similarity scores
+                    for cutout_id, best_score in cutout_best_scores.items():
+                        if cutout_id in barcode_match_ids:
+                            for c in candidates:
+                                if c.id == cutout_id:
+                                    c.similarity = max(c.similarity or 0, best_score)
+                            similarity_match_ids.add(cutout_id)
+
+                    # Get IDs that need DB lookup (not in barcode matches)
+                    cutout_ids_to_fetch = [
+                        cid for cid in cutout_best_scores.keys()
+                        if cid not in barcode_match_ids
+                    ]
+
+                    # BATCH FETCH: Single query for all cutouts
+                    if cutout_ids_to_fetch:
+                        cutouts_result = db.client.table("cutout_images").select(
+                            "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
+                        ).in_("id", cutout_ids_to_fetch).execute()
+
+                        cutouts_map = {c["id"]: c for c in (cutouts_result.data or [])}
+
+                        for cutout_id in cutout_ids_to_fetch:
+                            cutout = cutouts_map.get(cutout_id)
+                            if not cutout:
+                                continue
+
+                            # Skip if already matched to another product
+                            if not include_matched and cutout.get("matched_product_id"):
+                                continue
+
+                            similarity_match_ids.add(cutout_id)
                             candidates.append(CutoutCandidate(
                                 id=cutout["id"],
                                 external_id=cutout["external_id"],
                                 image_url=cutout["image_url"],
                                 predicted_upc=cutout.get("predicted_upc"),
-                                similarity=result["score"],
+                                similarity=cutout_best_scores[cutout_id],
                                 match_type="similarity",
                                 has_embedding=cutout.get("has_embedding", False),
                                 is_matched=cutout.get("matched_product_id") is not None,
@@ -380,11 +463,21 @@ async def get_product_candidates(
         if candidate.id in barcode_match_ids and candidate.id in similarity_match_ids:
             candidate.match_type = "both"
 
-    # Sort: barcode matches first, then by similarity
-    candidates.sort(key=lambda x: (
-        0 if x.match_type in ["barcode", "both"] else 1,
-        -(x.similarity or 0)
-    ))
+    # 4. Apply match_type filter if specified
+    if match_type_filter:
+        if match_type_filter == "both":
+            candidates = [c for c in candidates if c.match_type == "both"]
+        elif match_type_filter == "barcode":
+            candidates = [c for c in candidates if c.match_type in ["barcode", "both"]]
+        elif match_type_filter == "similarity":
+            candidates = [c for c in candidates if c.match_type in ["similarity", "both"]]
+
+    # 5. Sort: "both" first, then "barcode", then "similarity" - all by similarity descending
+    def sort_key(x):
+        type_priority = {"both": 0, "barcode": 1, "similarity": 2}.get(x.match_type, 3)
+        return (type_priority, -(x.similarity or 0))
+
+    candidates.sort(key=sort_key)
 
     return ProductCandidatesResponse(
         product=product,
@@ -486,6 +579,196 @@ async def unmatch_cutouts_from_product(
         "unmatched_count": unmatched_count,
         "total_requested": len(cutout_ids),
     }
+
+
+# ===========================================
+# Reverse Matching (Cutout → Products)
+# ===========================================
+
+
+class ProductMatchCandidate(BaseModel):
+    """Product candidate for reverse matching."""
+
+    id: str
+    barcode: Optional[str] = None
+    brand_name: Optional[str] = None
+    product_name: Optional[str] = None
+    primary_image_url: Optional[str] = None
+    similarity: float
+    match_type: str  # "barcode" | "similarity" | "both"
+
+
+class CutoutProductsResponse(BaseModel):
+    """Response for cutout's product candidates."""
+
+    cutout: dict
+    candidates: List[ProductMatchCandidate]
+    barcode_match_count: int
+    similarity_match_count: int
+    total_count: int
+    has_cutout_embedding: bool = False
+
+
+@router.get("/cutouts/{cutout_id}/products", response_model=CutoutProductsResponse)
+async def get_cutout_product_candidates(
+    cutout_id: str,
+    min_similarity: float = Query(0.7, ge=0.0, le=1.0),
+    limit: int = Query(50, ge=1, le=200),
+    product_collection: Optional[str] = Query(None, description="Product embeddings collection"),
+    cutout_collection: Optional[str] = Query(None, description="Cutout embeddings collection"),
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Get product candidates for a cutout (reverse matching).
+
+    Given a cutout image, find matching products by:
+    1. Barcode match: product.barcode == cutout.predicted_upc
+    2. Similarity match: embedding similarity >= min_similarity
+
+    Useful for:
+    - Verifying a cutout's match
+    - Finding alternative products for a cutout
+    - Quality checking existing matches
+    """
+    # Get cutout
+    cutout = await db.get_cutout(cutout_id)
+    if not cutout:
+        raise HTTPException(status_code=404, detail="Cutout not found")
+
+    predicted_upc = cutout.get("predicted_upc")
+    candidates = []
+    barcode_match_ids = set()
+    similarity_match_ids = set()
+    has_cutout_embedding = cutout.get("has_embedding", False)
+
+    # 1. Get barcode matches
+    if predicted_upc:
+        # Search products by barcode
+        barcode_products = db.client.table("products").select(
+            "id, barcode, brand_name, product_name, primary_image_url"
+        ).eq("barcode", predicted_upc).execute()
+
+        for p in barcode_products.data or []:
+            barcode_match_ids.add(p["id"])
+            candidates.append(ProductMatchCandidate(
+                id=p["id"],
+                barcode=p.get("barcode"),
+                brand_name=p.get("brand_name"),
+                product_name=p.get("product_name"),
+                primary_image_url=p.get("primary_image_url"),
+                similarity=1.0,  # Barcode match = perfect match
+                match_type="barcode",
+            ))
+
+    # 2. Get similarity matches from Qdrant
+    if qdrant_service.is_configured() and has_cutout_embedding:
+        try:
+            # Get active model for default collections
+            active_model = await db.get_active_embedding_model()
+
+            # Determine collections
+            actual_cutout_collection = cutout_collection
+            actual_product_collection = product_collection
+
+            if active_model:
+                if not actual_cutout_collection:
+                    actual_cutout_collection = (
+                        active_model.get("cutout_collection") or
+                        active_model.get("qdrant_collection")
+                    )
+                if not actual_product_collection:
+                    actual_product_collection = (
+                        active_model.get("product_collection") or
+                        active_model.get("qdrant_collection")
+                    )
+
+            if actual_cutout_collection:
+                # Get cutout embedding
+                cutout_point = await qdrant_service.get_point(
+                    collection_name=actual_cutout_collection,
+                    point_id=cutout_id,
+                    with_vector=True,
+                )
+
+                if cutout_point and cutout_point.get("vector"):
+                    # Search in products collection
+                    search_collection = actual_product_collection or actual_cutout_collection
+                    use_separate = actual_product_collection != actual_cutout_collection
+
+                    # Filter for products if using single collection
+                    filter_conditions = None if use_separate else {"source": "product"}
+
+                    similar_results = await qdrant_service.search(
+                        collection_name=search_collection,
+                        query_vector=cutout_point["vector"],
+                        limit=limit * 3,  # Get more to handle multi-view dedup
+                        score_threshold=min_similarity,
+                        filter_conditions=filter_conditions,
+                        with_payload=True,
+                    )
+
+                    # Deduplicate by product_id (multi-view support)
+                    # Keep best score per product
+                    product_best_scores: dict[str, tuple[float, dict]] = {}
+
+                    for result in similar_results:
+                        product_id = result["payload"].get("product_id")
+                        if not product_id:
+                            continue
+
+                        score = result["score"]
+                        if product_id not in product_best_scores or score > product_best_scores[product_id][0]:
+                            product_best_scores[product_id] = (score, result["payload"])
+
+                    # Build candidates from deduplicated results
+                    for product_id, (score, payload) in product_best_scores.items():
+                        similarity_match_ids.add(product_id)
+
+                        # Skip if already in barcode matches
+                        if product_id in barcode_match_ids:
+                            # Update existing candidate
+                            for c in candidates:
+                                if c.id == product_id:
+                                    c.similarity = max(c.similarity, score)
+                            continue
+
+                        # Get full product details
+                        product = await db.get_product(product_id)
+                        if product:
+                            candidates.append(ProductMatchCandidate(
+                                id=product_id,
+                                barcode=product.get("barcode"),
+                                brand_name=product.get("brand_name"),
+                                product_name=product.get("product_name"),
+                                primary_image_url=product.get("primary_image_url"),
+                                similarity=score,
+                                match_type="similarity",
+                            ))
+
+        except Exception as e:
+            print(f"Qdrant reverse search failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # 3. Mark candidates that are both barcode AND similarity matches
+    for candidate in candidates:
+        if candidate.id in barcode_match_ids and candidate.id in similarity_match_ids:
+            candidate.match_type = "both"
+
+    # Sort: barcode matches first, then by similarity
+    candidates.sort(key=lambda x: (
+        0 if x.match_type in ["barcode", "both"] else 1,
+        -(x.similarity or 0)
+    ))
+
+    return CutoutProductsResponse(
+        cutout=cutout,
+        candidates=candidates[:limit],
+        barcode_match_count=len(barcode_match_ids),
+        similarity_match_count=len(similarity_match_ids),
+        total_count=len(candidates),
+        has_cutout_embedding=has_cutout_embedding,
+    )
 
 
 # Legacy endpoints (keep for compatibility)

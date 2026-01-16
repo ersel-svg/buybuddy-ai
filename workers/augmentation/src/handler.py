@@ -374,6 +374,33 @@ def handler(job):
             except Exception:
                 pass
 
+        # Clear background cache to free memory for next job
+        try:
+            bg_dl = get_background_downloader()
+            bg_dl.clear_cache()
+            print("   🧹 Background cache cleared")
+        except Exception:
+            pass
+
+        # Clear neighbor paths from augmentor
+        try:
+            aug = get_augmentor()
+            aug.neighbor_product_paths = []
+            aug.backgrounds = []
+            print("   🧹 Augmentor caches cleared")
+        except Exception:
+            pass
+
+        # Clear neighbor files
+        try:
+            neighbor_dl = get_neighbor_downloader()
+            if neighbor_dl.local_base.exists():
+                shutil.rmtree(neighbor_dl.local_base, ignore_errors=True)
+                neighbor_dl.local_base.mkdir(parents=True, exist_ok=True)
+            print("   🧹 Neighbor files cleared")
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     print("Starting Augmentation Worker...")

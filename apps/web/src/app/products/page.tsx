@@ -106,6 +106,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectAllFilteredMode, setSelectAllFilteredMode] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
@@ -213,16 +214,18 @@ export default function ProductsPage() {
       }),
   });
 
-  // Reset page when filters or sorting changes
+  // Reset page and selection mode when filters or sorting changes
   useEffect(() => {
     setPage(1);
+    setSelectAllFilteredMode(false);
   }, [apiFilters, serverSortColumn, sortDirection]);
 
-  // Fetch filter options from ALL products (not just current page)
-  const { data: filterOptions } = useQuery({
-    queryKey: ["filter-options"],
-    queryFn: () => apiClient.getFilterOptions(),
-    staleTime: 60000, // Cache for 1 minute
+  // Fetch filter options - cascading based on current filters
+  const { data: filterOptions, isLoading: isLoadingFilters } = useQuery({
+    queryKey: ["filter-options", apiFilters],
+    queryFn: () => apiClient.getFilterOptions(apiFilters),
+    staleTime: 30000, // Cache for 30 seconds
+    placeholderData: (previousData) => previousData, // Keep previous data while loading
   });
 
   // Fetch datasets for "Add to Dataset" dialog
@@ -651,6 +654,10 @@ export default function ProductsPage() {
   };
 
   const toggleOne = (id: string) => {
+    // If in selectAllFilteredMode, exit it when individual selection is made
+    if (selectAllFilteredMode) {
+      setSelectAllFilteredMode(false);
+    }
     const newSet = new Set(selectedIds);
     if (newSet.has(id)) {
       newSet.delete(id);
@@ -782,13 +789,31 @@ export default function ProductsPage() {
     },
   });
 
-  // Add to existing dataset mutation
+  // Add to existing dataset mutation (by product IDs)
   const addToDatasetMutation = useMutation({
     mutationFn: ({ datasetId, productIds }: { datasetId: string; productIds: string[] }) =>
       apiClient.addProductsToDataset(datasetId, productIds),
     onSuccess: () => {
       toast.success(`${selectedIds.size} product(s) added to dataset`);
       setSelectedIds(new Set());
+      setSelectAllFilteredMode(false);
+      setDatasetDialogOpen(false);
+      resetDatasetDialog();
+      queryClient.invalidateQueries({ queryKey: ["datasets"] });
+    },
+    onError: () => {
+      toast.error("Failed to add products to dataset");
+    },
+  });
+
+  // Add to existing dataset mutation (by filters - for "Select All Filtered")
+  const addFilteredToDatasetMutation = useMutation({
+    mutationFn: ({ datasetId, filters }: { datasetId: string; filters: ExportFilters }) =>
+      apiClient.addFilteredProductsToDataset(datasetId, filters),
+    onSuccess: (result) => {
+      toast.success(`${result.added_count} product(s) added to dataset`);
+      setSelectedIds(new Set());
+      setSelectAllFilteredMode(false);
       setDatasetDialogOpen(false);
       resetDatasetDialog();
       queryClient.invalidateQueries({ queryKey: ["datasets"] });
@@ -824,18 +849,34 @@ export default function ProductsPage() {
 
   // Handle add to dataset submission
   const handleAddToDataset = () => {
-    const productIds = Array.from(selectedIds);
     if (datasetMode === "existing") {
       if (!selectedDatasetId) {
         toast.error("Please select a dataset");
         return;
       }
-      addToDatasetMutation.mutate({ datasetId: selectedDatasetId, productIds });
+
+      // Use filters if "Select All Filtered" mode is active
+      if (selectAllFilteredMode) {
+        const filters = buildExportFilters();
+        addFilteredToDatasetMutation.mutate({ datasetId: selectedDatasetId, filters });
+      } else {
+        const productIds = Array.from(selectedIds);
+        addToDatasetMutation.mutate({ datasetId: selectedDatasetId, productIds });
+      }
     } else {
       if (!newDatasetName.trim()) {
         toast.error("Please enter a dataset name");
         return;
       }
+
+      // For new dataset, we need to use product_ids
+      // If selectAllFilteredMode, we'd need a different API (not implemented yet)
+      if (selectAllFilteredMode) {
+        toast.error("Creating new dataset with all filtered products is not supported yet. Please select an existing dataset.");
+        return;
+      }
+
+      const productIds = Array.from(selectedIds);
       createDatasetMutation.mutate({
         name: newDatasetName.trim(),
         description: newDatasetDescription.trim() || undefined,
@@ -956,10 +997,22 @@ export default function ProductsPage() {
           />
         </div>
 
-        <FilterTrigger
-          onClick={() => setFilterDrawerOpen(true)}
-          activeCount={activeFilterCount}
-        />
+        <div className="flex items-center gap-2">
+          <FilterTrigger
+            onClick={() => setFilterDrawerOpen(true)}
+            activeCount={activeFilterCount}
+          />
+          {activeFilterCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearAll}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Clear filters
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Filter Drawer */}
@@ -976,16 +1029,47 @@ export default function ProductsPage() {
       />
 
       {/* Bulk Actions Bar */}
-      {selectedIds.size > 0 && (
+      {(selectedIds.size > 0 || selectAllFilteredMode) && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between">
-          <span className="text-sm text-blue-700">
-            {selectedIds.size} product{selectedIds.size > 1 ? "s" : ""} selected
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-blue-700 font-medium">
+              {selectAllFilteredMode
+                ? `All ${data?.total || 0} filtered products selected`
+                : `${selectedIds.size} product${selectedIds.size > 1 ? "s" : ""} selected`}
+            </span>
+            {/* Show "Select All Filtered" option when page items are selected but not all filtered */}
+            {!selectAllFilteredMode && selectedIds.size > 0 && (data?.total || 0) > sortedItems.length && (
+              <Button
+                variant="link"
+                size="sm"
+                className="text-blue-600 p-0 h-auto"
+                onClick={() => {
+                  setSelectAllFilteredMode(true);
+                  setSelectedIds(new Set());
+                }}
+              >
+                Select all {data?.total} filtered products
+              </Button>
+            )}
+            {selectAllFilteredMode && (
+              <Button
+                variant="link"
+                size="sm"
+                className="text-blue-600 p-0 h-auto"
+                onClick={() => {
+                  setSelectAllFilteredMode(false);
+                  setSelectedIds(new Set());
+                }}
+              >
+                Clear selection
+              </Button>
+            )}
+          </div>
           <div className="flex gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={handleDownloadSelected}
+              onClick={selectAllFilteredMode ? handleDownloadAll : handleDownloadSelected}
               disabled={isDownloading}
             >
               <Download className="h-4 w-4 mr-1" />

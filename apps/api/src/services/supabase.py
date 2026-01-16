@@ -1094,30 +1094,72 @@ class SupabaseService:
         products = products_response.data or []
         products_total = products_response.count or 0
 
-        # Add frame counts if requested
+        # Add frame counts if requested - use batch query for efficiency
         if include_frame_counts and products:
+            product_ids = [p["id"] for p in products]
+            legacy_counts = {p["id"]: p.get("frame_count", 0) for p in products}
+            frame_counts_map = await self.get_batch_frame_counts(
+                product_ids,
+                check_storage=False,  # Disable slow storage checks for list view
+                legacy_frame_counts=legacy_counts
+            )
             for product in products:
-                counts = await self.get_product_frame_counts(product["id"])
+                counts = frame_counts_map.get(
+                    product["id"],
+                    {"synthetic": 0, "real": 0, "augmented": 0}
+                )
                 product["frame_counts"] = counts
                 product["total_frames"] = sum(counts.values())
 
         dataset["products"] = products
         dataset["products_total"] = products_total
 
-        # Calculate dataset totals (from all products, not just filtered)
-        # This requires getting all products' frame counts
-        all_products_totals = {"synthetic": 0, "real": 0, "augmented": 0}
-        for product_id in dataset_product_ids:
-            counts = await self.get_product_frame_counts(product_id)
-            all_products_totals["synthetic"] += counts.get("synthetic", 0)
-            all_products_totals["real"] += counts.get("real", 0)
-            all_products_totals["augmented"] += counts.get("augmented", 0)
-
-        dataset["total_synthetic"] = all_products_totals["synthetic"]
-        dataset["total_real"] = all_products_totals["real"]
-        dataset["total_augmented"] = all_products_totals["augmented"]
+        # Calculate dataset totals using a single aggregate query
+        totals = await self._get_dataset_frame_totals(dataset_product_ids)
+        dataset["total_synthetic"] = totals.get("synthetic", 0)
+        dataset["total_real"] = totals.get("real", 0)
+        dataset["total_augmented"] = totals.get("augmented", 0)
 
         return dataset
+
+    async def _get_dataset_frame_totals(self, product_ids: list[str]) -> dict[str, int]:
+        """Get aggregated frame counts for all products in a dataset using a single query.
+
+        This is much more efficient than calling get_product_frame_counts for each product.
+        """
+        if not product_ids:
+            return {"synthetic": 0, "real": 0, "augmented": 0}
+
+        try:
+            # Single query to get all frame counts grouped by type
+            response = (
+                self.client.table("product_images")
+                .select("image_type")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+
+            totals = {"synthetic": 0, "real": 0, "augmented": 0}
+            for row in response.data:
+                img_type = row.get("image_type")
+                if img_type in totals:
+                    totals[img_type] += 1
+
+            # Fallback: If no synthetic frames in DB, sum from products table frame_count
+            if totals["synthetic"] == 0:
+                products_response = (
+                    self.client.table("products")
+                    .select("frame_count")
+                    .in_("id", product_ids)
+                    .execute()
+                )
+                totals["synthetic"] = sum(
+                    p.get("frame_count", 0) or 0 for p in products_response.data
+                )
+
+            return totals
+        except Exception:
+            return {"synthetic": 0, "real": 0, "augmented": 0}
 
     async def get_dataset_filter_options(self, dataset_id: str) -> Optional[dict[str, Any]]:
         """Get available filter options for products in a dataset."""
@@ -1167,10 +1209,16 @@ class SupabaseService:
                 "hasIssues": {"trueCount": 0, "falseCount": 0},
             }
 
-        # Get all products in this dataset
+        # Get only the fields needed for filter options (not SELECT *)
+        filter_fields = (
+            "status,category,brand_name,sub_brand,product_name,variant_flavor,"
+            "container_type,net_quantity,manufacturer_country,pack_configuration,"
+            "claims,issues_detected,frame_count,visibility_score,"
+            "video_url,primary_image_url,nutrition_facts,marketing_description,grounding_prompt"
+        )
         products_response = (
             self.client.table("products")
-            .select("*")
+            .select(filter_fields)
             .in_("id", dataset_product_ids)
             .execute()
         )
@@ -1307,6 +1355,87 @@ class SupabaseService:
             await self._update_dataset_product_count(dataset_id)
 
         return len(new_ids)
+
+    async def add_filtered_products_to_dataset(
+        self, dataset_id: str, filters: dict
+    ) -> int:
+        """Add all products matching filters to dataset.
+
+        This is used for "Select All Filtered" feature where user wants to add
+        all products matching current filter criteria across all pages.
+        """
+        # Build query to get all matching product IDs
+        query = self.client.table("products").select("id")
+
+        # Apply filters
+        if filters.get("search"):
+            search = filters["search"]
+            query = query.or_(
+                f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
+            )
+
+        if filters.get("status"):
+            status_list = filters["status"] if isinstance(filters["status"], list) else filters["status"].split(",")
+            query = query.in_("status", status_list)
+
+        if filters.get("category"):
+            cat_list = filters["category"] if isinstance(filters["category"], list) else filters["category"].split(",")
+            query = query.in_("category", cat_list)
+
+        if filters.get("brand"):
+            brand_list = filters["brand"] if isinstance(filters["brand"], list) else filters["brand"].split(",")
+            query = query.in_("brand_name", brand_list)
+
+        if filters.get("sub_brand"):
+            sub_list = filters["sub_brand"] if isinstance(filters["sub_brand"], list) else filters["sub_brand"].split(",")
+            query = query.in_("sub_brand", sub_list)
+
+        if filters.get("product_name"):
+            pn_list = filters["product_name"] if isinstance(filters["product_name"], list) else filters["product_name"].split(",")
+            query = query.in_("product_name", pn_list)
+
+        if filters.get("variant_flavor"):
+            vf_list = filters["variant_flavor"] if isinstance(filters["variant_flavor"], list) else filters["variant_flavor"].split(",")
+            query = query.in_("variant_flavor", vf_list)
+
+        if filters.get("container_type"):
+            ct_list = filters["container_type"] if isinstance(filters["container_type"], list) else filters["container_type"].split(",")
+            query = query.in_("container_type", ct_list)
+
+        if filters.get("net_quantity"):
+            nq_list = filters["net_quantity"] if isinstance(filters["net_quantity"], list) else filters["net_quantity"].split(",")
+            query = query.in_("net_quantity", nq_list)
+
+        if filters.get("manufacturer_country"):
+            mc_list = filters["manufacturer_country"] if isinstance(filters["manufacturer_country"], list) else filters["manufacturer_country"].split(",")
+            query = query.in_("manufacturer_country", mc_list)
+
+        # Boolean filters
+        if filters.get("has_video") is True:
+            query = query.not_.is_("video_url", "null")
+        elif filters.get("has_video") is False:
+            query = query.is_("video_url", "null")
+
+        if filters.get("has_image") is True:
+            query = query.not_.is_("primary_image_url", "null")
+        elif filters.get("has_image") is False:
+            query = query.is_("primary_image_url", "null")
+
+        # Range filters
+        if filters.get("frame_count_min") is not None:
+            query = query.gte("frame_count", filters["frame_count_min"])
+        if filters.get("frame_count_max") is not None:
+            query = query.lte("frame_count", filters["frame_count_max"])
+
+        # Execute query to get all matching IDs
+        response = query.execute()
+        product_ids = [item["id"] for item in response.data]
+
+        if not product_ids:
+            return 0
+
+        # Use existing method to add products (handles duplicates)
+        return await self.add_products_to_dataset(dataset_id, product_ids)
 
     async def remove_product_from_dataset(
         self, dataset_id: str, product_id: str

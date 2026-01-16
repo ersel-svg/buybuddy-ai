@@ -94,6 +94,7 @@ interface CheckboxSectionProps {
   selectedValues: Set<string>;
   onToggle: (value: string) => void;
   onClear: () => void;
+  onSelectAll: (values: string[]) => void;
 }
 
 function CheckboxSection({
@@ -101,6 +102,7 @@ function CheckboxSection({
   selectedValues,
   onToggle,
   onClear,
+  onSelectAll,
 }: CheckboxSectionProps) {
   const [isExpanded, setIsExpanded] = useState(section.defaultExpanded ?? true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,6 +120,13 @@ function CheckboxSection({
   const selectedCount = selectedValues.size;
   const showSearch = section.searchable !== false && section.options.length > 5;
   const isEmpty = section.options.length === 0;
+
+  // Check if all filtered options are selected
+  const allFilteredSelected = filteredOptions.length > 0 &&
+    filteredOptions.every(opt => selectedValues.has(opt.value));
+
+  // Check if we're showing filtered results (search is active)
+  const isFiltered = searchQuery.trim().length > 0;
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -168,17 +177,31 @@ function CheckboxSection({
                   </div>
                 )}
 
-                {selectedCount > 0 && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClear();
-                    }}
-                    className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
-                  >
-                    Clear selection
-                  </button>
-                )}
+                {/* Action buttons: Select All / Clear */}
+                <div className="flex items-center gap-3">
+                  {!allFilteredSelected && filteredOptions.length > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectAll(filteredOptions.map(opt => opt.value));
+                      }}
+                      className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      {isFiltered ? `Select filtered (${filteredOptions.length})` : "Select all"}
+                    </button>
+                  )}
+                  {selectedCount > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClear();
+                      }}
+                      className="text-xs text-gray-500 hover:text-gray-700 hover:underline"
+                    >
+                      Clear selection
+                    </button>
+                  )}
+                </div>
 
                 <div
                   className={cn(
@@ -434,6 +457,16 @@ export function FilterDrawer({
     [filterState, onFilterChange]
   );
 
+  const handleSelectAll = useCallback(
+    (sectionId: string, values: string[]) => {
+      const currentSet = (filterState[sectionId] as Set<string>) || new Set();
+      const newSet = new Set(currentSet);
+      values.forEach(value => newSet.add(value));
+      onFilterChange(sectionId, newSet);
+    },
+    [filterState, onFilterChange]
+  );
+
   // Show all sections, even empty ones (with "No options" message)
   const visibleSections = sections;
 
@@ -499,6 +532,7 @@ export function FilterDrawer({
                       selectedValues={(filterState[section.id] as Set<string>) || new Set()}
                       onToggle={(value) => handleCheckboxToggle(section.id, value)}
                       onClear={() => onClearSection(section.id)}
+                      onSelectAll={(values) => handleSelectAll(section.id, values)}
                     />
                   );
                 }

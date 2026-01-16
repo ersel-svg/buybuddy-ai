@@ -1,5 +1,36 @@
 # Buybuddy AI Platform - Project Context
 
+## 🔐 Authentication
+
+**ÖNEMLİ:** Bu proje Buybuddy API üzerinden authentication yapıyor. Ayrı bir auth sistemi (Supabase Auth, JWT, vb.) kullanılmıyor.
+
+### Authentication Flow
+```
+1. POST /user/sign_in
+   Body: {"user_name": "xxx", "password": "xxx"}
+   Response: {"passphrase": "..."}
+
+2. POST /user/sign_in/token
+   Body: {"passphrase": "..."}
+   Response: {"token": "..."}
+
+3. Tüm API çağrıları için:
+   Headers: {"Authorization": "Bearer {token}"}
+```
+
+### Frontend Authentication
+- Login sayfası Buybuddy credentials ile çalışır
+- Token localStorage'da saklanır
+- Token expire olduğunda otomatik re-login
+- Tüm API istekleri token ile yapılır
+
+### Backend Authentication
+- `apps/api/src/services/buybuddy.py` → BuybuddyService sınıfı
+- Token caching (her istek için login yapmaz)
+- Token refresh mekanizması mevcut
+
+---
+
 ## 🎯 Proje Amacı
 
 Sahadan gelen ürün videolarından:

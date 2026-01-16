@@ -3,9 +3,11 @@
 import os
 import io
 import json
+import time
+import random
 from pathlib import Path
 from supabase import create_client, Client
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Callable, TypeVar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 from PIL import Image
@@ -20,6 +22,55 @@ BACKGROUNDS_PATH = "backgrounds"
 
 # Parallel download/upload settings
 MAX_WORKERS = 10  # Concurrent connections
+
+# Retry settings
+MAX_RETRIES = 3
+BASE_BACKOFF_SECONDS = [1, 2, 4]  # Exponential backoff base times
+JITTER_PERCENT = 0.3  # 30% jitter
+
+T = TypeVar('T')
+
+
+def retry_with_backoff(
+    operation: Callable[[], T],
+    operation_name: str = "operation",
+    max_retries: int = MAX_RETRIES,
+) -> T:
+    """
+    Retry an operation with exponential backoff and jitter.
+
+    Args:
+        operation: Callable to execute
+        operation_name: Name for logging
+        max_retries: Maximum retry attempts
+
+    Returns:
+        Result of the operation
+
+    Raises:
+        Last exception if all retries fail
+    """
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            last_exception = e
+
+            if attempt < max_retries - 1:
+                # Calculate backoff with jitter
+                base_wait = BASE_BACKOFF_SECONDS[min(attempt, len(BASE_BACKOFF_SECONDS) - 1)]
+                jitter = base_wait * JITTER_PERCENT * random.random()
+                wait_time = base_wait + jitter
+
+                print(f"   ⚠️ {operation_name} failed (attempt {attempt + 1}/{max_retries}): {str(e)[:100]}")
+                print(f"   ⏳ Retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"   ❌ {operation_name} failed after {max_retries} attempts: {str(e)[:100]}")
+
+    raise last_exception
 
 
 def get_supabase() -> Client:
@@ -67,7 +118,33 @@ class DatasetDownloader:
         dataset_dir = self.local_base / dataset_id / "train"
         dataset_dir.mkdir(parents=True, exist_ok=True)
 
-        # 3. Download each product's frames
+        # 3. Batch fetch all real images for all products (avoid N+1 queries)
+        product_ids = [
+            item.get("products", {}).get("id")
+            for item in products
+            if item.get("products", {}).get("id")
+        ]
+
+        real_images_by_product = {}
+        if product_ids:
+            print(f"   📥 Batch fetching real images for {len(product_ids)} products...")
+            try:
+                real_response = self.client.table("product_images").select("*").in_(
+                    "product_id", product_ids
+                ).eq("image_type", "real").execute()
+
+                # Group by product_id
+                for img in real_response.data:
+                    pid = img.get("product_id")
+                    if pid not in real_images_by_product:
+                        real_images_by_product[pid] = []
+                    real_images_by_product[pid].append(img)
+
+                print(f"   ✅ Found {len(real_response.data)} real images across all products")
+            except Exception as e:
+                print(f"   ⚠️ Batch real images fetch error: {e}")
+
+        # 4. Download each product's frames
         for item in products:
             product = item.get("products", {})
             product_id = product.get("id")
@@ -85,10 +162,12 @@ class DatasetDownloader:
             # Download frames from storage
             self._download_product_frames(frames_path, product_dir)
 
-            # Download real images if exist
+            # Download real images if exist (using pre-fetched data)
             real_dir = product_dir / "real"
             real_dir.mkdir(exist_ok=True)
-            self._download_real_images(product_id, real_dir)
+            product_real_images = real_images_by_product.get(product_id, [])
+            if product_real_images:
+                self._download_real_images_batch(product_real_images, real_dir)
 
         print(f"   ✅ Dataset downloaded to: {dataset_dir.parent}")
         return dataset_dir.parent
@@ -120,16 +199,21 @@ class DatasetDownloader:
             print(f"   📥 Downloading {len(image_files)} frames (parallel)...")
 
             def download_single(file_info: dict) -> Tuple[str, bool]:
-                """Download a single file."""
+                """Download a single file with retry."""
                 file_name = file_info['name']
                 file_path = f"{folder}/{file_name}"
-                try:
+
+                def do_download():
                     data = self.client.storage.from_(bucket).download(file_path)
                     local_path = target_dir / file_name
                     with open(local_path, 'wb') as fp:
                         fp.write(data)
+                    return True
+
+                try:
+                    retry_with_backoff(do_download, f"Download {file_name}")
                     return file_name, True
-                except Exception as e:
+                except Exception:
                     return file_name, False
 
             # Parallel download
@@ -146,8 +230,55 @@ class DatasetDownloader:
         except Exception as e:
             print(f"   ⚠️ Frame download error: {e}")
 
+    def _download_real_images_batch(self, images: List[dict], target_dir: Path):
+        """Download real images from pre-fetched data (no DB query needed)."""
+        if not images:
+            return
+
+        downloaded = 0
+        for idx, img in enumerate(images):
+            image_url = img.get("image_url")
+            image_path = img.get("image_path")
+
+            # Try to download from URL first (for matching images)
+            if image_url and image_url.startswith("http"):
+                def download_from_url():
+                    resp = httpx.get(image_url, timeout=30)
+                    if resp.status_code == 200:
+                        ext = Path(image_url).suffix or ".jpg"
+                        local_path = target_dir / f"real_{idx:04d}{ext}"
+                        with open(local_path, 'wb') as fp:
+                            fp.write(resp.content)
+                        return True
+                    raise Exception(f"HTTP {resp.status_code}")
+
+                try:
+                    retry_with_backoff(download_from_url, f"Download real image {idx}")
+                    downloaded += 1
+                    continue
+                except Exception:
+                    pass
+
+            # Fallback: try to download from frames bucket storage
+            if image_path:
+                def download_from_storage():
+                    data = self.client.storage.from_("frames").download(image_path)
+                    local_path = target_dir / Path(image_path).name
+                    with open(local_path, 'wb') as fp:
+                        fp.write(data)
+                    return True
+
+                try:
+                    retry_with_backoff(download_from_storage, f"Download real image {idx} from storage")
+                    downloaded += 1
+                except Exception:
+                    pass
+
+        if downloaded > 0:
+            print(f"      Downloaded {downloaded} real images")
+
     def _download_real_images(self, product_id: str, target_dir: Path):
-        """Download matched real images for a product from product_images table."""
+        """Download matched real images for a product from product_images table (legacy method)."""
         try:
             # Get real images from unified product_images table
             response = self.client.table("product_images").select("*").eq(
@@ -161,26 +292,34 @@ class DatasetDownloader:
 
                 # Try to download from URL first (for matching images)
                 if image_url and image_url.startswith("http"):
-                    try:
+                    def download_from_url():
                         resp = httpx.get(image_url, timeout=30)
                         if resp.status_code == 200:
-                            # Generate filename from URL or use index
                             ext = Path(image_url).suffix or ".jpg"
                             local_path = target_dir / f"real_{idx:04d}{ext}"
                             with open(local_path, 'wb') as fp:
                                 fp.write(resp.content)
-                            downloaded += 1
-                            continue
+                            return True
+                        raise Exception(f"HTTP {resp.status_code}")
+
+                    try:
+                        retry_with_backoff(download_from_url, f"Download real image {idx}")
+                        downloaded += 1
+                        continue
                     except Exception:
                         pass
 
                 # Fallback: try to download from frames bucket storage
                 if image_path:
-                    try:
+                    def download_from_storage():
                         data = self.client.storage.from_("frames").download(image_path)
                         local_path = target_dir / Path(image_path).name
                         with open(local_path, 'wb') as fp:
                             fp.write(data)
+                        return True
+
+                    try:
+                        retry_with_backoff(download_from_storage, f"Download real image {idx} from storage")
                         downloaded += 1
                     except Exception:
                         pass
@@ -280,9 +419,10 @@ class ResultUploader:
         print(f"   📤 Uploading {len(upload_tasks)} images...")
 
         def upload_single(task: Tuple[Path, str, str, str, str]) -> Tuple[str, str, str, str, bool]:
-            """Upload a single file. Returns (storage_path, img_type, product_id, source, success)"""
+            """Upload a single file with retry. Returns (storage_path, img_type, product_id, source, success)"""
             local_path, storage_path, img_type, product_id, source = task
-            try:
+
+            def do_upload():
                 with open(local_path, 'rb') as f:
                     data = f.read()
                     try:
@@ -290,8 +430,12 @@ class ResultUploader:
                     except Exception:
                         # File might exist, try update
                         self.client.storage.from_(bucket).update(storage_path, data)
+                return True
+
+            try:
+                retry_with_backoff(do_upload, f"Upload {Path(storage_path).name}")
                 return storage_path, img_type, product_id, source, True
-            except Exception as e:
+            except Exception:
                 return storage_path, img_type, product_id, source, False
 
         # Parallel upload and collect successful uploads for DB insertion
@@ -313,30 +457,62 @@ class ResultUploader:
 
         # Insert DB records for uploaded images
         if successful_uploads:
-            db_count = self._insert_augmented_records(successful_uploads, bucket)
+            db_count, failed_paths = self._insert_augmented_records(successful_uploads, bucket)
             stats["db_inserted"] = db_count
 
+            # Cleanup: Delete orphaned files from storage (uploaded but not in DB)
+            if failed_paths:
+                print(f"   🧹 Cleaning up {len(failed_paths)} orphaned files from storage...")
+                cleaned = self._cleanup_orphaned_files(bucket, failed_paths)
+                stats["orphaned_cleaned"] = cleaned
+                print(f"   ✅ Cleaned {cleaned}/{len(failed_paths)} orphaned files")
+
         return stats
+
+    def _cleanup_orphaned_files(self, bucket: str, paths: List[str]) -> int:
+        """Delete orphaned files from storage that weren't registered in DB."""
+        cleaned = 0
+        for path in paths:
+            try:
+                self.client.storage.from_(bucket).remove([path])
+                cleaned += 1
+            except Exception as e:
+                print(f"   ⚠️ Failed to delete {path}: {str(e)[:50]}")
+        return cleaned
 
     def _insert_augmented_records(
         self,
         uploads: List[Tuple[str, str, str, str]],
         bucket: str,
-    ) -> int:
-        """Insert augmented image records into product_images table."""
+    ) -> Tuple[int, List[str]]:
+        """Insert augmented image records into product_images table.
+
+        Uses batch delete + batch insert pattern with error handling.
+
+        Returns:
+            Tuple of (inserted_count, list of failed storage_paths)
+        """
+        failed_paths: List[str] = []
+
         try:
             # Group by product_id for efficient deletion of old records
-            product_ids = set(u[2] for u in uploads)
+            product_ids = list(set(u[2] for u in uploads))
 
-            # Delete existing augmented frames for these products
-            for product_id in product_ids:
-                self.client.table("product_images").delete().eq(
-                    "product_id", product_id
+            # Batch delete existing augmented frames (single query instead of N queries)
+            print(f"   🗑️ Deleting existing augmented images for {len(product_ids)} products...")
+            try:
+                # Use IN clause for batch delete - more efficient
+                self.client.table("product_images").delete().in_(
+                    "product_id", product_ids
                 ).eq("image_type", "augmented").execute()
+                print(f"   ✅ Old augmented images deleted")
+            except Exception as e:
+                print(f"   ⚠️ Delete failed (continuing with insert): {e}")
 
-            # Prepare records
+            # Prepare records with storage_path tracking
             records = []
-            for storage_path, img_type, product_id, source in uploads:
+            path_to_record_idx = {}  # Map storage_path to record index
+            for idx, (storage_path, img_type, product_id, source) in enumerate(uploads):
                 image_url = f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{storage_path}"
                 records.append({
                     "product_id": product_id,
@@ -345,21 +521,43 @@ class ResultUploader:
                     "image_path": storage_path,
                     "image_url": image_url,
                 })
+                path_to_record_idx[storage_path] = idx
 
-            # Batch insert (in chunks to avoid timeout)
+            # Batch insert with retry (in chunks to avoid timeout)
             chunk_size = 500
             inserted = 0
+            failed_chunk_indices = []
+
             for i in range(0, len(records), chunk_size):
                 chunk = records[i:i + chunk_size]
-                self.client.table("product_images").insert(chunk).execute()
-                inserted += len(chunk)
+                chunk_num = i // chunk_size + 1
+                total_chunks = (len(records) + chunk_size - 1) // chunk_size
 
-            print(f"   📝 Inserted {inserted} augmented records into database")
-            return inserted
+                def do_insert():
+                    self.client.table("product_images").insert(chunk).execute()
+                    return True
+
+                try:
+                    retry_with_backoff(do_insert, f"Insert chunk {chunk_num}/{total_chunks}")
+                    inserted += len(chunk)
+                except Exception as e:
+                    print(f"   ⚠️ Chunk {chunk_num} insert failed: {str(e)[:100]}")
+                    failed_chunk_indices.append((i, i + len(chunk)))
+                    # Collect failed paths from this chunk
+                    for record in chunk:
+                        failed_paths.append(record["image_path"])
+
+            if failed_chunk_indices:
+                print(f"   ⚠️ {len(failed_chunk_indices)} chunks failed to insert")
+
+            print(f"   📝 Inserted {inserted}/{len(records)} augmented records into database")
+            return inserted, failed_paths
 
         except Exception as e:
             print(f"   ⚠️ Failed to insert augmented records: {e}")
-            return 0
+            # All uploads failed - return all paths as failed
+            all_paths = [u[0] for u in uploads]
+            return 0, all_paths
 
     def update_job_progress(self, job_id: str, progress: int, current_step: str):
         """Update job progress in database."""
@@ -446,14 +644,18 @@ class BackgroundDownloader:
             print(f"   📥 Downloading {len(image_files)} backgrounds (parallel)...")
 
             def download_single(file_info: dict) -> Tuple[str, Optional[Image.Image]]:
-                """Download a single background image."""
+                """Download a single background image with retry."""
                 file_name = file_info['name']
                 file_path = f"{BACKGROUNDS_PATH}/{file_name}"
-                try:
+
+                def do_download():
                     data = self.client.storage.from_(BACKGROUNDS_BUCKET).download(file_path)
-                    img = Image.open(io.BytesIO(data)).convert("RGB")
+                    return Image.open(io.BytesIO(data)).convert("RGB")
+
+                try:
+                    img = retry_with_backoff(do_download, f"Download background {file_name}")
                     return file_name, img
-                except Exception as e:
+                except Exception:
                     return file_name, None
 
             # Parallel download
@@ -537,16 +739,21 @@ class NeighborProductDownloader:
             print(f"   📥 Downloading {len(images_response.data)} neighbor images...")
 
             def download_single(img_data: dict) -> Tuple[str, Optional[str]]:
-                """Download a single neighbor image."""
+                """Download a single neighbor image with retry."""
                 image_path = img_data.get("image_path")
                 if not image_path:
                     return "", None
-                try:
+
+                def do_download():
                     data = self.client.storage.from_(BACKGROUNDS_BUCKET).download(image_path)
                     local_path = self.local_base / Path(image_path).name
                     with open(local_path, 'wb') as f:
                         f.write(data)
-                    return str(local_path), str(local_path)
+                    return str(local_path)
+
+                try:
+                    local = retry_with_backoff(do_download, f"Download neighbor {Path(image_path).name}")
+                    return local, local
                 except Exception:
                     return image_path, None
 

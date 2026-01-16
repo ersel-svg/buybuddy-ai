@@ -30,6 +30,19 @@ import type {
   EmbeddingExport,
   CutoutCandidate,
   ProductCandidatesResponse,
+  CollectionInfo,
+  EmbeddingJobCreateAdvanced,
+  // New 3-tab extraction types
+  MatchingExtractionRequest,
+  MatchingExtractionResponse,
+  TrainingExtractionRequest,
+  TrainingExtractionResponse,
+  EvaluationExtractionRequest,
+  EvaluationExtractionResponse,
+  MatchedProductsStats,
+  EmbeddingCollection,
+  CutoutProductsResponse,
+  CollectionProductsResponse,
 } from "@/types";
 import { getAuthHeader, clearAuth } from "./auth";
 
@@ -225,13 +238,39 @@ class ApiClient {
     frame_count_max?: number;
     visibility_score_min?: number;
     visibility_score_max?: number;
+    // Exclusion filters
+    exclude_dataset_id?: string;
     include_frame_counts?: boolean;
   }): Promise<ProductsResponse> {
     return this.request<ProductsResponse>("/api/v1/products", { params });
   }
 
-  async getFilterOptions(): Promise<FilterOptionsResponse> {
-    return this.request<FilterOptionsResponse>("/api/v1/products/filter-options");
+  async getFilterOptions(params?: {
+    // Current filter selections (for cascading filters)
+    status?: string;
+    category?: string;
+    brand?: string;
+    sub_brand?: string;
+    product_name?: string;
+    variant_flavor?: string;
+    container_type?: string;
+    net_quantity?: string;
+    pack_type?: string;
+    manufacturer_country?: string;
+    claims?: string;
+    has_video?: boolean;
+    has_image?: boolean;
+    has_nutrition?: boolean;
+    has_description?: boolean;
+    has_prompt?: boolean;
+    has_issues?: boolean;
+    frame_count_min?: number;
+    frame_count_max?: number;
+    visibility_score_min?: number;
+    visibility_score_max?: number;
+    exclude_dataset_id?: string;
+  }): Promise<FilterOptionsResponse> {
+    return this.request<FilterOptionsResponse>("/api/v1/products/filter-options", { params });
   }
 
   async getProduct(id: string): Promise<Product> {
@@ -533,8 +572,43 @@ class ApiClient {
     return this.request<Dataset[]>("/api/v1/datasets");
   }
 
-  async getDataset(id: string): Promise<DatasetWithProducts> {
-    return this.request<DatasetWithProducts>(`/api/v1/datasets/${id}`);
+  async getDataset(
+    id: string,
+    params?: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      sort_by?: string;
+      sort_order?: "asc" | "desc";
+      status?: string;
+      category?: string;
+      brand?: string;
+      sub_brand?: string;
+      product_name?: string;
+      variant_flavor?: string;
+      container_type?: string;
+      net_quantity?: string;
+      pack_type?: string;
+      manufacturer_country?: string;
+      claims?: string;
+      has_video?: boolean;
+      has_image?: boolean;
+      has_nutrition?: boolean;
+      has_description?: boolean;
+      has_prompt?: boolean;
+      has_issues?: boolean;
+      frame_count_min?: number;
+      frame_count_max?: number;
+      visibility_score_min?: number;
+      visibility_score_max?: number;
+      include_frame_counts?: boolean;
+    }
+  ): Promise<DatasetWithProducts> {
+    return this.request<DatasetWithProducts>(`/api/v1/datasets/${id}`, { params });
+  }
+
+  async getDatasetFilterOptions(datasetId: string): Promise<FilterOptionsResponse> {
+    return this.request<FilterOptionsResponse>(`/api/v1/datasets/${datasetId}/filter-options`);
   }
 
   async createDataset(data: CreateDatasetRequest): Promise<Dataset> {
@@ -568,6 +642,19 @@ class ApiClient {
       {
         method: "POST",
         body: { product_ids: productIds },
+      }
+    );
+  }
+
+  async addFilteredProductsToDataset(
+    datasetId: string,
+    filters: ExportFilters
+  ): Promise<{ added_count: number }> {
+    return this.request<{ added_count: number }>(
+      `/api/v1/datasets/${datasetId}/products`,
+      {
+        method: "POST",
+        body: { filters },
       }
     );
   }
@@ -895,7 +982,14 @@ class ApiClient {
 
   async getProductCandidates(
     productId: string,
-    params?: { min_similarity?: number; include_matched?: boolean; limit?: number }
+    params?: {
+      min_similarity?: number;
+      include_matched?: boolean;
+      limit?: number;
+      match_type_filter?: string;
+      product_collection?: string;
+      cutout_collection?: string;
+    }
   ): Promise<ProductCandidatesResponse> {
     return this.request<ProductCandidatesResponse>(
       `/api/v1/matching/products/${productId}/candidates`,
@@ -988,6 +1082,45 @@ class ApiClient {
     });
   }
 
+  async startEmbeddingJobAdvanced(params: EmbeddingJobCreateAdvanced): Promise<EmbeddingJob> {
+    return this.request<EmbeddingJob>("/api/v1/embeddings/jobs/advanced", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // ===========================================
+  // Qdrant Collections
+  // ===========================================
+
+  async getQdrantCollections(): Promise<CollectionInfo[]> {
+    return this.request<CollectionInfo[]>("/api/v1/embeddings/collections");
+  }
+
+  async getQdrantCollectionStats(collectionName: string): Promise<CollectionInfo> {
+    return this.request<CollectionInfo>(`/api/v1/embeddings/collections/${collectionName}/stats`);
+  }
+
+  async deleteQdrantCollection(collectionName: string): Promise<void> {
+    await this.request<void>(`/api/v1/embeddings/collections/${collectionName}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getCollectionProducts(
+    collectionName: string,
+    params?: {
+      page?: number;
+      limit?: number;
+      search?: string;
+    }
+  ): Promise<CollectionProductsResponse> {
+    return this.request<CollectionProductsResponse>(
+      `/api/v1/embeddings/collections/${collectionName}/products`,
+      { params }
+    );
+  }
+
   // ===========================================
   // Embedding Exports (Matching System)
   // ===========================================
@@ -1008,6 +1141,80 @@ class ApiClient {
 
   async downloadEmbeddingExport(exportId: string): Promise<Blob> {
     return this.requestBlob(`/api/v1/embeddings/exports/${exportId}/download`);
+  }
+
+  // ===========================================
+  // 3-Tab Embedding Extraction
+  // ===========================================
+
+  // Tab 1: Matching Extraction
+  async startMatchingExtraction(
+    params: MatchingExtractionRequest
+  ): Promise<MatchingExtractionResponse> {
+    return this.request<MatchingExtractionResponse>("/api/v1/embeddings/jobs/matching", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // Tab 2: Training Extraction
+  async startTrainingExtraction(
+    params: TrainingExtractionRequest
+  ): Promise<TrainingExtractionResponse> {
+    return this.request<TrainingExtractionResponse>("/api/v1/embeddings/jobs/training", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // Tab 3: Evaluation Extraction
+  async startEvaluationExtraction(
+    params: EvaluationExtractionRequest
+  ): Promise<EvaluationExtractionResponse> {
+    return this.request<EvaluationExtractionResponse>("/api/v1/embeddings/jobs/evaluation", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // Matched Products Stats (for Training tab)
+  async getMatchedProductsStats(): Promise<MatchedProductsStats> {
+    return this.request<MatchedProductsStats>("/api/v1/embeddings/matched-products/stats");
+  }
+
+  // ===========================================
+  // Embedding Collection Metadata
+  // ===========================================
+
+  async getEmbeddingCollections(params?: {
+    collection_type?: string;
+  }): Promise<EmbeddingCollection[]> {
+    return this.request<EmbeddingCollection[]>("/api/v1/embeddings/collection-metadata", {
+      params,
+    });
+  }
+
+  async getEmbeddingCollection(id: string): Promise<EmbeddingCollection> {
+    return this.request<EmbeddingCollection>(`/api/v1/embeddings/collection-metadata/${id}`);
+  }
+
+  // ===========================================
+  // Reverse Matching (Cutout → Products)
+  // ===========================================
+
+  async getCutoutProductCandidates(
+    cutoutId: string,
+    params?: {
+      min_similarity?: number;
+      limit?: number;
+      product_collection?: string;
+      cutout_collection?: string;
+    }
+  ): Promise<CutoutProductsResponse> {
+    return this.request<CutoutProductsResponse>(
+      `/api/v1/matching/cutouts/${cutoutId}/products`,
+      { params }
+    );
   }
 }
 

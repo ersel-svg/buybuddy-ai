@@ -459,6 +459,8 @@ async def list_products(
     frame_count_max: Optional[int] = None,
     visibility_score_min: Optional[int] = None,
     visibility_score_max: Optional[int] = None,
+    # Exclusion filters
+    exclude_dataset_id: Optional[str] = Query(None, description="Exclude products that are in this dataset"),
     include_frame_counts: bool = Query(False, description="Include synthetic/real/augmented frame counts"),
     db: SupabaseService = Depends(get_supabase),
 ):
@@ -490,6 +492,7 @@ async def list_products(
         frame_count_max=frame_count_max,
         visibility_score_min=visibility_score_min,
         visibility_score_max=visibility_score_max,
+        exclude_dataset_id=exclude_dataset_id,
         include_frame_counts=include_frame_counts,
     )
     return result
@@ -505,10 +508,59 @@ async def get_product_categories(
 
 @router.get("/filter-options")
 async def get_filter_options(
+    # Current filter selections (for cascading filters)
+    status: Optional[str] = Query(None, description="Comma-separated status values"),
+    category: Optional[str] = Query(None, description="Comma-separated category values"),
+    brand: Optional[str] = Query(None, description="Comma-separated brand names"),
+    sub_brand: Optional[str] = Query(None, description="Comma-separated sub-brand names"),
+    product_name: Optional[str] = Query(None, description="Comma-separated product names"),
+    variant_flavor: Optional[str] = Query(None, description="Comma-separated variant/flavor values"),
+    container_type: Optional[str] = Query(None, description="Comma-separated container types"),
+    net_quantity: Optional[str] = Query(None, description="Comma-separated net quantity values"),
+    pack_type: Optional[str] = Query(None, description="Comma-separated pack types"),
+    manufacturer_country: Optional[str] = Query(None, description="Comma-separated countries"),
+    claims: Optional[str] = Query(None, description="Comma-separated claims"),
+    # Boolean filters
+    has_video: Optional[bool] = None,
+    has_image: Optional[bool] = None,
+    has_nutrition: Optional[bool] = None,
+    has_description: Optional[bool] = None,
+    has_prompt: Optional[bool] = None,
+    has_issues: Optional[bool] = None,
+    # Range filters
+    frame_count_min: Optional[int] = None,
+    frame_count_max: Optional[int] = None,
+    visibility_score_min: Optional[int] = None,
+    visibility_score_max: Optional[int] = None,
+    # Exclusion filters
+    exclude_dataset_id: Optional[str] = Query(None, description="Exclude products in this dataset"),
     db: SupabaseService = Depends(get_supabase),
 ) -> dict:
-    """Get all unique values for filterable fields across entire database."""
-    return await db.get_product_filter_options()
+    """Get filter options, optionally filtered by current selections (cascading filters)."""
+    return await db.get_product_filter_options(
+        status=status,
+        category=category,
+        brand=brand,
+        sub_brand=sub_brand,
+        product_name=product_name,
+        variant_flavor=variant_flavor,
+        container_type=container_type,
+        net_quantity=net_quantity,
+        pack_type=pack_type,
+        manufacturer_country=manufacturer_country,
+        claims_filter=claims,
+        has_video=has_video,
+        has_image=has_image,
+        has_nutrition=has_nutrition,
+        has_description=has_description,
+        has_prompt=has_prompt,
+        has_issues=has_issues,
+        frame_count_min=frame_count_min,
+        frame_count_max=frame_count_max,
+        visibility_score_min=visibility_score_min,
+        visibility_score_max=visibility_score_max,
+        exclude_dataset_id=exclude_dataset_id,
+    )
 
 
 @router.get("/{product_id}")

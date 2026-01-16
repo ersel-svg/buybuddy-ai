@@ -1,7 +1,8 @@
 """Qdrant vector database client for embedding storage and similarity search."""
 
 from typing import Optional, Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5, NAMESPACE_DNS
+import re
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
@@ -105,12 +106,29 @@ class QdrantService:
         """Get collection info including vector count."""
         try:
             info = self.client.get_collection(collection_name=collection_name)
+            # Handle different qdrant-client versions
+            vectors_count = getattr(info, 'vectors_count', None) or info.points_count or 0
+            points_count = info.points_count or 0
+            status = info.status.value if hasattr(info.status, 'value') else str(info.status)
+
+            # Get vector size from config
+            vector_size = 0
+            if hasattr(info.config, 'params') and info.config.params:
+                vec_cfg = info.config.params.vectors
+                if hasattr(vec_cfg, 'size'):
+                    vector_size = vec_cfg.size
+                elif isinstance(vec_cfg, dict):
+                    # Named vectors
+                    first_vec = next(iter(vec_cfg.values()), None)
+                    if first_vec and hasattr(first_vec, 'size'):
+                        vector_size = first_vec.size
+
             return {
                 "name": collection_name,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status.value,
-                "vector_size": info.config.params.vectors.size,
+                "vectors_count": vectors_count,
+                "points_count": points_count,
+                "status": status,
+                "vector_size": vector_size,
             }
         except Exception as e:
             print(f"[Qdrant] Error getting collection info: {e}")
@@ -121,9 +139,107 @@ class QdrantService:
         collections = self.client.get_collections()
         return [c.name for c in collections.collections]
 
+    async def list_collections_with_info(self) -> list[dict[str, Any]]:
+        """List all collections with detailed info."""
+        collections = self.client.get_collections()
+        result = []
+        for c in collections.collections:
+            try:
+                info = self.client.get_collection(collection_name=c.name)
+                # Extract model name from collection name (e.g., products_dinov2_base -> dinov2_base)
+                model_name = None
+                if "_" in c.name:
+                    parts = c.name.split("_", 1)
+                    if parts[0] in ["products", "cutouts"]:
+                        model_name = parts[1]
+
+                result.append({
+                    "name": c.name,
+                    "vectors_count": info.vectors_count or 0,
+                    "points_count": info.points_count or 0,
+                    "status": info.status.value if info.status else "unknown",
+                    "vector_size": info.config.params.vectors.size if info.config and info.config.params and info.config.params.vectors else 0,
+                    "model_name": model_name,
+                })
+            except Exception as e:
+                print(f"[Qdrant] Error getting info for collection {c.name}: {e}")
+                result.append({
+                    "name": c.name,
+                    "vectors_count": 0,
+                    "points_count": 0,
+                    "status": "error",
+                    "vector_size": 0,
+                    "model_name": None,
+                })
+        return result
+
+    async def get_product_embeddings(
+        self,
+        collection_name: str,
+        product_id: str,
+        with_vectors: bool = True,
+    ) -> list[dict[str, Any]]:
+        """
+        Get all embeddings for a product (multi-view support).
+
+        Searches for points where payload.product_id matches the given product_id.
+        Returns all frames (e.g., product_id_0, product_id_1, etc.).
+
+        Args:
+            collection_name: Target collection
+            product_id: Product ID to search for
+            with_vectors: Include vectors in results
+
+        Returns:
+            List of points with id, payload, and optionally vector
+        """
+        points, _ = await self.scroll(
+            collection_name=collection_name,
+            filter_conditions={"product_id": product_id},
+            limit=100,  # Max frames per product
+            with_vectors=with_vectors,
+        )
+        return points
+
     # =========================================
     # Point Operations
     # =========================================
+
+    def _normalize_point_id(self, point_id: str) -> str:
+        """
+        Normalize point ID to a valid Qdrant format (UUID or unsigned integer).
+
+        Qdrant only accepts:
+        - Valid UUID strings (e.g., "550e8400-e29b-41d4-a716-446655440000")
+        - Unsigned integers
+
+        For compound IDs like "uuid_frame_index", we generate a deterministic
+        UUID using uuid5 so the same input always produces the same output.
+
+        Args:
+            point_id: Original point ID string
+
+        Returns:
+            Valid Qdrant point ID (UUID string)
+        """
+        if not point_id:
+            return str(uuid4())
+
+        # Check if it's already a valid UUID
+        uuid_pattern = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            re.IGNORECASE
+        )
+        if uuid_pattern.match(point_id):
+            return point_id
+
+        # Check if it's a valid unsigned integer
+        if point_id.isdigit():
+            return point_id
+
+        # For compound IDs (e.g., "uuid_0", "uuid_frame_5"), generate deterministic UUID
+        # Using uuid5 ensures same input always produces same UUID
+        return str(uuid5(NAMESPACE_DNS, f"buybuddy.embedding.{point_id}"))
 
     async def upsert_points(
         self,
@@ -136,7 +252,7 @@ class QdrantService:
         Args:
             collection_name: Target collection
             points: List of dicts with:
-                - id: UUID or string (optional, auto-generated if not provided)
+                - id: UUID, unsigned int, or compound string (will be normalized)
                 - vector: List of floats
                 - payload: Dict of metadata
 
@@ -148,12 +264,20 @@ class QdrantService:
 
         qdrant_points = []
         for p in points:
-            point_id = p.get("id") or str(uuid4())
+            original_id = p.get("id") or str(uuid4())
+            # Normalize ID to valid Qdrant format
+            point_id = self._normalize_point_id(original_id)
+
+            # Store original_id in payload for reference if it was transformed
+            payload = p.get("payload", {}).copy()
+            if point_id != original_id:
+                payload["original_point_id"] = original_id
+
             qdrant_points.append(
                 PointStruct(
                     id=point_id,
                     vector=p["vector"],
-                    payload=p.get("payload", {}),
+                    payload=payload,
                 )
             )
 
@@ -277,9 +401,10 @@ class QdrantService:
                 should=should_conditions if should_conditions else None,
             )
 
-        results = self.client.search(
+        # Use query_points (qdrant-client 1.9+)
+        response = self.client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             score_threshold=score_threshold,
             query_filter=search_filter,
@@ -292,7 +417,7 @@ class QdrantService:
                 "score": r.score,
                 "payload": r.payload if with_payload else None,
             }
-            for r in results
+            for r in response.points
         ]
 
     async def search_by_id(

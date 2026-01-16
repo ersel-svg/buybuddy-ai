@@ -1139,6 +1139,7 @@ class ProductAugmentor:
             "saves_ok": 0,
             "saves_fail": 0,
             "errors": [],
+            "failed_images": [],  # Track which specific images failed
         }
 
         # ========== SYN TOP-UP (with shelf scene composition) ==========
@@ -1175,6 +1176,7 @@ class ProductAugmentor:
                 print(f"  Processing batch {batch_start // self.batch_size + 1}: {len(batch_jobs)} jobs")
 
                 for src_path, stem, out_idx, bg, config in batch_jobs:
+                    out_name = f"syn_{stem}_{out_idx:03d}.jpg"
                     try:
                         img = Image.open(src_path).convert("RGB")
 
@@ -1183,21 +1185,37 @@ class ProductAugmentor:
 
                         if final is None:
                             debug_info["composes_fail"] += 1
+                            debug_info["failed_images"].append({
+                                "source": str(src_path.name),
+                                "output": out_name,
+                                "reason": "composition_failed"
+                            })
                             continue
                         debug_info["composes_ok"] += 1
 
-                        out_name = f"syn_{stem}_{out_idx:03d}.jpg"
                         out_path = upc_root / out_name
                         try:
                             final.save(out_path, quality=95)
                             produced_syn += 1
                             debug_info["saves_ok"] += 1
                         except Exception as e:
-                            print(f"  ⚠️ Syn save error {out_name}: {e}")
+                            error_msg = str(e)[:100]
+                            print(f"  ⚠️ Syn save error {out_name}: {error_msg}")
                             debug_info["saves_fail"] += 1
+                            debug_info["failed_images"].append({
+                                "source": str(src_path.name),
+                                "output": out_name,
+                                "reason": f"save_error: {error_msg}"
+                            })
                     except Exception as e:
-                        print(f"  ⚠️ Job error: {e}")
+                        error_msg = str(e)[:100]
+                        print(f"  ⚠️ Job error for {out_name}: {error_msg}")
                         debug_info["composes_fail"] += 1
+                        debug_info["failed_images"].append({
+                            "source": str(src_path.name) if src_path else "unknown",
+                            "output": out_name,
+                            "reason": f"job_error: {error_msg}"
+                        })
 
         # ========== REAL TOP-UP ==========
         if missing_real > 0 and len(real_sources) > 0:
@@ -1210,22 +1228,39 @@ class ProductAugmentor:
                 quota = min(per_src, missing_real - produced_real)
 
                 for k in range(quota):
+                    out_name = f"{stem}_aug_{start_idx + k:03d}.jpg"
                     try:
                         img = Image.open(src).convert("RGB")
                         aug = self.create_real_augmented_image(img)
                         if aug is None:
+                            debug_info["failed_images"].append({
+                                "source": str(src.name),
+                                "output": out_name,
+                                "reason": "real_augmentation_failed"
+                            })
                             continue
-                        out_name = f"{stem}_aug_{start_idx + k:03d}.jpg"
                         out_path = real_dir / out_name
                         try:
                             aug.save(out_path, quality=95)
                             produced_real += 1
                         except Exception as e:
-                            print(f"  ⚠️ Real save error {out_name}: {e}")
+                            error_msg = str(e)[:100]
+                            print(f"  ⚠️ Real save error {out_name}: {error_msg}")
+                            debug_info["failed_images"].append({
+                                "source": str(src.name),
+                                "output": out_name,
+                                "reason": f"save_error: {error_msg}"
+                            })
                         if produced_real >= missing_real:
                             break
                     except Exception as e:
-                        print(f"  ⚠️ Real aug error: {e}")
+                        error_msg = str(e)[:100]
+                        print(f"  ⚠️ Real aug error for {out_name}: {error_msg}")
+                        debug_info["failed_images"].append({
+                            "source": str(src.name) if src else "unknown",
+                            "output": out_name,
+                            "reason": f"real_aug_error: {error_msg}"
+                        })
 
         print(f"  DEBUG: {debug_info}")
         return {
@@ -1283,6 +1318,18 @@ class ProductAugmentor:
                 except Exception as e:
                     print(f"❌ UPC error: {upc.name} -> {e}")
 
+        # Collect all failed images across UPCs
+        all_failed_images = []
+        total_failed = 0
+        for item in per_upc_logs:
+            debug = item.get("debug", {})
+            failed = debug.get("failed_images", [])
+            total_failed += len(failed)
+            # Only include first 5 failures per UPC to limit report size
+            for f in failed[:5]:
+                f["upc"] = item.get("upc", "unknown")
+                all_failed_images.append(f)
+
         # Generate report
         report = {
             "totals": dict(totals),
@@ -1295,6 +1342,10 @@ class ProductAugmentor:
                 "PROB_HEAVY_AUGMENTATION": self.config.PROB_HEAVY_AUGMENTATION,
                 "PROB_NEIGHBORING_PRODUCTS": self.config.PROB_NEIGHBORING_PRODUCTS,
                 "PROB_SHADOW": self.config.PROB_SHADOW,
+            },
+            "failed_images_summary": {
+                "total_failed": total_failed,
+                "samples": all_failed_images[:50],  # Limit to 50 samples
             }
         }
 

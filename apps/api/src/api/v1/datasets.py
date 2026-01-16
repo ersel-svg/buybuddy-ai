@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Query
 from pydantic import BaseModel
 
 from services.supabase import SupabaseService, supabase_service
@@ -43,9 +43,17 @@ class DatasetUpdate(BaseModel):
 
 
 class AddProductsRequest(BaseModel):
-    """Request to add products to dataset."""
+    """Request to add products to dataset.
 
-    product_ids: list[str]
+    Either product_ids OR filters can be provided:
+    - product_ids: Add specific products by ID
+    - filters: Add all products matching the filter criteria
+    """
+
+    product_ids: Optional[list[str]] = None
+
+    # Filter-based selection (alternative to product_ids)
+    filters: Optional[dict] = None  # Contains: search, status, category, brand, etc.
 
 
 class AugmentationConfigRequest(BaseModel):
@@ -213,10 +221,73 @@ async def create_dataset(
 @router.get("/{dataset_id}")
 async def get_dataset(
     dataset_id: str,
+    # Pagination
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    # Search
+    search: Optional[str] = Query(None),
+    # Sorting
+    sort_by: Optional[str] = Query(None),
+    sort_order: Optional[str] = Query("desc"),
+    # Comma-separated list filters
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None),
+    sub_brand: Optional[str] = Query(None),
+    product_name: Optional[str] = Query(None),
+    variant_flavor: Optional[str] = Query(None),
+    container_type: Optional[str] = Query(None),
+    net_quantity: Optional[str] = Query(None),
+    pack_type: Optional[str] = Query(None),
+    manufacturer_country: Optional[str] = Query(None),
+    claims: Optional[str] = Query(None),
+    # Boolean filters
+    has_video: Optional[bool] = Query(None),
+    has_image: Optional[bool] = Query(None),
+    has_nutrition: Optional[bool] = Query(None),
+    has_description: Optional[bool] = Query(None),
+    has_prompt: Optional[bool] = Query(None),
+    has_issues: Optional[bool] = Query(None),
+    # Range filters
+    frame_count_min: Optional[int] = Query(None),
+    frame_count_max: Optional[int] = Query(None),
+    visibility_score_min: Optional[int] = Query(None),
+    visibility_score_max: Optional[int] = Query(None),
+    # Options
+    include_frame_counts: bool = Query(True),
     db: SupabaseService = Depends(get_supabase),
 ):
-    """Get dataset with products."""
-    dataset = await db.get_dataset(dataset_id)
+    """Get dataset with filtered products."""
+    dataset = await db.get_dataset(
+        dataset_id=dataset_id,
+        page=page,
+        limit=limit,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        status=status,
+        category=category,
+        brand=brand,
+        sub_brand=sub_brand,
+        product_name=product_name,
+        variant_flavor=variant_flavor,
+        container_type=container_type,
+        net_quantity=net_quantity,
+        pack_type=pack_type,
+        manufacturer_country=manufacturer_country,
+        claims=claims,
+        has_video=has_video,
+        has_image=has_image,
+        has_nutrition=has_nutrition,
+        has_description=has_description,
+        has_prompt=has_prompt,
+        has_issues=has_issues,
+        frame_count_min=frame_count_min,
+        frame_count_max=frame_count_max,
+        visibility_score_min=visibility_score_min,
+        visibility_score_max=visibility_score_max,
+        include_frame_counts=include_frame_counts,
+    )
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset
@@ -257,13 +328,34 @@ async def add_products_to_dataset(
     request: AddProductsRequest,
     db: SupabaseService = Depends(get_supabase),
 ):
-    """Add products to dataset."""
+    """Add products to dataset.
+
+    Supports two modes:
+    1. product_ids: Add specific products by their IDs
+    2. filters: Add all products matching filter criteria (for "Select All Filtered")
+    """
     existing = await db.get_dataset(dataset_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    added_count = await db.add_products_to_dataset(dataset_id, request.product_ids)
-    return {"added_count": added_count}
+    # Validate request - must have either product_ids or filters
+    if not request.product_ids and not request.filters:
+        raise HTTPException(
+            status_code=400,
+            detail="Either product_ids or filters must be provided"
+        )
+
+    # Mode 1: Add specific products by ID
+    if request.product_ids:
+        added_count = await db.add_products_to_dataset(dataset_id, request.product_ids)
+        return {"added_count": added_count}
+
+    # Mode 2: Add all products matching filters
+    if request.filters:
+        added_count = await db.add_filtered_products_to_dataset(dataset_id, request.filters)
+        return {"added_count": added_count}
+
+    return {"added_count": 0}
 
 
 @router.delete("/{dataset_id}/products/{product_id}")
@@ -279,6 +371,18 @@ async def remove_product_from_dataset(
 
     await db.remove_product_from_dataset(dataset_id, product_id)
     return {"status": "removed"}
+
+
+@router.get("/{dataset_id}/filter-options")
+async def get_dataset_filter_options(
+    dataset_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
+    """Get available filter options for products in this dataset."""
+    options = await db.get_dataset_filter_options(dataset_id)
+    if options is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return options
 
 
 # ===========================================

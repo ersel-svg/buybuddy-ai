@@ -182,6 +182,7 @@ export interface ProductWithFrameCounts extends Product {
 
 export interface DatasetWithProducts extends Dataset {
   products: ProductWithFrameCounts[];
+  products_total?: number;
   total_synthetic?: number;
   total_real?: number;
   total_augmented?: number;
@@ -598,4 +599,207 @@ export interface EmbeddingExport {
   vector_count: number;
   file_size_bytes?: number;
   created_at: string;
+}
+
+// ===========================================
+// Qdrant Collection Types
+// ===========================================
+
+export interface CollectionInfo {
+  name: string;
+  vectors_count: number;
+  points_count: number;
+  vector_size: number;
+  status: string;
+  size_bytes?: number;
+  model_name?: string;
+}
+
+// ===========================================
+// Advanced Embedding Extraction Types
+// ===========================================
+
+export type FrameSelection = "first" | "key_frames" | "interval";
+
+export interface ProductExtractionConfig {
+  frame_selection: FrameSelection;
+  frame_interval: number;
+  max_frames: number;
+  include_augmented?: boolean;
+}
+
+export interface CutoutExtractionConfig {
+  filter_has_upc?: boolean;
+  synced_after?: string;
+  batch_size?: number;
+}
+
+export interface CollectionStrategy {
+  separate_collections: boolean;
+  collection_prefix?: string;
+}
+
+export interface EmbeddingJobCreateAdvanced {
+  model_id: string;
+  job_type: EmbeddingJobType;
+  source: EmbeddingSource;
+  product_config?: ProductExtractionConfig;
+  cutout_config?: CutoutExtractionConfig;
+  collection_strategy?: CollectionStrategy;
+}
+
+// ===========================================
+// 3-Tab Embedding Extraction Types
+// ===========================================
+
+export type ProductSource = "all" | "selected" | "dataset" | "filter" | "matched" | "new";
+export type ImageType = "synthetic" | "real" | "augmented";
+export type CollectionMode = "create" | "append";
+export type OutputTarget = "qdrant" | "file";
+export type JobPurpose = "matching" | "training" | "evaluation";
+
+// Tab 1: Matching Extraction
+export interface MatchingExtractionRequest {
+  model_id?: string;
+  product_source: ProductSource;
+  product_ids?: string[];
+  product_dataset_id?: string;
+  product_filter?: Record<string, unknown>;
+  include_cutouts: boolean;
+  cutout_filter_has_upc?: boolean;
+  collection_mode: CollectionMode;
+  product_collection_name?: string;
+  cutout_collection_name?: string;
+  frame_selection: FrameSelection;
+  frame_interval?: number;
+  max_frames?: number;
+}
+
+export interface MatchingExtractionResponse {
+  job_id: string;
+  status: string;
+  product_collection: string;
+  cutout_collection?: string;
+  product_count: number;
+  cutout_count: number;
+  total_embeddings: number;
+  failed_count: number;
+}
+
+// Tab 2: Training Extraction
+export interface TrainingExtractionRequest {
+  model_id?: string;
+  image_types: ImageType[];
+  frame_selection: FrameSelection | "all";
+  frame_interval?: number;
+  max_frames?: number;
+  include_matched_cutouts: boolean;
+  output_target: OutputTarget;
+  collection_mode: CollectionMode;
+  collection_name?: string;
+  file_format?: "npz" | "json";
+}
+
+export interface TrainingExtractionResponse {
+  job_id: string;
+  status: string;
+  collection_name?: string;
+  matched_product_count: number;
+  total_embeddings: number;
+  failed_count: number;
+  output_target: OutputTarget;
+  output_file_url?: string;
+}
+
+// Tab 3: Evaluation Extraction
+export interface EvaluationExtractionRequest {
+  model_id: string;
+  dataset_id: string;
+  image_types: ImageType[];
+  frame_selection: FrameSelection | "all";
+  frame_interval?: number;
+  max_frames?: number;
+  collection_mode: CollectionMode;
+  collection_name?: string;
+}
+
+export interface EvaluationExtractionResponse {
+  job_id: string;
+  status: string;
+  collection_name: string;
+  dataset_id: string;
+  dataset_name: string;
+  product_count: number;
+  total_embeddings: number;
+  failed_count: number;
+}
+
+// Matched Products Stats
+export interface MatchedProductsStats {
+  total_matched_products: number;
+  sample: Product[];
+}
+
+// Embedding Collection Metadata
+export type CollectionType = "products" | "cutouts" | "training" | "evaluation";
+
+export interface EmbeddingCollection {
+  id: string;
+  name: string;
+  collection_type: CollectionType;
+  source_type?: ProductSource;
+  source_dataset_id?: string;
+  source_product_ids?: string[];
+  source_filter?: Record<string, unknown>;
+  embedding_model_id?: string;
+  vector_count: number;
+  image_types?: ImageType[];
+  frame_selection?: string;
+  created_at: string;
+  updated_at: string;
+  last_sync_at?: string;
+}
+
+// Enhanced Embedding Job (with new fields)
+export interface EmbeddingJobExtended extends EmbeddingJob {
+  purpose?: JobPurpose;
+  image_types?: ImageType[];
+  output_target?: OutputTarget;
+  output_file_url?: string;
+  source_config?: Record<string, unknown>;
+}
+
+// ===========================================
+// Reverse Matching Types (Cutout → Products)
+// ===========================================
+
+export interface ProductMatchCandidate {
+  id: string;
+  barcode?: string;
+  brand_name?: string;
+  product_name?: string;
+  primary_image_url?: string;
+  similarity: number;
+  match_type: CandidateMatchType;
+}
+
+export interface CutoutProductsResponse {
+  cutout: CutoutImage;
+  candidates: ProductMatchCandidate[];
+  barcode_match_count: number;
+  similarity_match_count: number;
+  total_count: number;
+  has_cutout_embedding: boolean;
+}
+
+// ===========================================
+// Collection Products Types
+// ===========================================
+
+export interface CollectionProductsResponse {
+  products: Product[];
+  total_count: number;
+  page: number;
+  limit: number;
+  collection_name: string;
 }

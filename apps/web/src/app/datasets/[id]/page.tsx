@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -32,6 +34,23 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -40,7 +59,6 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -49,6 +67,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  FilterDrawer,
+  FilterTrigger,
+  useFilterState,
+  type FilterSection,
+} from "@/components/filters/filter-drawer";
 import {
   ArrowLeft,
   Plus,
@@ -63,8 +87,38 @@ import {
   ImageIcon,
   Camera,
   Wand2,
+  Search,
+  MoreHorizontal,
+  Download,
+  FileJson,
+  FileSpreadsheet,
+  RefreshCw,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
-import type { ProductWithFrameCounts, AugmentationPreset, AugmentationRequest } from "@/types";
+import type { ProductWithFrameCounts, AugmentationPreset, AugmentationRequest, ProductStatus } from "@/types";
+
+// Sortable columns
+type SortColumn =
+  | "barcode"
+  | "brand_name"
+  | "sub_brand"
+  | "product_name"
+  | "variant_flavor"
+  | "category"
+  | "container_type"
+  | "net_quantity"
+  | "pack_type"
+  | "manufacturer_country"
+  | "status"
+  | "synthetic_count"
+  | "real_count"
+  | "augmented_count"
+  | "created_at"
+  | "updated_at";
+
+type SortDirection = "asc" | "desc";
 
 // Preset descriptions
 const PRESET_INFO: Record<AugmentationPreset, { label: string; description: string }> = {
@@ -101,7 +155,6 @@ function calculateAugmentationPlan(
     const augFrames = product.frame_counts?.augmented || 0;
     const currentTotal = synFrames + augFrames;
     const needed = Math.max(0, synTarget - currentTotal);
-    // Calculate selected frames based on interval (e.g., 200 frames / 20 interval = 10 selected)
     const selectedFrames = Math.max(1, Math.floor(synFrames / frameInterval));
     const augsPerFrame = selectedFrames > 0 ? Math.ceil(needed / selectedFrames) : 0;
 
@@ -119,9 +172,30 @@ function calculateAugmentationPlan(
   });
 }
 
+// Status badge colors
+const statusColors: Record<ProductStatus, string> = {
+  pending: "bg-yellow-100 text-yellow-800 hover:bg-yellow-100",
+  processing: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+  needs_matching: "bg-purple-100 text-purple-800 hover:bg-purple-100",
+  ready: "bg-green-100 text-green-800 hover:bg-green-100",
+  rejected: "bg-red-100 text-red-800 hover:bg-red-100",
+};
+
 export default function DatasetDetailPage() {
   const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
+
+  // Search, pagination, sorting state
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
 
   // Augmentation dialog state
   const [augDialogOpen, setAugDialogOpen] = useState(false);
@@ -136,24 +210,427 @@ export default function DatasetDetailPage() {
     },
   });
 
-  // Fetch dataset with products
+  // Use filter state hook
+  const {
+    filterState,
+    setFilter,
+    clearSection,
+    clearAll,
+    getTotalCount,
+  } = useFilterState();
+
+  // Convert FilterState to API parameters
+  const apiFilters = useMemo(() => {
+    const params: Record<string, string | number | boolean | undefined> = {};
+
+    const setToString = (key: string): string | undefined => {
+      const filter = filterState[key] as Set<string> | undefined;
+      if (filter?.size) {
+        return Array.from(filter).join(",");
+      }
+      return undefined;
+    };
+
+    params.status = setToString("status");
+    params.category = setToString("category");
+    params.brand = setToString("brand");
+    params.sub_brand = setToString("subBrand");
+    params.product_name = setToString("productName");
+    params.variant_flavor = setToString("flavor");
+    params.container_type = setToString("container");
+    params.net_quantity = setToString("netQuantity");
+    params.pack_type = setToString("packType");
+    params.manufacturer_country = setToString("country");
+    params.claims = setToString("claims");
+
+    const booleanKeys = ["hasVideo", "hasImage", "hasNutrition", "hasDescription", "hasPrompt", "hasIssues"];
+    const booleanApiKeys = ["has_video", "has_image", "has_nutrition", "has_description", "has_prompt", "has_issues"];
+    booleanKeys.forEach((key, i) => {
+      const value = filterState[key] as boolean | undefined;
+      if (value !== undefined) {
+        params[booleanApiKeys[i]] = value;
+      }
+    });
+
+    const frameRange = filterState["frameCount"] as { min: number; max: number } | undefined;
+    if (frameRange) {
+      params.frame_count_min = frameRange.min;
+      params.frame_count_max = frameRange.max;
+    }
+
+    const visibilityRange = filterState["visibilityScore"] as { min: number; max: number } | undefined;
+    if (visibilityRange) {
+      params.visibility_score_min = visibilityRange.min;
+      params.visibility_score_max = visibilityRange.max;
+    }
+
+    return params;
+  }, [filterState]);
+
+  // Map frontend sort columns to backend column names
+  const serverSortColumn = useMemo(() => {
+    const serverSortableColumns: Record<string, string> = {
+      barcode: "barcode",
+      brand_name: "brand_name",
+      sub_brand: "sub_brand",
+      product_name: "product_name",
+      variant_flavor: "variant_flavor",
+      category: "category",
+      container_type: "container_type",
+      net_quantity: "net_quantity",
+      manufacturer_country: "manufacturer_country",
+      status: "status",
+      created_at: "created_at",
+      updated_at: "updated_at",
+    };
+    return sortColumn ? serverSortableColumns[sortColumn] : undefined;
+  }, [sortColumn]);
+
+  // Fetch dataset with products (with filters)
   const {
     data: dataset,
     isLoading,
     error,
+    refetch,
+    isFetching,
   } = useQuery({
-    queryKey: ["dataset", id],
-    queryFn: () => apiClient.getDataset(id),
+    queryKey: ["dataset", id, { page, search, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection }],
+    queryFn: () =>
+      apiClient.getDataset(id, {
+        page,
+        limit: 100,
+        search: search || undefined,
+        sort_by: serverSortColumn,
+        sort_order: sortDirection,
+        include_frame_counts: true,
+        ...apiFilters,
+      }),
     enabled: !!id,
   });
 
+  // Fetch filter options for this dataset
+  const { data: filterOptions } = useQuery({
+    queryKey: ["dataset-filter-options", id],
+    queryFn: () => apiClient.getDatasetFilterOptions(id),
+    enabled: !!id,
+    staleTime: 60000,
+  });
+
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [apiFilters, serverSortColumn, sortDirection, search]);
+
+  // Build filter sections from filter options
+  const filterSections: FilterSection[] = useMemo(() => {
+    if (!filterOptions) return [];
+
+    const sections: FilterSection[] = [
+      {
+        id: "status",
+        label: "Status",
+        type: "checkbox",
+        options: filterOptions.status,
+        defaultExpanded: true,
+      },
+      {
+        id: "category",
+        label: "Category",
+        type: "checkbox",
+        options: filterOptions.category,
+        searchable: true,
+        defaultExpanded: true,
+      },
+      {
+        id: "brand",
+        label: "Brand",
+        type: "checkbox",
+        options: filterOptions.brand,
+        searchable: true,
+        defaultExpanded: true,
+      },
+      {
+        id: "subBrand",
+        label: "Sub Brand",
+        type: "checkbox",
+        options: filterOptions.subBrand,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "productName",
+        label: "Product Name",
+        type: "checkbox",
+        options: filterOptions.productName,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "flavor",
+        label: "Variant / Flavor",
+        type: "checkbox",
+        options: filterOptions.flavor,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "container",
+        label: "Container Type",
+        type: "checkbox",
+        options: filterOptions.container,
+        defaultExpanded: false,
+      },
+      {
+        id: "netQuantity",
+        label: "Net Quantity",
+        type: "checkbox",
+        options: filterOptions.netQuantity,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "packType",
+        label: "Pack Type",
+        type: "checkbox",
+        options: filterOptions.packType,
+        defaultExpanded: false,
+      },
+      {
+        id: "country",
+        label: "Manufacturer Country",
+        type: "checkbox",
+        options: filterOptions.country,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "claims",
+        label: "Product Claims",
+        type: "checkbox",
+        options: filterOptions.claims,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "issueTypes",
+        label: "Issue Types",
+        type: "checkbox",
+        options: filterOptions.issueTypes,
+        searchable: true,
+        defaultExpanded: false,
+      },
+      {
+        id: "frameCount",
+        label: "Frame Count",
+        type: "range",
+        min: filterOptions.frameCount.min,
+        max: filterOptions.frameCount.max || 100,
+        step: 1,
+        defaultExpanded: false,
+      },
+      {
+        id: "visibilityScore",
+        label: "Visibility Score",
+        type: "range",
+        min: filterOptions.visibilityScore.min,
+        max: filterOptions.visibilityScore.max || 100,
+        step: 1,
+        unit: "%",
+        defaultExpanded: false,
+      },
+      {
+        id: "hasVideo",
+        label: "Video",
+        type: "boolean",
+        trueLabel: "Has Video",
+        falseLabel: "No Video",
+        trueCount: filterOptions.hasVideo.trueCount,
+        falseCount: filterOptions.hasVideo.falseCount,
+        defaultExpanded: false,
+      },
+      {
+        id: "hasImage",
+        label: "Primary Image",
+        type: "boolean",
+        trueLabel: "Has Image",
+        falseLabel: "No Image",
+        trueCount: filterOptions.hasImage.trueCount,
+        falseCount: filterOptions.hasImage.falseCount,
+        defaultExpanded: false,
+      },
+      {
+        id: "hasNutrition",
+        label: "Nutrition Facts",
+        type: "boolean",
+        trueLabel: "Has Nutrition Info",
+        falseLabel: "No Nutrition Info",
+        trueCount: filterOptions.hasNutrition.trueCount,
+        falseCount: filterOptions.hasNutrition.falseCount,
+        defaultExpanded: false,
+      },
+      {
+        id: "hasDescription",
+        label: "Marketing Description",
+        type: "boolean",
+        trueLabel: "Has Description",
+        falseLabel: "No Description",
+        trueCount: filterOptions.hasDescription.trueCount,
+        falseCount: filterOptions.hasDescription.falseCount,
+        defaultExpanded: false,
+      },
+      {
+        id: "hasPrompt",
+        label: "Grounding Prompt",
+        type: "boolean",
+        trueLabel: "Has Prompt",
+        falseLabel: "No Prompt",
+        trueCount: filterOptions.hasPrompt.trueCount,
+        falseCount: filterOptions.hasPrompt.falseCount,
+        defaultExpanded: false,
+      },
+      {
+        id: "hasIssues",
+        label: "Issues",
+        type: "boolean",
+        trueLabel: "Has Issues",
+        falseLabel: "No Issues",
+        trueCount: filterOptions.hasIssues.trueCount,
+        falseCount: filterOptions.hasIssues.falseCount,
+        defaultExpanded: false,
+      },
+    ];
+
+    return sections;
+  }, [filterOptions]);
+
+  // Products from dataset
+  const products = dataset?.products || [];
+  const productsTotal = dataset?.products_total || 0;
+
+  // Client-side sorting for frame count columns (not supported by server)
+  const sortedProducts = useMemo(() => {
+    if (!sortColumn) return products;
+    if (serverSortColumn) return products; // Server already sorted
+
+    return [...products].sort((a, b) => {
+      let aVal: string | number | undefined;
+      let bVal: string | number | undefined;
+
+      switch (sortColumn) {
+        case "pack_type":
+          aVal = a.pack_configuration?.type;
+          bVal = b.pack_configuration?.type;
+          break;
+        case "synthetic_count":
+          aVal = a.frame_counts?.synthetic ?? 0;
+          bVal = b.frame_counts?.synthetic ?? 0;
+          break;
+        case "real_count":
+          aVal = a.frame_counts?.real ?? 0;
+          bVal = b.frame_counts?.real ?? 0;
+          break;
+        case "augmented_count":
+          aVal = a.frame_counts?.augmented ?? 0;
+          bVal = b.frame_counts?.augmented ?? 0;
+          break;
+        default:
+          return 0;
+      }
+
+      if (aVal === undefined && bVal === undefined) return 0;
+      if (aVal === undefined) return 1;
+      if (bVal === undefined) return -1;
+
+      let result = 0;
+      if (typeof aVal === "number" && typeof bVal === "number") {
+        result = aVal - bVal;
+      } else {
+        result = String(aVal).localeCompare(String(bVal));
+      }
+
+      return sortDirection === "desc" ? -result : result;
+    });
+  }, [products, sortColumn, sortDirection, serverSortColumn]);
+
+  // Handle sort column click
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      if (sortDirection === "asc") {
+        setSortDirection("desc");
+      } else {
+        setSortColumn(null);
+        setSortDirection("asc");
+      }
+    } else {
+      setSortColumn(column);
+      setSortDirection("asc");
+    }
+  };
+
+  // Sortable header component
+  const SortableHeader = ({
+    column,
+    children,
+    className = "",
+  }: {
+    column: SortColumn;
+    children: React.ReactNode;
+    className?: string;
+  }) => (
+    <TableHead
+      className={`cursor-pointer select-none hover:bg-muted/80 transition-colors ${className}`}
+      onClick={() => handleSort(column)}
+    >
+      <div className="flex items-center gap-1">
+        {children}
+        {sortColumn === column ? (
+          sortDirection === "asc" ? (
+            <ArrowUp className="h-3 w-3" />
+          ) : (
+            <ArrowDown className="h-3 w-3" />
+          )
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-30" />
+        )}
+      </div>
+    </TableHead>
+  );
+
+  // Bulk selection helpers
+  const allSelected = useMemo(() => {
+    if (!sortedProducts.length) return false;
+    return sortedProducts.every((p) => selectedIds.has(p.id));
+  }, [sortedProducts, selectedIds]);
+
+  const someSelected = useMemo(() => {
+    if (!sortedProducts.length) return false;
+    return sortedProducts.some((p) => selectedIds.has(p.id)) && !allSelected;
+  }, [sortedProducts, selectedIds, allSelected]);
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(sortedProducts.map((p) => p.id)));
+    }
+  };
+
+  const toggleOne = (productId: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(productId)) {
+      newSet.delete(productId);
+    } else {
+      newSet.add(productId);
+    }
+    setSelectedIds(newSet);
+  };
+
   // Calculate augmentation plan
   const augmentationPlan = useMemo(() => {
-    if (!dataset?.products) return [];
-    return calculateAugmentationPlan(dataset.products, augConfig.syn_target, augConfig.frame_interval);
-  }, [dataset?.products, augConfig.syn_target, augConfig.frame_interval]);
+    if (!products.length) return [];
+    return calculateAugmentationPlan(products, augConfig.syn_target, augConfig.frame_interval);
+  }, [products, augConfig.syn_target, augConfig.frame_interval]);
 
-  // Total augmentations that will be created
   const totalAugmentations = useMemo(() => {
     return augmentationPlan.reduce((sum, p) => sum + (p.augsPerFrame * p.selectedFrames), 0);
   }, [augmentationPlan]);
@@ -163,15 +640,36 @@ export default function DatasetDetailPage() {
     mutationFn: (productId: string) =>
       apiClient.removeProductFromDataset(id, productId),
     onSuccess: () => {
-      toast.success("Product removed");
+      toast.success("Product removed from dataset");
+      setSelectedIds(new Set());
       queryClient.invalidateQueries({ queryKey: ["dataset", id] });
+      queryClient.invalidateQueries({ queryKey: ["dataset-filter-options", id] });
     },
     onError: () => {
       toast.error("Failed to remove product");
     },
   });
 
-  // Augmentation mutation with full config
+  // Bulk remove mutation
+  const bulkRemoveMutation = useMutation({
+    mutationFn: async (productIds: string[]) => {
+      for (const productId of productIds) {
+        await apiClient.removeProductFromDataset(id, productId);
+      }
+    },
+    onSuccess: () => {
+      toast.success(`${selectedIds.size} product(s) removed from dataset`);
+      setSelectedIds(new Set());
+      setDeleteDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["dataset", id] });
+      queryClient.invalidateQueries({ queryKey: ["dataset-filter-options", id] });
+    },
+    onError: () => {
+      toast.error("Failed to remove products");
+    },
+  });
+
+  // Augmentation mutation
   const augmentMutation = useMutation({
     mutationFn: (config: AugmentationRequest) =>
       apiClient.startAugmentation(id, config),
@@ -229,6 +727,64 @@ export default function DatasetDetailPage() {
     },
   });
 
+  // Download handlers
+  const handleDownloadSelected = async () => {
+    if (selectedIds.size === 0) return;
+    setIsDownloading(true);
+    try {
+      const blob = await apiClient.downloadProducts({ product_ids: Array.from(selectedIds) });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `dataset_products_${Date.now()}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${selectedIds.size} products downloading...`);
+    } catch (error) {
+      toast.error("Download failed");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleExportCSV = async () => {
+    setIsDownloading(true);
+    try {
+      const productIds = selectedIds.size > 0 ? Array.from(selectedIds) : products.map(p => p.id);
+      const blob = await apiClient.exportProductsCSV({ product_ids: productIds });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `dataset_${id}_products.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("CSV exported");
+    } catch (error) {
+      toast.error("Export failed");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleExportJSON = async () => {
+    setIsDownloading(true);
+    try {
+      const productIds = selectedIds.size > 0 ? Array.from(selectedIds) : products.map(p => p.id);
+      const blob = await apiClient.exportProductsJSON({ product_ids: productIds });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `dataset_${id}_products.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("JSON exported");
+    } catch (error) {
+      toast.error("Export failed");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   // Handle augmentation config changes
   const handlePresetChange = (preset: AugmentationPreset) => {
     setAugConfig((prev) => ({
@@ -243,6 +799,8 @@ export default function DatasetDetailPage() {
   const handleStartAugmentation = () => {
     augmentMutation.mutate(augConfig);
   };
+
+  const activeFilterCount = getTotalCount();
 
   if (isLoading) {
     return (
@@ -433,19 +991,6 @@ export default function DatasetDetailPage() {
                         )}
                       </p>
                     </div>
-                    {augmentationPlan.length > 0 && augmentationPlan.length <= 5 && (
-                      <div className="mt-2 text-xs">
-                        {augmentationPlan.map((p) => (
-                          <div key={p.id} className="flex justify-between py-1 border-b border-gray-200 last:border-0">
-                            <span className="font-mono">{p.barcode}</span>
-                            <span>
-                              {p.selectedFrames} frames {augConfig.frame_interval > 1 && <span className="text-gray-400">(of {p.synFrames})</span>} x {p.augsPerFrame} = {p.augsPerFrame * p.selectedFrames} new
-                              {p.needed === 0 && <span className="text-green-600 ml-1">(target met)</span>}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
 
                   {/* Preset Selection */}
@@ -512,11 +1057,10 @@ export default function DatasetDetailPage() {
                     </div>
                   </div>
 
-                  {/* Custom Settings (only shown for custom preset) */}
+                  {/* Custom Settings */}
                   {augConfig.augmentation_config?.preset === "custom" && (
                     <div className="space-y-4 border-t pt-4">
                       <h4 className="font-medium">Custom Probabilities</h4>
-
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label className="text-sm">Heavy Augmentation</Label>
@@ -535,25 +1079,6 @@ export default function DatasetDetailPage() {
                             }
                           />
                         </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-sm">Neighboring Products</Label>
-                          <Slider
-                            value={[augConfig.augmentation_config?.PROB_NEIGHBORING_PRODUCTS ?? 0.5]}
-                            max={1}
-                            step={0.1}
-                            onValueChange={([value]) =>
-                              setAugConfig((prev) => ({
-                                ...prev,
-                                augmentation_config: {
-                                  ...prev.augmentation_config!,
-                                  PROB_NEIGHBORING_PRODUCTS: value,
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
                         <div className="space-y-2">
                           <Label className="text-sm">Shadow</Label>
                           <Slider
@@ -566,60 +1091,6 @@ export default function DatasetDetailPage() {
                                 augmentation_config: {
                                   ...prev.augmentation_config!,
                                   PROB_SHADOW: value,
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-sm">Camera Noise</Label>
-                          <Slider
-                            value={[augConfig.augmentation_config?.PROB_CAMERA_NOISE ?? 0.6]}
-                            max={1}
-                            step={0.1}
-                            onValueChange={([value]) =>
-                              setAugConfig((prev) => ({
-                                ...prev,
-                                augmentation_config: {
-                                  ...prev.augmentation_config!,
-                                  PROB_CAMERA_NOISE: value,
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-sm">Lens Distortion</Label>
-                          <Slider
-                            value={[augConfig.augmentation_config?.PROB_LENS_DISTORTION ?? 0.4]}
-                            max={1}
-                            step={0.1}
-                            onValueChange={([value]) =>
-                              setAugConfig((prev) => ({
-                                ...prev,
-                                augmentation_config: {
-                                  ...prev.augmentation_config!,
-                                  PROB_LENS_DISTORTION: value,
-                                },
-                              }))
-                            }
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-sm">Price Tag</Label>
-                          <Slider
-                            value={[augConfig.augmentation_config?.PROB_PRICE_TAG ?? 0.3]}
-                            max={1}
-                            step={0.1}
-                            onValueChange={([value]) =>
-                              setAugConfig((prev) => ({
-                                ...prev,
-                                augmentation_config: {
-                                  ...prev.augmentation_config!,
-                                  PROB_PRICE_TAG: value,
                                 },
                               }))
                             }
@@ -686,140 +1157,367 @@ export default function DatasetDetailPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
-            <CardTitle>Products ({dataset.product_count})</CardTitle>
+            <CardTitle>Products ({productsTotal})</CardTitle>
             <CardDescription>
               Products included in this dataset with frame counts
+              {activeFilterCount > 0 && (
+                <span className="text-blue-600 ml-1">
+                  ({activeFilterCount} filters active)
+                </span>
+              )}
             </CardDescription>
           </div>
-          <Link href={`/datasets/${id}/add-products`}>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Products
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => refetch()}
+              disabled={isFetching}
+            >
+              <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
             </Button>
-          </Link>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" disabled={isDownloading}>
+                  {isDownloading ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4 mr-2" />
+                  )}
+                  Export
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem
+                  onClick={handleDownloadSelected}
+                  disabled={selectedIds.size === 0}
+                >
+                  <Package className="h-4 w-4 mr-2" />
+                  Download Selected ({selectedIds.size})
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleExportCSV}>
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  Export to CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExportJSON}>
+                  <FileJson className="h-4 w-4 mr-2" />
+                  Export to JSON
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Link href={`/datasets/${id}/add-products`}>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Products
+              </Button>
+            </Link>
+          </div>
         </CardHeader>
         <CardContent>
-          {dataset.products?.length === 0 ? (
+          {/* Search & Filters */}
+          <div className="flex gap-4 flex-wrap mb-4">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Input
+                placeholder="Search by barcode, name, or brand..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+            <FilterTrigger
+              onClick={() => setFilterDrawerOpen(true)}
+              activeCount={activeFilterCount}
+            />
+          </div>
+
+          {/* Filter Drawer */}
+          <FilterDrawer
+            open={filterDrawerOpen}
+            onOpenChange={setFilterDrawerOpen}
+            sections={filterSections}
+            filterState={filterState}
+            onFilterChange={setFilter}
+            onClearAll={clearAll}
+            onClearSection={clearSection}
+            title="Dataset Product Filters"
+            description="Filter products in this dataset"
+          />
+
+          {/* Bulk Actions Bar */}
+          {selectedIds.size > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between mb-4">
+              <span className="text-sm text-blue-700">
+                {selectedIds.size} product{selectedIds.size > 1 ? "s" : ""} selected
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadSelected}
+                  disabled={isDownloading}
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Download
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  Remove from Dataset
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Products Table */}
+          {sortedProducts.length === 0 ? (
             <div className="text-center py-8">
               <Package className="h-12 w-12 mx-auto text-gray-300 mb-2" />
-              <p className="text-gray-500">No products in this dataset</p>
-              <p className="text-gray-400 text-sm">
-                Click &quot;Add Products&quot; to get started
-              </p>
+              <p className="text-gray-500">No products found</p>
+              {activeFilterCount > 0 && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  onClick={clearAll}
+                  className="mt-2"
+                >
+                  Clear all filters
+                </Button>
+              )}
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Image</TableHead>
-                  <TableHead>Barcode</TableHead>
-                  <TableHead>Brand</TableHead>
-                  <TableHead>Product</TableHead>
-                  <TableHead className="text-center">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger className="flex items-center gap-1">
-                          <ImageIcon className="h-3 w-3 text-blue-500" />
-                          Syn
-                        </TooltipTrigger>
-                        <TooltipContent>Synthetic frames from video</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </TableHead>
-                  <TableHead className="text-center">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger className="flex items-center gap-1">
-                          <Camera className="h-3 w-3 text-green-500" />
-                          Real
-                        </TooltipTrigger>
-                        <TooltipContent>Real matched images</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </TableHead>
-                  <TableHead className="text-center">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger className="flex items-center gap-1">
-                          <Wand2 className="h-3 w-3 text-purple-500" />
-                          Aug
-                        </TooltipTrigger>
-                        <TooltipContent>Augmented images</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-12"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {dataset.products?.map((product: ProductWithFrameCounts) => (
-                  <TableRow key={product.id}>
-                    <TableCell>
-                      <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
-                        {product.primary_image_url ? (
-                          <img
-                            src={product.primary_image_url}
-                            alt=""
-                            className="w-full h-full object-cover rounded"
+            <>
+              <div className="border rounded-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/50">
+                        <TableHead className="w-12">
+                          <Checkbox
+                            checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                            onCheckedChange={toggleAll}
                           />
-                        ) : (
-                          <Package className="h-5 w-5 text-gray-400" />
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-sm">
-                      {product.barcode}
-                    </TableCell>
-                    <TableCell>{product.brand_name || "-"}</TableCell>
-                    <TableCell className="max-w-[200px] truncate">
-                      {product.product_name || "-"}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className="text-blue-600 font-medium">
-                        {product.frame_counts?.synthetic || 0}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className="text-green-600 font-medium">
-                        {product.frame_counts?.real || 0}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className="text-purple-600 font-medium">
-                        {product.frame_counts?.augmented || 0}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={
-                          product.status === "ready"
-                            ? "bg-green-50 text-green-700"
-                            : ""
-                        }
-                      >
-                        {product.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-red-500 hover:text-red-600 hover:bg-red-50"
-                        onClick={() => removeProductMutation.mutate(product.id)}
-                        disabled={removeProductMutation.isPending}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                        </TableHead>
+                        <TableHead className="w-16">Image</TableHead>
+                        <SortableHeader column="barcode">Barcode</SortableHeader>
+                        <SortableHeader column="brand_name">Brand</SortableHeader>
+                        <SortableHeader column="sub_brand">Sub Brand</SortableHeader>
+                        <SortableHeader column="product_name">Product Name</SortableHeader>
+                        <SortableHeader column="variant_flavor">Variant</SortableHeader>
+                        <SortableHeader column="category">Category</SortableHeader>
+                        <SortableHeader column="container_type">Container</SortableHeader>
+                        <SortableHeader column="net_quantity">Net Qty</SortableHeader>
+                        <SortableHeader column="manufacturer_country">Country</SortableHeader>
+                        <SortableHeader column="status">Status</SortableHeader>
+                        <SortableHeader column="updated_at">Processed</SortableHeader>
+                        <SortableHeader column="synthetic_count" className="text-center text-xs">Syn</SortableHeader>
+                        <SortableHeader column="real_count" className="text-center text-xs">Real</SortableHeader>
+                        <SortableHeader column="augmented_count" className="text-center text-xs">Aug</SortableHeader>
+                        <TableHead className="w-12"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sortedProducts.map((product: ProductWithFrameCounts) => (
+                        <TableRow
+                          key={product.id}
+                          className={selectedIds.has(product.id) ? "bg-blue-50" : ""}
+                        >
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedIds.has(product.id)}
+                              onCheckedChange={() => toggleOne(product.id)}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            {product.primary_image_url ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <img
+                                    src={product.primary_image_url}
+                                    alt=""
+                                    className="w-10 h-10 object-cover rounded cursor-pointer"
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent
+                                  side="right"
+                                  className="p-0 bg-transparent border-0"
+                                  sideOffset={8}
+                                >
+                                  <img
+                                    src={product.primary_image_url}
+                                    alt={product.product_name || product.barcode}
+                                    className="w-48 h-48 object-contain rounded-lg shadow-lg bg-white"
+                                  />
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
+                                <Package className="h-5 w-5 text-gray-400" />
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {product.barcode}
+                          </TableCell>
+                          <TableCell className="text-sm font-medium">
+                            {product.brand_name || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {product.sub_brand || "-"}
+                          </TableCell>
+                          <TableCell className="max-w-[150px] truncate text-sm">
+                            {product.product_name || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {product.variant_flavor || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {product.category || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {product.container_type || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {product.net_quantity || "-"}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {product.manufacturer_country || "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={statusColors[product.status]}>
+                              {product.status.replace("_", " ")}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs text-gray-500 whitespace-nowrap">
+                            {product.updated_at
+                              ? new Date(product.updated_at).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                })
+                              : "-"}
+                          </TableCell>
+                          <TableCell className="text-center text-sm text-blue-600">
+                            {product.frame_counts?.synthetic ?? 0}
+                          </TableCell>
+                          <TableCell className="text-center text-sm text-green-600">
+                            {product.frame_counts?.real ?? 0}
+                          </TableCell>
+                          <TableCell className="text-center text-sm text-purple-600">
+                            {product.frame_counts?.augmented ?? 0}
+                          </TableCell>
+                          <TableCell>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem asChild>
+                                  <Link href={`/products/${product.id}`}>
+                                    View Details
+                                  </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild>
+                                  <Link href={`/products/${product.id}?edit=true`}>
+                                    Edit
+                                  </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={async () => {
+                                    try {
+                                      const blob = await apiClient.downloadProduct(product.id);
+                                      const url = URL.createObjectURL(blob);
+                                      const a = document.createElement("a");
+                                      a.href = url;
+                                      a.download = `product_${product.barcode}.zip`;
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                      toast.success("Download started");
+                                    } catch {
+                                      toast.error("Download failed");
+                                    }
+                                  }}
+                                >
+                                  <Download className="h-4 w-4 mr-2" />
+                                  Download Frames
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-red-600"
+                                  onClick={() => removeProductMutation.mutate(product.id)}
+                                  disabled={removeProductMutation.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4 mr-2" />
+                                  Remove from Dataset
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Pagination */}
+              <div className="flex justify-between items-center mt-4">
+                <p className="text-sm text-gray-500">
+                  Showing {sortedProducts.length} of {productsTotal} products
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={page === 1}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={page * 100 >= productsTotal}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Products from Dataset</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove {selectedIds.size} product
+              {selectedIds.size > 1 ? "s" : ""} from this dataset? The products will not be deleted from the system.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => bulkRemoveMutation.mutate(Array.from(selectedIds))}
+              disabled={bulkRemoveMutation.isPending}
+            >
+              {bulkRemoveMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

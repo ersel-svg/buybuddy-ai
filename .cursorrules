@@ -2,9 +2,24 @@
 
 ## Project Overview
 
-Bu proje sahadan gelen ürün videolarını işleyip AI training data ve product directory oluşturan bir internal tool. 
+Bu proje sahadan gelen ürün videolarını işleyip AI training data ve product directory oluşturan bir internal tool.
 
-Stack: Runpod Serverless (GPU worker) + Supabase (DB/Storage) + NiceGUI (Python UI)
+Stack: Runpod Serverless (GPU worker) + Supabase (DB/Storage) + Next.js (Frontend) + FastAPI (Backend)
+
+## ⚠️ Authentication - ÖNEMLİ
+
+**Bu proje Buybuddy API üzerinden authentication yapıyor.** Supabase Auth veya başka bir auth sistemi KULLANILMIYOR.
+
+```
+Authentication Flow:
+1. POST /user/sign_in → passphrase al
+2. POST /user/sign_in/token → token al
+3. Bearer token ile API çağrıları
+
+Backend Service: apps/api/src/services/buybuddy.py
+```
+
+Login/auth ile ilgili kod yazarken bu pattern'i takip et. Yeni auth sistemi ekleme.
 
 ## Key Files to Reference
 
