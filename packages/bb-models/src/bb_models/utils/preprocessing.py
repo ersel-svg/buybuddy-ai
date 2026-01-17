@@ -82,6 +82,12 @@ def create_train_transforms(
     if image_std is None:
         image_std = [0.229, 0.224, 0.225]
 
+    # Handle aliases
+    if strength == "medium":
+        strength = "moderate"
+    elif strength == "heavy":
+        strength = "strong"
+
     if strength == "light":
         return transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.5),

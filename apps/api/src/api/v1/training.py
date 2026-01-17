@@ -66,7 +66,7 @@ class TrainingConfigOverrides(BaseModel):
     llrd_factor: Optional[float] = Field(None, ge=0.5, le=1.0)
     arcface_margin: Optional[float] = Field(None, ge=0.1, le=0.8)
     arcface_scale: Optional[float] = Field(None, ge=16, le=128)
-    augmentation_strength: Optional[Literal["none", "light", "medium", "heavy"]] = None
+    augmentation_strength: Optional[Literal["none", "light", "moderate", "strong"]] = None
     use_gem_pooling: Optional[bool] = None
     use_arcface: Optional[bool] = None
     use_llrd: Optional[bool] = None
@@ -393,50 +393,80 @@ async def create_training_run(
         }
 
     # Build training images for each product
-    # Fetch images from product_images table based on image_config
+    # Uses frames_path directly for efficiency (skips slow product_images queries)
     image_cfg = request.image_config
     training_images: dict[str, list[dict]] = {}  # product_id -> list of images
     image_stats = {"synthetic": 0, "real": 0, "augmented": 0, "cutout": 0}
 
-    for product_id in all_product_ids:
-        product_images = await db.get_product_images_by_types(
-            product_id=product_id,
-            image_types=image_cfg.image_types,
-            frame_selection=image_cfg.frame_selection,
-            frame_interval=image_cfg.frame_interval,
-            max_frames=image_cfg.max_frames_per_type,
-        )
+    # Helper function to generate frame URLs from frames_path
+    def generate_frame_urls(frames_path: str, frame_count: int, frame_selection: str, frame_interval: int, max_frames: int) -> list[dict]:
+        """Generate frame URLs from frames_path."""
+        if not frames_path or frame_count <= 0:
+            return []
 
-        images_for_product = []
-        for img in product_images:
-            img_type = img.get("image_type", "synthetic")
-            img_url = img.get("image_url") or img.get("image_path")
-            if not img_url:
-                continue
+        # Determine which frame indices to use
+        if frame_selection == "first":
+            indices = [0]
+        elif frame_selection == "all":
+            indices = list(range(min(frame_count, max_frames)))
+        elif frame_selection == "key_frames":
+            # Pick 4 frames at 0°, 90°, 180°, 270° (roughly)
+            step = max(1, frame_count // 4)
+            indices = [0] + [i * step for i in range(1, 4) if i * step < frame_count]
+            indices = indices[:max_frames]
+        elif frame_selection == "interval":
+            indices = list(range(0, frame_count, frame_interval))[:max_frames]
+        else:
+            indices = [0]
 
-            images_for_product.append({
-                "url": img_url,
-                "image_type": img_type,
-                "frame_index": img.get("frame_index", 0),
-                "domain": img_type,  # domain matches image_type for training
+        # Generate URLs
+        base_url = frames_path.rstrip("/")
+        frames = []
+        for idx in indices:
+            frames.append({
+                "url": f"{base_url}/frame_{idx:04d}.png",
+                "image_type": "synthetic",
+                "frame_index": idx,
+                "domain": "synthetic",
             })
-            image_stats[img_type] += 1
+        return frames
 
-        # Include matched cutouts as real-domain training data
-        if image_cfg.include_matched_cutouts:
-            matched_cutouts = await db.get_matched_cutouts_for_product(product_id)
-            for cutout in matched_cutouts:
-                images_for_product.append({
+    # OPTIMIZED: Use frames_path directly for all products (avoids N queries)
+    # This is faster than querying product_images table for each product
+    if "synthetic" in image_cfg.image_types:
+        for product_id in all_product_ids:
+            product_data = products_by_id.get(product_id, {})
+            frames_path = product_data.get("frames_path")
+            frame_count = product_data.get("frame_count", 0)
+
+            if frames_path and frame_count > 0:
+                frames = generate_frame_urls(
+                    frames_path=frames_path,
+                    frame_count=frame_count,
+                    frame_selection=image_cfg.frame_selection,
+                    frame_interval=image_cfg.frame_interval,
+                    max_frames=image_cfg.max_frames_per_type,
+                )
+                if frames:
+                    training_images[product_id] = frames
+                    image_stats["synthetic"] += len(frames)
+
+    # Include matched cutouts as real-domain training data (batch query)
+    if image_cfg.include_matched_cutouts:
+        all_cutouts = await db.get_matched_cutouts_for_products(list(all_product_ids))
+        for cutout in all_cutouts:
+            product_id = cutout.get("matched_product_id")
+            if product_id and product_id in all_product_ids:
+                if product_id not in training_images:
+                    training_images[product_id] = []
+                training_images[product_id].append({
                     "url": cutout["image_url"],
                     "image_type": "cutout",
                     "frame_index": 0,
-                    "domain": "real",  # cutouts are real-world images
+                    "domain": "real",
                     "cutout_id": cutout["id"],
                 })
                 image_stats["cutout"] += 1
-
-        if images_for_product:
-            training_images[product_id] = images_for_product
 
     # Check if we have enough images
     total_images = sum(len(imgs) for imgs in training_images.values())
@@ -508,7 +538,7 @@ async def create_training_run(
         )
         await db.update_training_run(run["id"], {
             "runpod_job_id": runpod_job.get("id"),
-            "status": "queued",
+            "status": "preparing",
         })
     except Exception as e:
         await db.update_training_run(run["id"], {
@@ -530,7 +560,7 @@ async def cancel_training_run(
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    if run["status"] not in ["pending", "queued", "running"]:
+    if run["status"] not in ["pending", "preparing", "running"]:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel run with status: {run['status']}",

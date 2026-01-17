@@ -78,7 +78,7 @@ def get_training_config(job_input: dict) -> dict:
     config.setdefault("use_arcface", True)
     config.setdefault("use_gem_pooling", True)
     config.setdefault("use_llrd", True)
-    config.setdefault("augmentation_strength", "medium")
+    config.setdefault("augmentation_strength", "moderate")
     config.setdefault("mixed_precision", True)
     config.setdefault("gradient_accumulation_steps", 1)
     config.setdefault("warmup_epochs", 1)
@@ -489,7 +489,7 @@ def handler(job):
             train_dataset = ProductDataset(
                 products=train_data,
                 model_type=model_type,
-                augmentation_strength=config.get("augmentation_strength", "medium"),
+                augmentation_strength=config.get("augmentation_strength", "moderate"),
                 is_training=True,
                 training_images=train_images,
             )
@@ -540,7 +540,7 @@ def handler(job):
             train_dataset = ProductDataset(
                 products=train_data,
                 model_type=model_type,
-                augmentation_strength=config.get("augmentation_strength", "medium"),
+                augmentation_strength=config.get("augmentation_strength", "moderate"),
                 is_training=True,
             )
 

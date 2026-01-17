@@ -58,7 +58,7 @@ class ProductDataset(Dataset):
         self,
         products: list[dict],
         model_type: str = "dinov2-base",
-        augmentation_strength: str = "medium",
+        augmentation_strength: str = "moderate",
         is_training: bool = True,
         frames_per_product: int = 1,
         http_timeout: float = 30.0,

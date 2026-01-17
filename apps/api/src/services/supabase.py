@@ -2589,6 +2589,24 @@ class SupabaseService:
         )
         return response.data
 
+    async def get_matched_cutouts_for_products(
+        self,
+        product_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Get all cutouts matched to multiple products (batch query)."""
+        if not product_ids:
+            return []
+
+        # Query all cutouts with matched_product_id in the list
+        response = (
+            self.client.table("cutout_images")
+            .select("*")
+            .in_("matched_product_id", product_ids)
+            .order("matched_at", desc=True)
+            .execute()
+        )
+        return response.data
+
     async def get_product_images_by_types(
         self,
         product_id: str,
