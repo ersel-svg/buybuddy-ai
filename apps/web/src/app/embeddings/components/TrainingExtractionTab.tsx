@@ -53,10 +53,17 @@ import type {
 
 interface TrainingExtractionTabProps {
   activeModel: EmbeddingModel | null;
+  models?: EmbeddingModel[];
 }
 
-export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProps) {
+export function TrainingExtractionTab({ activeModel, models }: TrainingExtractionTabProps) {
   const queryClient = useQueryClient();
+
+  // Selected model (defaults to active model)
+  const [selectedModelId, setSelectedModelId] = useState<string>(activeModel?.id || "");
+
+  // Get the selected model object
+  const selectedModel = models?.find(m => m.id === selectedModelId) || activeModel;
 
   // Image types selection
   const [imageTypes, setImageTypes] = useState<ImageType[]>(["synthetic", "real"]);
@@ -107,8 +114,8 @@ export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProp
   };
 
   const handleStartExtraction = () => {
-    if (!activeModel) {
-      toast.error("No active model selected");
+    if (!selectedModel) {
+      toast.error("No model selected");
       return;
     }
 
@@ -118,7 +125,7 @@ export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProp
     }
 
     const request: TrainingExtractionRequest = {
-      model_id: activeModel.id,
+      model_id: selectedModel.id,
       image_types: imageTypes,
       frame_selection: frameSelection,
       frame_interval: frameInterval[0],
@@ -132,7 +139,7 @@ export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProp
     startExtractionMutation.mutate(request);
   };
 
-  const modelName = activeModel?.name.toLowerCase().replace(/\s+/g, "_") || "default";
+  const modelName = selectedModel?.name.toLowerCase().replace(/\s+/g, "_") || "default";
   const defaultCollectionName = `training_${modelName}`;
 
   const hasMatchedProducts = (matchedStats?.total_matched_products || 0) > 0;
@@ -151,6 +158,42 @@ export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProp
             Only products with verified matches (real cutout images) are included.
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            <Label>Embedding Model</Label>
+            <Select
+              value={selectedModelId}
+              onValueChange={setSelectedModelId}
+            >
+              <SelectTrigger className="w-[350px]">
+                <SelectValue placeholder="Select a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {models?.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>
+                    <div className="flex items-center gap-2">
+                      <span>{model.name}</span>
+                      <Badge variant="outline" className="text-xs">
+                        {model.embedding_dim}d
+                      </Badge>
+                      {model.is_matching_active && (
+                        <Badge variant="default" className="text-xs bg-green-600">
+                          Active
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedModel && (
+              <p className="text-xs text-muted-foreground">
+                Model family: {selectedModel.model_family || selectedModel.model_type?.split("-")[0]}
+                {" • "}Dimension: {selectedModel.embedding_dim}d
+              </p>
+            )}
+          </div>
+        </CardContent>
       </Card>
 
       {/* Stats Card */}
@@ -461,7 +504,7 @@ export function TrainingExtractionTab({ activeModel }: TrainingExtractionTabProp
                   onClick={handleStartExtraction}
                   disabled={
                     startExtractionMutation.isPending ||
-                    !activeModel ||
+                    !selectedModel ||
                     imageTypes.length === 0
                   }
                 >

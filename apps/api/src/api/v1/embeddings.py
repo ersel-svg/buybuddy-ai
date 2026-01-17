@@ -27,12 +27,25 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 class EmbeddingModelCreate(BaseModel):
     """Request to create an embedding model."""
     name: str
-    model_type: Literal["dinov2-base", "dinov2-large", "custom"]
+    model_type: Literal[
+        # DINOv2 family
+        "dinov2-small", "dinov2-base", "dinov2-large",
+        # DINOv3 family
+        "dinov3-small", "dinov3-base", "dinov3-large",
+        # CLIP family
+        "clip-vit-l-14",
+        # Custom fine-tuned
+        "custom"
+    ]
+    model_family: Optional[Literal["dinov2", "dinov3", "clip", "custom"]] = None
+    hf_model_id: Optional[str] = None  # HuggingFace model ID
     model_path: Optional[str] = None
     checkpoint_url: Optional[str] = None
     embedding_dim: int
     config: Optional[dict] = None
-    training_job_id: Optional[str] = None
+    training_run_id: Optional[str] = None  # Link to training run
+    base_model_id: Optional[str] = None  # Base model for fine-tuned models
+    is_pretrained: bool = True
 
 
 # ===========================================
@@ -215,10 +228,139 @@ def get_supabase() -> SupabaseService:
 
 @router.get("/models")
 async def list_embedding_models(
+    include_pretrained: bool = True,
     db: SupabaseService = Depends(get_supabase),
 ):
     """List all embedding models."""
-    return await db.get_embedding_models()
+    models = await db.get_embedding_models()
+    if not include_pretrained:
+        models = [m for m in models if not m.get("is_pretrained")]
+    return models
+
+
+@router.get("/models/presets")
+async def get_model_presets():
+    """
+    Get available pretrained model configurations.
+
+    Returns model presets that can be used for training or embedding extraction.
+    """
+    presets = [
+        # DINOv2 family
+        {
+            "model_type": "dinov2-small",
+            "model_family": "dinov2",
+            "name": "DINOv2 Small",
+            "hf_model_id": "facebook/dinov2-small",
+            "embedding_dim": 384,
+            "image_size": 518,
+            "description": "Smallest DINOv2 model, fastest inference",
+            "recommended_for": ["quick experiments", "limited compute"],
+        },
+        {
+            "model_type": "dinov2-base",
+            "model_family": "dinov2",
+            "name": "DINOv2 Base",
+            "hf_model_id": "facebook/dinov2-base",
+            "embedding_dim": 768,
+            "image_size": 518,
+            "description": "Balanced DINOv2 model, good quality/speed tradeoff",
+            "recommended_for": ["production", "fine-tuning"],
+        },
+        {
+            "model_type": "dinov2-large",
+            "model_family": "dinov2",
+            "name": "DINOv2 Large",
+            "hf_model_id": "facebook/dinov2-large",
+            "embedding_dim": 1024,
+            "image_size": 518,
+            "description": "Largest DINOv2 model, best quality",
+            "recommended_for": ["maximum quality", "evaluation"],
+        },
+        # DINOv3 family
+        {
+            "model_type": "dinov3-small",
+            "model_family": "dinov3",
+            "name": "DINOv3 Small",
+            "hf_model_id": "facebook/dinov3-vits16-pretrain-lvd1689m",
+            "embedding_dim": 384,
+            "image_size": 518,
+            "description": "Latest DINOv3 small model with improved features",
+            "recommended_for": ["quick experiments", "limited compute"],
+        },
+        {
+            "model_type": "dinov3-base",
+            "model_family": "dinov3",
+            "name": "DINOv3 Base",
+            "hf_model_id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+            "embedding_dim": 768,
+            "image_size": 518,
+            "description": "DINOv3 base with state-of-the-art self-supervised features",
+            "recommended_for": ["production", "fine-tuning"],
+        },
+        {
+            "model_type": "dinov3-large",
+            "model_family": "dinov3",
+            "name": "DINOv3 Large",
+            "hf_model_id": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+            "embedding_dim": 1024,
+            "image_size": 518,
+            "description": "Largest DINOv3 model, highest quality features",
+            "recommended_for": ["maximum quality", "evaluation"],
+        },
+        # CLIP family
+        {
+            "model_type": "clip-vit-b-16",
+            "model_family": "clip",
+            "name": "CLIP ViT-B/16",
+            "hf_model_id": "openai/clip-vit-base-patch16",
+            "embedding_dim": 512,
+            "image_size": 224,
+            "description": "CLIP base model with 16x16 patches, good for text-image tasks",
+            "recommended_for": ["multi-modal", "text-aware matching"],
+        },
+        {
+            "model_type": "clip-vit-b-32",
+            "model_family": "clip",
+            "name": "CLIP ViT-B/32",
+            "hf_model_id": "openai/clip-vit-base-patch32",
+            "embedding_dim": 512,
+            "image_size": 224,
+            "description": "CLIP base model with 32x32 patches, faster than ViT-B/16",
+            "recommended_for": ["fast inference", "text-aware matching"],
+        },
+        {
+            "model_type": "clip-vit-l-14",
+            "model_family": "clip",
+            "name": "CLIP ViT-L/14",
+            "hf_model_id": "openai/clip-vit-large-patch14",
+            "embedding_dim": 768,
+            "image_size": 224,
+            "description": "Largest CLIP model, best multi-modal performance",
+            "recommended_for": ["maximum quality", "text-aware matching"],
+        },
+    ]
+
+    return {
+        "presets": presets,
+        "families": [
+            {
+                "id": "dinov2",
+                "name": "DINOv2",
+                "description": "Self-supervised Vision Transformer by Meta AI",
+            },
+            {
+                "id": "dinov3",
+                "name": "DINOv3",
+                "description": "Latest self-supervised model by Meta AI",
+            },
+            {
+                "id": "clip",
+                "name": "CLIP",
+                "description": "Contrastive Language-Image Pretraining by OpenAI",
+            },
+        ],
+    }
 
 
 @router.get("/models/active")
@@ -251,18 +393,56 @@ async def create_embedding_model(
 ):
     """Create a new embedding model."""
     # Generate Qdrant collection name
-    collection_name = f"embeddings_{request.name.lower().replace(' ', '_').replace('-', '_')}"
+    model_name_slug = request.name.lower().replace(' ', '_').replace('-', '_')
+    collection_name = f"embeddings_{model_name_slug}"
+
+    # Auto-detect model family from model_type if not provided
+    model_family = request.model_family
+    if not model_family:
+        if request.model_type.startswith("dinov2"):
+            model_family = "dinov2"
+        elif request.model_type.startswith("dinov3"):
+            model_family = "dinov3"
+        elif request.model_type.startswith("clip"):
+            model_family = "clip"
+        else:
+            model_family = "custom"
+
+    # Auto-detect HuggingFace model ID if not provided
+    hf_model_id = request.hf_model_id
+    if not hf_model_id and request.is_pretrained:
+        HF_MODEL_MAP = {
+            "dinov2-small": "facebook/dinov2-small",
+            "dinov2-base": "facebook/dinov2-base",
+            "dinov2-large": "facebook/dinov2-large",
+            "dinov3-small": "facebook/dinov3-vits16-pretrain-lvd1689m",
+            "dinov3-base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+            "dinov3-large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+            "clip-vit-b-16": "openai/clip-vit-base-patch16",
+            "clip-vit-b-32": "openai/clip-vit-base-patch32",
+            "clip-vit-l-14": "openai/clip-vit-large-patch14",
+        }
+        hf_model_id = HF_MODEL_MAP.get(request.model_type)
 
     model_data = {
         "name": request.name,
         "model_type": request.model_type,
+        "model_family": model_family,
+        "hf_model_id": hf_model_id,
         "model_path": request.model_path,
         "checkpoint_url": request.checkpoint_url,
         "embedding_dim": request.embedding_dim,
         "config": request.config or {},
         "qdrant_collection": collection_name,
-        "training_job_id": request.training_job_id,
+        "product_collection": f"products_{model_name_slug}",
+        "cutout_collection": f"cutouts_{model_name_slug}",
+        "is_pretrained": request.is_pretrained,
+        "base_model_id": request.base_model_id,
     }
+
+    # Link to training run if provided
+    if request.training_run_id:
+        model_data["training_run_id"] = request.training_run_id
 
     return await db.create_embedding_model(model_data)
 
@@ -1236,6 +1416,82 @@ async def get_collection_products(
         )
 
 
+class CollectionExportRequest(BaseModel):
+    """Request to export a Qdrant collection."""
+    format: Literal["json", "numpy", "faiss"] = "json"
+
+
+@router.post("/collections/{collection_name}/export")
+async def export_collection(
+    collection_name: str,
+    request: CollectionExportRequest,
+    current_user: UserInfo = Depends(get_current_user),
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Export all embeddings from a Qdrant collection.
+
+    Supported formats:
+    - json: Human-readable JSON with vectors and metadata
+    - numpy: Compressed .npz file with vectors, IDs, and payloads
+    - faiss: FAISS index file + ID mapping for fast similarity search
+
+    Returns a download URL for the exported file.
+    """
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    # Check collection exists
+    try:
+        stats = await qdrant_service.get_collection_info(collection_name)
+        if not stats:
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Collection not found: {str(e)}")
+
+    # Create export record
+    export_data = {
+        "embedding_model_id": None,  # Not model-specific, collection-based
+        "format": request.format,
+        "vector_count": 0,
+    }
+
+    export = await db.create_embedding_export(export_data)
+    export_id = export["id"]
+
+    try:
+        # Generate the export
+        result = await export_service.export_embeddings(
+            model_id=None,
+            collection_name=collection_name,
+            format=request.format,
+            export_id=export_id,
+        )
+
+        # Update export record with results
+        await db.update_embedding_export(export_id, {
+            "file_url": result.get("file_url"),
+            "file_size_bytes": result.get("file_size_bytes"),
+            "vector_count": result.get("vector_count", 0),
+        })
+
+        return {
+            "export_id": export_id,
+            "collection_name": collection_name,
+            "format": request.format,
+            "vector_count": result.get("vector_count", 0),
+            "file_url": result.get("file_url"),
+            "file_size_bytes": result.get("file_size_bytes"),
+        }
+
+    except Exception as e:
+        print(f"Collection export error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Export generation failed: {str(e)}"
+        )
+
+
 # ===========================================
 # Advanced Embedding Job Endpoint
 # ===========================================
@@ -1348,6 +1604,7 @@ async def start_advanced_embedding_job(
                         "product_id": p["id"],
                         "frame_index": idx,
                         "is_primary": idx == 0,
+                        "domain": "synthetic",  # Video frames are synthetic
                         "barcode": p.get("barcode"),
                         "brand_name": p.get("brand_name"),
                         "product_name": p.get("product_name"),
@@ -1383,6 +1640,7 @@ async def start_advanced_embedding_job(
                 "metadata": {
                     "source": "cutout",
                     "cutout_id": c["id"],
+                    "domain": "real",  # Cutouts are real images
                     "predicted_upc": c.get("predicted_upc"),
                 },
             })
@@ -1662,6 +1920,7 @@ async def start_matching_extraction(
                 "metadata": {
                     "source": "cutout",
                     "cutout_id": c["id"],
+                    "domain": "real",  # Cutouts are real images
                     "predicted_upc": c.get("predicted_upc"),
                 },
             })
@@ -1843,6 +2102,7 @@ async def start_training_extraction(
                     "product_id": product_id,
                     "image_type": img_type,
                     "frame_index": frame_idx,
+                    "domain": img_type if img_type in ("synthetic", "real", "augmented") else "synthetic",
                     "barcode": p.get("barcode"),
                     "brand_name": p.get("brand_name"),
                 },
@@ -1862,6 +2122,7 @@ async def start_training_extraction(
                         "source": "cutout",
                         "product_id": product_id,  # Link to product for triplet mining
                         "cutout_id": cutout["id"],
+                        "domain": "real",  # Cutouts are real images
                         "is_positive_pair": True,
                     },
                 })

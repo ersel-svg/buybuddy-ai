@@ -48,7 +48,24 @@ import {
   Trash2,
   GraduationCap,
   FlaskConical,
+  Download,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 import type { EmbeddingJob, EmbeddingModel, CollectionInfo } from "@/types";
 
 // Import new extraction tabs
@@ -59,6 +76,11 @@ import { EvaluationExtractionTab } from "./components/EvaluationExtractionTab";
 export default function EmbeddingsPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("matching");
+
+  // Export dialog state
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [selectedCollectionForExport, setSelectedCollectionForExport] = useState<string | null>(null);
+  const [exportFormat, setExportFormat] = useState<"json" | "numpy" | "faiss">("json");
 
   // Fetch cutout stats for progress
   const { data: cutoutStats } = useQuery({
@@ -124,6 +146,38 @@ export default function EmbeddingsPage() {
       toast.error(`Failed to delete collection: ${error.message}`);
     },
   });
+
+  // Export collection mutation
+  const exportCollectionMutation = useMutation({
+    mutationFn: ({ collectionName, format }: { collectionName: string; format: "json" | "numpy" | "faiss" }) =>
+      apiClient.exportCollection(collectionName, format),
+    onSuccess: (data) => {
+      toast.success(`Export completed: ${data.vector_count.toLocaleString()} vectors`);
+      setExportDialogOpen(false);
+      // Open download in new tab
+      if (data.file_url) {
+        window.open(data.file_url, "_blank");
+      }
+    },
+    onError: (error) => {
+      toast.error(`Export failed: ${error.message}`);
+    },
+  });
+
+  const handleExportCollection = (collectionName: string) => {
+    setSelectedCollectionForExport(collectionName);
+    setExportFormat("json");
+    setExportDialogOpen(true);
+  };
+
+  const handleStartExport = () => {
+    if (selectedCollectionForExport) {
+      exportCollectionMutation.mutate({
+        collectionName: selectedCollectionForExport,
+        format: exportFormat,
+      });
+    }
+  };
 
   const getJobStatusBadge = (status: string) => {
     switch (status) {
@@ -292,12 +346,12 @@ export default function EmbeddingsPage() {
 
         {/* Matching Extraction Tab */}
         <TabsContent value="matching">
-          <MatchingExtractionTab activeModel={activeModel ?? null} />
+          <MatchingExtractionTab activeModel={activeModel ?? null} models={models} />
         </TabsContent>
 
         {/* Training Extraction Tab */}
         <TabsContent value="training">
-          <TrainingExtractionTab activeModel={activeModel ?? null} />
+          <TrainingExtractionTab activeModel={activeModel ?? null} models={models} />
         </TabsContent>
 
         {/* Evaluation Extraction Tab */}
@@ -311,7 +365,7 @@ export default function EmbeddingsPage() {
             <CardHeader>
               <CardTitle>Embedding Models</CardTitle>
               <CardDescription>
-                DINOv2 models available for embedding extraction
+                DINOv2, DINOv3, CLIP, and custom fine-tuned models for embedding extraction
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -332,6 +386,8 @@ export default function EmbeddingsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
+                      <TableHead>Family</TableHead>
+                      <TableHead>Type</TableHead>
                       <TableHead>Dimension</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -340,7 +396,24 @@ export default function EmbeddingsPage() {
                   <TableBody>
                     {models?.map((model: EmbeddingModel) => (
                       <TableRow key={model.id}>
-                        <TableCell className="font-medium">{model.name}</TableCell>
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">{model.name}</p>
+                            {model.is_pretrained === false && (
+                              <p className="text-xs text-muted-foreground">Fine-tuned</p>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize">
+                            {model.model_family || model.model_type?.split("-")[0] || "custom"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm text-muted-foreground">
+                            {model.model_type}
+                          </span>
+                        </TableCell>
                         <TableCell>{model.embedding_dim}d</TableCell>
                         <TableCell>
                           {model.is_matching_active ? (
@@ -348,8 +421,10 @@ export default function EmbeddingsPage() {
                               <CheckCircle className="h-3 w-3 mr-1" />
                               Active
                             </Badge>
+                          ) : model.is_default ? (
+                            <Badge variant="secondary">Default</Badge>
                           ) : (
-                            <Badge variant="secondary">Inactive</Badge>
+                            <Badge variant="outline">Inactive</Badge>
                           )}
                         </TableCell>
                         <TableCell className="text-right">
@@ -507,6 +582,14 @@ export default function EmbeddingsPage() {
                           </div>
                         </div>
                         <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleExportCollection(collection.name)}
+                          >
+                            <Download className="h-4 w-4 mr-2" />
+                            Export
+                          </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button variant="destructive" size="sm">
@@ -549,6 +632,88 @@ export default function EmbeddingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Export Collection Dialog */}
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Export Collection</DialogTitle>
+            <DialogDescription>
+              Export embeddings from &quot;{selectedCollectionForExport}&quot; to a file.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Export Format</Label>
+              <Select
+                value={exportFormat}
+                onValueChange={(v: "json" | "numpy" | "faiss") => setExportFormat(v)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="json">
+                    <div className="flex flex-col">
+                      <span>JSON</span>
+                      <span className="text-xs text-muted-foreground">Human-readable, includes metadata</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="numpy">
+                    <div className="flex flex-col">
+                      <span>NumPy (.npz)</span>
+                      <span className="text-xs text-muted-foreground">Compressed, for Python/ML</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="faiss">
+                    <div className="flex flex-col">
+                      <span>FAISS Index</span>
+                      <span className="text-xs text-muted-foreground">Fast similarity search</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="bg-muted p-3 rounded-md text-sm">
+              <p className="font-medium">Format Details:</p>
+              {exportFormat === "json" && (
+                <p className="text-muted-foreground mt-1">
+                  JSON file with vectors, product IDs, and full metadata. Best for inspection and custom processing.
+                </p>
+              )}
+              {exportFormat === "numpy" && (
+                <p className="text-muted-foreground mt-1">
+                  Compressed .npz file with separate arrays for vectors, IDs, and payloads. Best for ML pipelines.
+                </p>
+              )}
+              {exportFormat === "faiss" && (
+                <p className="text-muted-foreground mt-1">
+                  FAISS index file + ID mapping JSON. Best for deploying fast similarity search.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleStartExport}
+              disabled={exportCollectionMutation.isPending}
+            >
+              {exportCollectionMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4 mr-2" />
+              )}
+              Export
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

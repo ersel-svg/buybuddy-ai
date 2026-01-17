@@ -19,8 +19,13 @@ numpy>=1.24.0
 # HTTP client
 httpx>=0.24.0
 
-# Supabase
-supabase>=2.0.0
+# Training utilities
+tqdm>=4.65.0
+tensorboard>=2.14.0
 
-# Qdrant
-qdrant-client>=1.7.0
+# Optional: EMA
+torch-ema>=0.3
+
+# Cloud storage (for checkpoint upload)
+boto3>=1.28.0  # AWS S3
+google-cloud-storage>=2.10.0  # GCS (optional)

@@ -2859,6 +2859,405 @@ class SupabaseService:
             "new_max_external_id": new_max,
         }
 
+    # =========================================
+    # Training Runs
+    # =========================================
+
+    async def get_training_runs(
+        self,
+        status: Optional[str] = None,
+        base_model_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Get training runs with pagination and filters."""
+        query = self.client.table("training_runs").select("*", count="exact")
+
+        if status:
+            query = query.eq("status", status)
+        if base_model_type:
+            query = query.eq("base_model_type", base_model_type)
+
+        query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
+        response = query.execute()
+
+        return {
+            "items": response.data,
+            "total": response.count or 0,
+        }
+
+    async def get_training_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        """Get single training run."""
+        response = (
+            self.client.table("training_runs")
+            .select("*")
+            .eq("id", run_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_training_run(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create training run."""
+        response = (
+            self.client.table("training_runs")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_training_run(
+        self, run_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update training run."""
+        response = (
+            self.client.table("training_runs")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", run_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_training_run(self, run_id: str) -> bool:
+        """Delete training run (cascades to checkpoints)."""
+        self.client.table("training_runs").delete().eq("id", run_id).execute()
+        return True
+
+    # =========================================
+    # Training Checkpoints
+    # =========================================
+
+    async def get_training_checkpoints(
+        self,
+        run_id: str,
+        is_best: Optional[bool] = None,
+    ) -> list[dict[str, Any]]:
+        """Get checkpoints for a training run."""
+        query = (
+            self.client.table("training_checkpoints")
+            .select("*")
+            .eq("training_run_id", run_id)
+            .order("epoch", desc=True)
+        )
+        if is_best is not None:
+            query = query.eq("is_best", is_best)
+        response = query.execute()
+        return response.data
+
+    async def get_training_checkpoint(self, checkpoint_id: str) -> Optional[dict[str, Any]]:
+        """Get single checkpoint."""
+        response = (
+            self.client.table("training_checkpoints")
+            .select("*")
+            .eq("id", checkpoint_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_training_checkpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create training checkpoint."""
+        response = (
+            self.client.table("training_checkpoints")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_training_checkpoint(
+        self,
+        checkpoint_id: str,
+        data: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        """Update training checkpoint."""
+        response = (
+            self.client.table("training_checkpoints")
+            .update(data)
+            .eq("id", checkpoint_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_training_checkpoint(self, checkpoint_id: str) -> bool:
+        """Delete training checkpoint."""
+        self.client.table("training_checkpoints").delete().eq("id", checkpoint_id).execute()
+        return True
+
+    # =========================================
+    # Trained Models
+    # =========================================
+
+    async def get_trained_models(
+        self,
+        is_active: Optional[bool] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Get trained models."""
+        query = (
+            self.client.table("trained_models")
+            .select("*, training_run:training_runs(name, base_model_type)")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if is_active is not None:
+            query = query.eq("is_active", is_active)
+        response = query.execute()
+        return response.data
+
+    async def get_trained_model(self, model_id: str) -> Optional[dict[str, Any]]:
+        """Get single trained model."""
+        response = (
+            self.client.table("trained_models")
+            .select("*, training_run:training_runs(*), checkpoint:training_checkpoints(*)")
+            .eq("id", model_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_trained_model(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create trained model."""
+        response = (
+            self.client.table("trained_models")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_trained_model(
+        self, model_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update trained model."""
+        response = (
+            self.client.table("trained_models")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", model_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_trained_model(self, model_id: str) -> bool:
+        """Delete trained model."""
+        self.client.table("trained_models").delete().eq("id", model_id).execute()
+        return True
+
+    async def activate_trained_model(self, model_id: str) -> Optional[dict[str, Any]]:
+        """Activate a trained model (deactivates others)."""
+        # Deactivate all
+        self.client.table("trained_models").update(
+            {"is_active": False}
+        ).execute()
+
+        # Activate selected
+        response = (
+            self.client.table("trained_models")
+            .update({
+                "is_active": True,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            .eq("id", model_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    # =========================================
+    # Training Configs
+    # =========================================
+
+    async def get_training_configs(
+        self,
+        base_model_type: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Get training configs."""
+        query = (
+            self.client.table("training_configs")
+            .select("*")
+            .order("created_at", desc=True)
+        )
+        if base_model_type:
+            query = query.eq("base_model_type", base_model_type)
+        response = query.execute()
+        return response.data
+
+    async def get_training_config(self, config_id: str) -> Optional[dict[str, Any]]:
+        """Get single training config."""
+        response = (
+            self.client.table("training_configs")
+            .select("*")
+            .eq("id", config_id)
+            .single()
+            .execute()
+        )
+        return response.data
+
+    async def create_training_config(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create training config."""
+        response = (
+            self.client.table("training_configs")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def update_training_config(
+        self, config_id: str, data: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        """Update training config."""
+        response = (
+            self.client.table("training_configs")
+            .update({**data, "updated_at": datetime.utcnow().isoformat()})
+            .eq("id", config_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    async def delete_training_config(self, config_id: str) -> bool:
+        """Delete training config (if not default)."""
+        # Check if it's a default config
+        config = await self.get_training_config(config_id)
+        if config and config.get("is_default"):
+            return False
+        self.client.table("training_configs").delete().eq("id", config_id).execute()
+        return True
+
+    # =========================================
+    # Model Evaluations
+    # =========================================
+
+    async def get_model_evaluations(
+        self,
+        trained_model_id: str,
+    ) -> list[dict[str, Any]]:
+        """Get evaluations for a trained model."""
+        response = (
+            self.client.table("model_evaluations")
+            .select("*")
+            .eq("trained_model_id", trained_model_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return response.data
+
+    async def create_model_evaluation(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create model evaluation."""
+        response = (
+            self.client.table("model_evaluations")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    # =========================================
+    # Products for Training
+    # =========================================
+
+    async def get_products_for_training(
+        self,
+        min_frames: int = 1,
+        dataset_id: Optional[str] = None,
+        product_ids: Optional[list[str]] = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """
+        Get products for training.
+
+        Returns products with frames, optionally filtered by dataset or specific IDs.
+        Includes: id, barcode, brand_name, category, container_type, sub_brand,
+                  manufacturer_country, variant_flavor, net_quantity, frames_path, frame_count, product_name
+
+        Uses pagination to handle Supabase's 1000 row limit.
+        """
+        select_fields = "id,barcode,brand_name,category,container_type,sub_brand,manufacturer_country,variant_flavor,net_quantity,frames_path,frame_count,product_name,custom_fields"
+
+        # If filtering by dataset, get those IDs first
+        dataset_product_ids = None
+        if dataset_id:
+            dp_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", dataset_id)
+                .execute()
+            )
+            dataset_product_ids = [item["product_id"] for item in dp_response.data]
+            if not dataset_product_ids:
+                return []
+
+        # Pagination parameters
+        page_size = 1000  # Supabase max per request
+        all_products = []
+        offset = 0
+
+        while len(all_products) < limit:
+            query = self.client.table("products").select(select_fields)
+
+            # Filter by frame count
+            query = query.gte("frame_count", min_frames)
+
+            # Filter by dataset if provided
+            if dataset_product_ids:
+                query = query.in_("id", dataset_product_ids)
+
+            # Filter by specific IDs if provided
+            if product_ids:
+                query = query.in_("id", product_ids)
+
+            query = query.range(offset, offset + page_size - 1)
+            response = query.execute()
+
+            if not response.data:
+                break
+
+            all_products.extend(response.data)
+            offset += page_size
+
+            # If we got fewer than page_size, we've reached the end
+            if len(response.data) < page_size:
+                break
+
+        return all_products[:limit]
+
+    async def get_matched_products_for_training(
+        self,
+        min_frames: int = 1,
+        min_matches: int = 1,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """
+        Get products that have matched cutouts for training.
+
+        These are products with real-world matches - good for training
+        models that need to generalize to store images.
+        """
+        # Get product IDs with matches
+        matches_response = (
+            self.client.table("cutout_images")
+            .select("matched_product_id")
+            .not_.is_("matched_product_id", "null")
+            .execute()
+        )
+
+        # Count matches per product
+        product_match_counts: dict[str, int] = {}
+        for row in matches_response.data:
+            pid = row["matched_product_id"]
+            product_match_counts[pid] = product_match_counts.get(pid, 0) + 1
+
+        # Filter by minimum matches
+        matched_product_ids = [
+            pid for pid, count in product_match_counts.items()
+            if count >= min_matches
+        ]
+
+        if not matched_product_ids:
+            return []
+
+        # Get product details
+        return await self.get_products_for_training(
+            min_frames=min_frames,
+            product_ids=matched_product_ids,
+            limit=limit,
+        )
+
 
 # Singleton instance
 supabase_service = SupabaseService()

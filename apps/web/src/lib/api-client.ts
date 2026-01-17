@@ -43,6 +43,30 @@ import type {
   EmbeddingCollection,
   CutoutProductsResponse,
   CollectionProductsResponse,
+  // Training system types (product_id based)
+  TrainingRun,
+  TrainingRunCreate,
+  TrainingRunConfig,
+  TrainingRunsResponse,
+  TrainingCheckpoint,
+  TrainedModel,
+  ModelEvaluation,
+  TrainingConfigPreset,
+  TrainingProductsResponse,
+  ModelPresetsResponse,
+  LabelStatsResponse,
+  IdentifierMappingResponse,
+  ModelComparisonResult,
+  // Triplet Mining types
+  TripletMiningRun,
+  TripletMiningRequest,
+  TripletMiningStats,
+  TripletExportResult,
+  MinedTriplet,
+  MatchingFeedbackCreate,
+  MatchingFeedback,
+  FeedbackStats,
+  HardExample,
 } from "@/types";
 import { getAuthHeader, clearAuth } from "./auth";
 
@@ -1107,6 +1131,23 @@ class ApiClient {
     });
   }
 
+  async exportCollection(
+    collectionName: string,
+    format: "json" | "numpy" | "faiss" = "json"
+  ): Promise<{
+    export_id: string;
+    collection_name: string;
+    format: string;
+    vector_count: number;
+    file_url: string;
+    file_size_bytes: number;
+  }> {
+    return this.request(`/api/v1/embeddings/collections/${collectionName}/export`, {
+      method: "POST",
+      body: { format },
+    });
+  }
+
   async getCollectionProducts(
     collectionName: string,
     params?: {
@@ -1215,6 +1256,257 @@ class ApiClient {
       `/api/v1/matching/cutouts/${cutoutId}/products`,
       { params }
     );
+  }
+
+  // ===========================================
+  // Training System (product_id based)
+  // ===========================================
+
+  // Training Runs
+  async getTrainingRuns(params?: {
+    status?: string;
+    base_model_type?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<TrainingRunsResponse> {
+    return this.request<TrainingRunsResponse>("/api/v1/training/runs", { params });
+  }
+
+  async getTrainingRun(id: string): Promise<TrainingRun> {
+    return this.request<TrainingRun>(`/api/v1/training/runs/${id}`);
+  }
+
+  async createTrainingRun(data: TrainingRunCreate): Promise<TrainingRun> {
+    return this.request<TrainingRun>("/api/v1/training/runs", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async cancelTrainingRun(id: string): Promise<TrainingRun> {
+    return this.request<TrainingRun>(`/api/v1/training/runs/${id}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  async resumeTrainingRun(id: string): Promise<{
+    new_run_id: string;
+    resumed_from_epoch: number;
+    remaining_epochs: number;
+    checkpoint_url: string;
+  }> {
+    return this.request(`/api/v1/training/runs/${id}/resume`, {
+      method: "POST",
+    });
+  }
+
+  async deleteTrainingRun(id: string): Promise<void> {
+    return this.request<void>(`/api/v1/training/runs/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getIdentifierMapping(runId: string): Promise<IdentifierMappingResponse> {
+    return this.request<IdentifierMappingResponse>(`/api/v1/training/runs/${runId}/identifier-mapping`);
+  }
+
+  // Training Checkpoints
+  async getTrainingCheckpoints(runId: string, params?: {
+    is_best?: boolean;
+  }): Promise<TrainingCheckpoint[]> {
+    return this.request<TrainingCheckpoint[]>(`/api/v1/training/runs/${runId}/checkpoints`, { params });
+  }
+
+  async getTrainingCheckpoint(checkpointId: string): Promise<TrainingCheckpoint> {
+    return this.request<TrainingCheckpoint>(`/api/v1/training/checkpoints/${checkpointId}`);
+  }
+
+  // Trained Models
+  async getTrainedModels(params?: {
+    is_active?: boolean;
+    limit?: number;
+  }): Promise<TrainedModel[]> {
+    return this.request<TrainedModel[]>("/api/v1/training/models", { params });
+  }
+
+  async getTrainedModel(id: string): Promise<TrainedModel> {
+    return this.request<TrainedModel>(`/api/v1/training/models/${id}`);
+  }
+
+  async registerTrainedModel(data: {
+    checkpoint_id: string;
+    name: string;
+    description?: string;
+  }): Promise<TrainedModel> {
+    return this.request<TrainedModel>("/api/v1/training/models", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async activateTrainedModel(id: string): Promise<TrainedModel> {
+    return this.request<TrainedModel>(`/api/v1/training/models/${id}/activate`, {
+      method: "POST",
+    });
+  }
+
+  async evaluateTrainedModel(id: string): Promise<TrainedModel> {
+    return this.request<TrainedModel>(`/api/v1/training/models/${id}/evaluate`, {
+      method: "POST",
+    });
+  }
+
+  async deleteTrainedModel(id: string): Promise<void> {
+    return this.request<void>(`/api/v1/training/models/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  async compareModels(modelIds: string[]): Promise<ModelComparisonResult[]> {
+    return this.request<ModelComparisonResult[]>("/api/v1/training/models/compare", {
+      method: "POST",
+      body: modelIds,
+    });
+  }
+
+  // Model Evaluations
+  async getModelEvaluations(modelId: string): Promise<ModelEvaluation[]> {
+    return this.request<ModelEvaluation[]>(`/api/v1/training/models/${modelId}/evaluations`);
+  }
+
+  // Training Config Presets
+  async getTrainingConfigPresets(): Promise<TrainingConfigPreset[]> {
+    return this.request<TrainingConfigPreset[]>("/api/v1/training/configs/presets");
+  }
+
+  async getTrainingConfigPreset(baseModelType: string): Promise<TrainingRunConfig> {
+    return this.request<TrainingRunConfig>(`/api/v1/training/configs/presets/${baseModelType}`);
+  }
+
+  async getTrainingSavedConfigs(params?: {
+    base_model_type?: string;
+  }): Promise<TrainingConfigPreset[]> {
+    return this.request<TrainingConfigPreset[]>("/api/v1/training/configs", { params });
+  }
+
+  async saveTrainingConfig(data: {
+    name: string;
+    description?: string;
+    base_model_type: string;
+    config: TrainingRunConfig;
+  }): Promise<TrainingConfigPreset> {
+    return this.request<TrainingConfigPreset>("/api/v1/training/configs", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async deleteTrainingConfig(id: string): Promise<void> {
+    return this.request<void>(`/api/v1/training/configs/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Products for Training
+  async getProductsForTraining(params?: {
+    data_source?: string;
+    dataset_id?: string;
+    min_frames?: number;
+    limit?: number;
+  }): Promise<TrainingProductsResponse> {
+    return this.request<TrainingProductsResponse>("/api/v1/training/products", { params });
+  }
+
+  // Label Field Statistics (for flexible label configuration)
+  async getLabelFieldStats(params?: {
+    data_source?: string;
+    dataset_id?: string;
+  }): Promise<LabelStatsResponse> {
+    return this.request<LabelStatsResponse>("/api/v1/training/label-stats", { params });
+  }
+
+  // Model Presets (for selecting base models)
+  async getModelPresets(): Promise<ModelPresetsResponse> {
+    return this.request<ModelPresetsResponse>("/api/v1/embeddings/models/presets");
+  }
+
+  // ===========================================
+  // Triplet Mining
+  // ===========================================
+
+  async startTripletMining(params: TripletMiningRequest): Promise<TripletMiningRun> {
+    return this.request<TripletMiningRun>("/api/v1/triplets/mine", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getTripletMiningRuns(params?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<TripletMiningRun[]> {
+    return this.request<TripletMiningRun[]>("/api/v1/triplets/runs", { params });
+  }
+
+  async getTripletMiningRun(runId: string): Promise<TripletMiningRun> {
+    return this.request<TripletMiningRun>(`/api/v1/triplets/runs/${runId}`);
+  }
+
+  async getTripletMiningStats(runId: string): Promise<TripletMiningStats> {
+    return this.request<TripletMiningStats>(`/api/v1/triplets/runs/${runId}/stats`);
+  }
+
+  async getMinedTriplets(
+    runId: string,
+    params?: {
+      difficulty?: string;
+      is_cross_domain?: boolean;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<{ triplets: MinedTriplet[]; total: number }> {
+    return this.request(`/api/v1/triplets/runs/${runId}/triplets`, { params });
+  }
+
+  async deleteTripletMiningRun(runId: string): Promise<void> {
+    return this.request<void>(`/api/v1/triplets/runs/${runId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async exportTriplets(
+    runId: string,
+    format: "json" | "csv" = "json"
+  ): Promise<TripletExportResult> {
+    return this.request<TripletExportResult>(`/api/v1/triplets/runs/${runId}/export`, {
+      method: "POST",
+      body: { format },
+    });
+  }
+
+  // ===========================================
+  // Matching Feedback (Active Learning)
+  // ===========================================
+
+  async submitMatchingFeedback(data: MatchingFeedbackCreate): Promise<MatchingFeedback> {
+    return this.request<MatchingFeedback>("/api/v1/triplets/feedback", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async getFeedbackStats(modelId?: string): Promise<FeedbackStats> {
+    return this.request<FeedbackStats>("/api/v1/triplets/feedback/stats", {
+      params: modelId ? { model_id: modelId } : undefined,
+    });
+  }
+
+  async getHardExamplesFromFeedback(params?: {
+    model_id?: string;
+    limit?: number;
+  }): Promise<HardExample[]> {
+    return this.request<HardExample[]>("/api/v1/triplets/feedback/hard-examples", { params });
   }
 }
 

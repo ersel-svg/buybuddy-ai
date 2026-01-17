@@ -193,6 +193,138 @@ class RunpodService:
 
         return any(self.endpoints.values())
 
+    async def start_training_job(
+        self,
+        training_run_id: str,
+        model_type: str,
+        config: dict[str, Any],
+        checkpoint_url: Optional[str] = None,
+        start_epoch: int = 0,
+        webhook_url: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Start a training job on RunPod.
+
+        Args:
+            training_run_id: ID of the training run in database
+            model_type: Model type (e.g., "dinov2-base")
+            config: Training configuration dict
+            checkpoint_url: Optional URL to resume from checkpoint
+            start_epoch: Epoch to start from (for resume)
+            webhook_url: Optional webhook URL for completion callback
+
+        Returns:
+            RunPod job response with id and status
+        """
+        input_data = {
+            "training_run_id": training_run_id,
+            "model_type": model_type,
+            "config": config,
+            "supabase_url": settings.supabase_url,
+            "supabase_key": settings.supabase_service_role_key,
+            "hf_token": settings.hf_token,
+        }
+
+        # Add resume parameters if provided
+        if checkpoint_url:
+            input_data["checkpoint_url"] = checkpoint_url
+            input_data["start_epoch"] = start_epoch
+
+        return await self.submit_job(
+            endpoint_type=EndpointType.TRAINING,
+            input_data=input_data,
+            webhook_url=webhook_url,
+        )
+
+    async def start_embedding_job(
+        self,
+        job_id: str,
+        model_type: str,
+        product_ids: list[str],
+        collection_name: str,
+        purpose: str = "matching",
+        frame_selection: str = "first",
+        max_frames: int = 1,
+        webhook_url: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Start an embedding extraction job on RunPod.
+
+        Args:
+            job_id: ID of the embedding job in database
+            model_type: Model type (e.g., "dinov2-base")
+            product_ids: List of product IDs to extract embeddings for
+            collection_name: Qdrant collection name
+            purpose: Purpose of extraction (matching, training, evaluation)
+            frame_selection: Frame selection strategy (first, all, key_frames, interval)
+            max_frames: Maximum frames per product
+            webhook_url: Optional webhook URL for completion callback
+
+        Returns:
+            RunPod job response with id and status
+        """
+        input_data = {
+            "job_id": job_id,
+            "model_type": model_type,
+            "product_ids": product_ids,
+            "collection_name": collection_name,
+            "purpose": purpose,
+            "frame_selection": frame_selection,
+            "max_frames": max_frames,
+            "supabase_url": settings.supabase_url,
+            "supabase_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
+            "hf_token": settings.hf_token,
+        }
+
+        return await self.submit_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=input_data,
+            webhook_url=webhook_url,
+        )
+
+    async def start_evaluation_job(
+        self,
+        training_run_id: str,
+        checkpoint_id: str,
+        checkpoint_url: str,
+        model_type: str,
+        test_product_ids: list[str],
+        webhook_url: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Start a model evaluation job on RunPod.
+
+        Args:
+            training_run_id: ID of the training run
+            checkpoint_id: ID of the checkpoint to evaluate
+            checkpoint_url: URL to the checkpoint file
+            model_type: Model type
+            test_product_ids: List of test product IDs
+            webhook_url: Optional webhook URL
+
+        Returns:
+            RunPod job response with id and status
+        """
+        input_data = {
+            "training_run_id": training_run_id,
+            "checkpoint_id": checkpoint_id,
+            "checkpoint_url": checkpoint_url,
+            "model_type": model_type,
+            "test_product_ids": test_product_ids,
+            "mode": "evaluate",
+            "supabase_url": settings.supabase_url,
+            "supabase_key": settings.supabase_service_role_key,
+            "hf_token": settings.hf_token,
+        }
+
+        return await self.submit_job(
+            endpoint_type=EndpointType.TRAINING,
+            input_data=input_data,
+            webhook_url=webhook_url,
+        )
+
 
 # Singleton instance
 runpod_service = RunpodService()

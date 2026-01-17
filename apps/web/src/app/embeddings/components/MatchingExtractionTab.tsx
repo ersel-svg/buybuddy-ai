@@ -51,10 +51,17 @@ import type {
 
 interface MatchingExtractionTabProps {
   activeModel: EmbeddingModel | null;
+  models?: EmbeddingModel[];
 }
 
-export function MatchingExtractionTab({ activeModel }: MatchingExtractionTabProps) {
+export function MatchingExtractionTab({ activeModel, models }: MatchingExtractionTabProps) {
   const queryClient = useQueryClient();
+
+  // Selected model (defaults to active model)
+  const [selectedModelId, setSelectedModelId] = useState<string>(activeModel?.id || "");
+
+  // Get the selected model object
+  const selectedModel = models?.find(m => m.id === selectedModelId) || activeModel;
 
   // Product source config
   const [productSource, setProductSource] = useState<ProductSource>("all");
@@ -101,13 +108,13 @@ export function MatchingExtractionTab({ activeModel }: MatchingExtractionTabProp
   });
 
   const handleStartExtraction = () => {
-    if (!activeModel) {
-      toast.error("No active model selected");
+    if (!selectedModel) {
+      toast.error("No model selected");
       return;
     }
 
     const request: MatchingExtractionRequest = {
-      model_id: activeModel.id,
+      model_id: selectedModel.id,
       product_source: productSource,
       product_dataset_id: productSource === "dataset" ? selectedDatasetId : undefined,
       include_cutouts: includeCutouts,
@@ -123,7 +130,7 @@ export function MatchingExtractionTab({ activeModel }: MatchingExtractionTabProp
     startExtractionMutation.mutate(request);
   };
 
-  const modelName = activeModel?.name.toLowerCase().replace(/\s+/g, "_") || "default";
+  const modelName = selectedModel?.name.toLowerCase().replace(/\s+/g, "_") || "default";
   const defaultProductCollection = `products_${modelName}`;
   const defaultCutoutCollection = `cutouts_${modelName}`;
 
@@ -141,6 +148,42 @@ export function MatchingExtractionTab({ activeModel }: MatchingExtractionTabProp
             Extracted embeddings are stored in Qdrant collections and used by the Matching page.
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            <Label>Embedding Model</Label>
+            <Select
+              value={selectedModelId}
+              onValueChange={setSelectedModelId}
+            >
+              <SelectTrigger className="w-[350px]">
+                <SelectValue placeholder="Select a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {models?.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>
+                    <div className="flex items-center gap-2">
+                      <span>{model.name}</span>
+                      <Badge variant="outline" className="text-xs">
+                        {model.embedding_dim}d
+                      </Badge>
+                      {model.is_matching_active && (
+                        <Badge variant="default" className="text-xs bg-green-600">
+                          Active
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedModel && (
+              <p className="text-xs text-muted-foreground">
+                Model family: {selectedModel.model_family || selectedModel.model_type?.split("-")[0]}
+                {" • "}Dimension: {selectedModel.embedding_dim}d
+              </p>
+            )}
+          </div>
+        </CardContent>
       </Card>
 
       {/* Configuration */}
@@ -396,13 +439,13 @@ export function MatchingExtractionTab({ activeModel }: MatchingExtractionTabProp
             <div>
               <p className="font-medium">Ready to extract embeddings</p>
               <p className="text-sm text-muted-foreground">
-                Using model: {activeModel?.name || "No model selected"}
+                Using model: {selectedModel?.name || "No model selected"}
               </p>
             </div>
             <Button
               size="lg"
               onClick={handleStartExtraction}
-              disabled={startExtractionMutation.isPending || !activeModel}
+              disabled={startExtractionMutation.isPending || !selectedModel}
             >
               {startExtractionMutation.isPending ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />

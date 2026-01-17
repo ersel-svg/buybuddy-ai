@@ -553,20 +553,41 @@ export interface ProductCandidatesResponse {
 // Embedding Model Types (Matching System)
 // ===========================================
 
-export type EmbeddingModelType = "dinov2-base" | "dinov2-large" | "custom";
+export type EmbeddingModelType =
+  // DINOv2 family
+  | "dinov2-small"
+  | "dinov2-base"
+  | "dinov2-large"
+  // DINOv3 family
+  | "dinov3-small"
+  | "dinov3-base"
+  | "dinov3-large"
+  // CLIP family
+  | "clip-vit-l-14"
+  // Custom
+  | "custom";
+
+export type EmbeddingModelFamily = "dinov2" | "dinov3" | "clip" | "custom";
 
 export interface EmbeddingModel {
   id: string;
   name: string;
   model_type: EmbeddingModelType;
+  model_family?: EmbeddingModelFamily;
+  hf_model_id?: string;
   model_path?: string;
   checkpoint_url?: string;
   embedding_dim: number;
   config?: Record<string, unknown>;
   qdrant_collection?: string;
+  product_collection?: string;
+  cutout_collection?: string;
   qdrant_vector_count: number;
   is_matching_active: boolean;
-  training_job_id?: string;
+  is_pretrained?: boolean;
+  is_default?: boolean;
+  base_model_id?: string;
+  training_run_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -802,4 +823,495 @@ export interface CollectionProductsResponse {
   page: number;
   limit: number;
   collection_name: string;
+}
+
+// ===========================================
+// Training System Types (Flexible Label Field)
+// ===========================================
+
+export type TrainingRunStatus = "pending" | "preparing" | "running" | "completed" | "failed" | "cancelled";
+export type TrainingDataSource = "all_products" | "matched_products" | "dataset" | "selected";
+
+// Label field options for training (dynamic - any product field can be used)
+export type LabelFieldType = string;
+
+// Known label fields for display purposes
+export const KNOWN_LABEL_FIELDS: Record<string, { label: string; description: string }> = {
+  product_id: { label: "Product ID", description: "Each product becomes its own class" },
+  category: { label: "Category", description: "Train a category classifier" },
+  brand_name: { label: "Brand", description: "Train a brand classifier" },
+  container_type: { label: "Container Type", description: "Group by container (bottle, can, box, etc.)" },
+  sub_brand: { label: "Sub-Brand", description: "Group by sub-brand variants" },
+  manufacturer_country: { label: "Country", description: "Group by manufacturer country" },
+  variant_flavor: { label: "Flavor/Variant", description: "Group by flavor or variant" },
+  net_quantity: { label: "Size/Quantity", description: "Group by product size" },
+};
+
+export interface LabelConfig {
+  label_field: LabelFieldType;
+  custom_mapping?: Record<string, string>;
+  min_samples_per_class: number;
+}
+
+// Identifier info for inference (product_id -> product details)
+export interface ProductIdentifierInfo {
+  barcode?: string;
+  product_name?: string;
+  brand_name?: string;
+  category?: string;
+  identifiers?: Record<string, string>;  // Additional identifiers (UPC, EAN, etc.)
+}
+
+export interface IdentifierMappingResponse {
+  run_id: string;
+  run_name: string;
+  label_field: LabelFieldType;
+  num_products: number;
+  identifier_mapping: Record<string, ProductIdentifierInfo>;
+}
+
+export interface LabelFieldStats {
+  label: string;
+  description: string;
+  total_products: number;
+  total_classes: number;
+  min_samples_per_class: number;
+  max_samples_per_class: number;
+  avg_samples_per_class: number;
+  top_classes?: Array<[string, number]>;
+  unknown_count?: number;
+  coverage_percent?: number;
+  is_custom?: boolean;
+}
+
+export interface LabelStatsResponse {
+  data_source: TrainingDataSource;
+  total_products: number;
+  label_fields: Record<string, LabelFieldStats>;
+}
+
+export interface TrainingSplitConfig {
+  train_ratio: number;
+  val_ratio: number;
+  test_ratio: number;
+  seed: number;
+  stratify_by?: "brand_name" | "category";
+}
+
+// ===========================================
+// SOTA Training Configuration
+// ===========================================
+
+export interface SOTALossConfig {
+  arcface_weight: number;
+  triplet_weight: number;
+  domain_weight: number;
+  arcface_margin: number;
+  arcface_scale: number;
+  triplet_margin: number;
+}
+
+export interface SOTASamplingConfig {
+  products_per_batch: number;
+  samples_per_product: number;
+  synthetic_ratio: number;
+}
+
+export interface SOTACurriculumConfig {
+  warmup_epochs: number;
+  easy_epochs: number;
+  hard_epochs: number;
+  finetune_epochs: number;
+}
+
+export interface SOTAConfig {
+  enabled: boolean;
+  use_combined_loss: boolean;
+  use_pk_sampling: boolean;
+  use_curriculum: boolean;
+  use_domain_adaptation: boolean;
+  use_early_stopping: boolean;
+  early_stopping_patience: number;
+  loss: SOTALossConfig;
+  sampling: SOTASamplingConfig;
+  curriculum: SOTACurriculumConfig;
+  triplet_mining_run_id?: string;
+}
+
+export const DEFAULT_SOTA_CONFIG: SOTAConfig = {
+  enabled: true,
+  use_combined_loss: true,
+  use_pk_sampling: true,
+  use_curriculum: false,
+  use_domain_adaptation: true,
+  use_early_stopping: true,
+  early_stopping_patience: 5,
+  loss: {
+    arcface_weight: 1.0,
+    triplet_weight: 0.5,
+    domain_weight: 0.1,
+    arcface_margin: 0.5,
+    arcface_scale: 64.0,
+    triplet_margin: 0.3,
+  },
+  sampling: {
+    products_per_batch: 8,
+    samples_per_product: 4,
+    synthetic_ratio: 0.5,
+  },
+  curriculum: {
+    warmup_epochs: 2,
+    easy_epochs: 5,
+    hard_epochs: 10,
+    finetune_epochs: 3,
+  },
+};
+
+export interface TrainingRunCreate {
+  name: string;
+  description?: string;
+  base_model_type: string;
+  data_source: TrainingDataSource;
+  dataset_id?: string;
+  product_ids?: string[];
+  label_config?: LabelConfig;  // What to train the model to classify
+  split_config: TrainingSplitConfig;
+  training_config: TrainingRunConfig;
+  sota_config?: SOTAConfig;  // SOTA training features (multi-loss, P-K sampling, etc.)
+  hard_negative_pairs?: Array<[string, string]>;  // Pairs of product IDs that look similar but are different
+}
+
+export interface TrainingRunConfig {
+  // Training hyperparameters
+  epochs: number;
+  batch_size: number;
+  learning_rate: number;
+  weight_decay: number;
+  warmup_epochs: number;
+  early_stopping_patience: number;
+
+  // Model config
+  embedding_dim: number;
+  use_arcface: boolean;
+  arcface_margin: number;
+  arcface_scale: number;
+
+  // Optimization
+  use_llrd: boolean;
+  llrd_factor: number;
+  gradient_accumulation_steps: number;
+  mixed_precision: boolean;
+  label_smoothing: number;
+
+  // Checkpointing
+  save_every_n_epochs: number;
+}
+
+export interface TrainingRun {
+  id: string;
+  name: string;
+  description?: string;
+  base_model_type: string;
+  data_source: TrainingDataSource;
+  dataset_id?: string;
+
+  // Label configuration (what the model is trained to classify)
+  label_config?: LabelConfig;
+  label_mapping?: Record<string, number>;  // label -> class_index
+  identifier_mapping?: Record<string, ProductIdentifierInfo>;  // product_id -> identifiers for inference
+
+  // Split info (based on label_field, not just product_id)
+  split_config: TrainingSplitConfig;
+  train_product_ids: string[];
+  val_product_ids: string[];
+  test_product_ids: string[];
+  train_product_count: number;
+  val_product_count: number;
+  test_product_count: number;
+  train_image_count: number;
+  val_image_count: number;
+  test_image_count: number;
+  num_classes: number;  // Number of unique labels (classes)
+
+  // Config
+  training_config: TrainingRunConfig;
+  sota_config?: SOTAConfig;  // SOTA training configuration
+  sota_enabled?: boolean;  // Whether SOTA features were used
+  config_id?: string;
+
+  // RunPod
+  runpod_job_id?: string;
+  runpod_endpoint_id?: string;
+
+  // Status
+  status: TrainingRunStatus;
+  current_epoch: number;
+  total_epochs: number;
+
+  // Metrics
+  best_val_loss?: number;
+  best_val_recall_at_1?: number;
+  best_val_recall_at_5?: number;
+  best_epoch?: number;
+
+  // Error
+  error_message?: string;
+  error_traceback?: string;
+
+  // Timestamps
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrainingCheckpoint {
+  id: string;
+  training_run_id: string;
+  epoch: number;
+  step?: number;
+  checkpoint_url: string;
+  file_size_bytes?: number;
+  train_loss?: number;
+  val_loss?: number;
+  val_recall_at_1?: number;
+  val_recall_at_5?: number;
+  val_recall_at_10?: number;
+  val_map?: number;
+  is_best: boolean;
+  is_final: boolean;
+  created_at: string;
+}
+
+export interface TrainedModel {
+  id: string;
+  training_run_id: string;
+  checkpoint_id: string;
+  name: string;
+  description?: string;
+  embedding_model_id?: string;
+  test_evaluated: boolean;
+  test_metrics?: TrainingMetricsResult;
+  test_evaluated_at?: string;
+  cross_domain_metrics?: CrossDomainMetrics;
+  identifier_mapping_url?: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+
+  // Joined data
+  training_run?: Partial<TrainingRun>;
+  checkpoint?: Partial<TrainingCheckpoint>;
+}
+
+export interface TrainingMetricsResult {
+  recall_at_1: number;
+  recall_at_5: number;
+  recall_at_10?: number;
+  map: number;
+  accuracy?: number;
+}
+
+export interface CrossDomainMetrics {
+  real_to_synth?: TrainingMetricsResult;
+  synth_to_real?: TrainingMetricsResult;
+}
+
+export interface ModelEvaluation {
+  id: string;
+  trained_model_id: string;
+  eval_config?: Record<string, unknown>;
+  overall_metrics: TrainingMetricsResult;
+  real_to_synthetic?: TrainingMetricsResult;
+  synthetic_to_real?: TrainingMetricsResult;
+  per_category_metrics?: Record<string, TrainingMetricsResult>;
+  worst_product_ids?: Array<{ product_id: string; recall_at_1: number }>;
+  most_confused_pairs?: Array<{ product_id_1: string; product_id_2: string; similarity: number }>;
+  created_at: string;
+}
+
+// Model comparison result (for side-by-side comparison)
+export interface ModelComparisonResult {
+  id: string;
+  name: string;
+  test_metrics?: TrainingMetricsResult;
+  cross_domain_metrics?: CrossDomainMetrics;
+}
+
+export interface TrainingConfigPreset {
+  id: string;
+  name: string;
+  description?: string;
+  base_model_type: string;
+  config: TrainingRunConfig;
+  is_default: boolean;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelPreset {
+  model_type: string;
+  model_family: string;
+  name: string;
+  hf_model_id: string;
+  embedding_dim: number;
+  image_size: number;
+  description: string;
+  recommended_for: string[];
+}
+
+export interface ModelPresetsResponse {
+  presets: ModelPreset[];
+  families: Array<{
+    id: string;
+    name: string;
+    description: string;
+  }>;
+}
+
+export interface TrainingRunsResponse {
+  items: TrainingRun[];
+  total: number;
+}
+
+export interface TrainingProductsResponse {
+  products: Array<{
+    id: string;
+    barcode?: string;
+    short_code?: string;
+    upc?: string;
+    brand_name?: string;
+    frames_path?: string;
+    frame_count: number;
+  }>;
+  total: number;
+}
+
+// ===========================================
+// Triplet Mining Types
+// ===========================================
+
+export type TripletMiningStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type TripletDifficulty = "hard" | "semi_hard" | "easy";
+export type TripletDomain = "synthetic" | "real" | "unknown";
+
+export interface TripletMiningRun {
+  id: string;
+  name: string;
+  description?: string;
+  dataset_id?: string;
+  embedding_model_id: string;
+  collection_name: string;
+  hard_negative_threshold: number;
+  positive_threshold: number;
+  max_triplets_per_anchor: number;
+  include_cross_domain: boolean;
+  total_anchors?: number;
+  total_triplets?: number;
+  hard_triplets?: number;
+  semi_hard_triplets?: number;
+  easy_triplets?: number;
+  cross_domain_triplets?: number;
+  status: TripletMiningStatus;
+  error_message?: string;
+  output_url?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MinedTriplet {
+  id: string;
+  mining_run_id: string;
+  anchor_product_id: string;
+  positive_product_id: string;
+  negative_product_id: string;
+  anchor_frame_idx: number;
+  positive_frame_idx: number;
+  negative_frame_idx: number;
+  anchor_positive_sim: number;
+  anchor_negative_sim: number;
+  margin: number;
+  difficulty: TripletDifficulty;
+  is_cross_domain: boolean;
+  anchor_domain?: TripletDomain;
+  positive_domain?: TripletDomain;
+  negative_domain?: TripletDomain;
+  created_at: string;
+}
+
+export interface TripletMiningRequest {
+  name: string;
+  description?: string;
+  dataset_id?: string;
+  embedding_model_id?: string;
+  collection_name?: string;
+  hard_negative_threshold?: number;
+  positive_threshold?: number;
+  max_triplets_per_anchor?: number;
+  include_cross_domain?: boolean;
+}
+
+export interface TripletMiningStats {
+  total_triplets: number;
+  hard_count: number;
+  semi_hard_count: number;
+  easy_count: number;
+  cross_domain_count: number;
+  avg_margin: number;
+  min_margin: number;
+  max_margin: number;
+}
+
+export interface TripletExportResult {
+  export_id: string;
+  format: "json" | "csv";
+  total_triplets: number;
+  file_url: string;
+  file_size_bytes?: number;
+}
+
+export interface MatchingFeedback {
+  id: string;
+  cutout_id?: string;
+  cutout_image_url?: string;
+  predicted_product_id?: string;
+  predicted_similarity?: number;
+  model_id?: string;
+  collection_name?: string;
+  feedback_type: "correct" | "wrong" | "uncertain";
+  correct_product_id?: string;
+  user_id?: string;
+  feedback_source: "web" | "api" | "review" | "auto";
+  notes?: string;
+  created_at: string;
+}
+
+export interface MatchingFeedbackCreate {
+  cutout_id?: string;
+  cutout_image_url?: string;
+  predicted_product_id?: string;
+  predicted_similarity?: number;
+  model_id?: string;
+  collection_name?: string;
+  feedback_type: "correct" | "wrong" | "uncertain";
+  correct_product_id?: string;
+  notes?: string;
+}
+
+export interface FeedbackStats {
+  total: number;
+  correct: number;
+  wrong: number;
+  uncertain: number;
+  accuracy_rate: number;
+}
+
+export interface HardExample {
+  cutout_image_url: string;
+  correct_product_id: string;
+  wrong_product_id: string;
 }

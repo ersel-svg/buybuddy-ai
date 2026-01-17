@@ -7,8 +7,10 @@ No database connections - API handles storage.
 Input:
 {
     "images": [
-        {"id": "uuid-1", "url": "https://...", "type": "cutout"},
-        {"id": "uuid-2", "url": "https://...", "type": "product"},
+        {"id": "uuid-1", "url": "https://...", "type": "cutout", "domain": "real"},
+        {"id": "uuid-2", "url": "https://...", "type": "product", "domain": "synthetic"},
+        {"id": "uuid-3", "url": "https://...", "type": "product", "domain": "synthetic",
+         "product_id": "prod-123", "frame_index": 0, "category": "beverage"},
     ],
     "model_type": "dinov2-base",  # Optional, default: dinov2-base
     "batch_size": 16,              # Optional, default: 16
@@ -18,8 +20,9 @@ Output:
 {
     "status": "success",
     "embeddings": [
-        {"id": "uuid-1", "type": "cutout", "vector": [0.1, 0.2, ...]},
-        {"id": "uuid-2", "type": "product", "vector": [0.3, 0.4, ...]},
+        {"id": "uuid-1", "type": "cutout", "domain": "real", "vector": [0.1, 0.2, ...]},
+        {"id": "uuid-2", "type": "product", "domain": "synthetic", "vector": [0.3, 0.4, ...],
+         "product_id": "prod-123", "frame_index": 0, "category": "beverage"},
     ],
     "processed_count": 2,
     "failed_count": 0,
@@ -80,11 +83,17 @@ def handler(job):
         checkpoint_url = job_input.get("checkpoint_url")
         batch_size = job_input.get("batch_size", 16)
 
+        # Set HuggingFace token for DINOv3 models
+        hf_token = job_input.get("hf_token") or os.environ.get("HF_TOKEN")
+        if hf_token:
+            os.environ["HF_TOKEN"] = hf_token
+
         print(f"\n{'=' * 60}")
         print(f"EMBEDDING EXTRACTION")
         print(f"  Images: {len(images)}")
         print(f"  Model: {model_type}")
         print(f"  Batch size: {batch_size}")
+        print(f"  HF Token: {'set' if hf_token else 'not set'}")
         print(f"{'=' * 60}\n")
 
         # ========================================
@@ -118,11 +127,23 @@ def handler(job):
                 embedding = url_to_embedding.get(img["url"])
 
                 if embedding is not None:
-                    results.append({
+                    result_item = {
                         "id": img["id"],
                         "type": img.get("type", "unknown"),
+                        "domain": img.get("domain", "unknown"),
                         "vector": embedding.tolist(),
-                    })
+                    }
+                    # Pass through additional metadata if present
+                    if "product_id" in img:
+                        result_item["product_id"] = img["product_id"]
+                    if "frame_index" in img:
+                        result_item["frame_index"] = img["frame_index"]
+                    if "category" in img:
+                        result_item["category"] = img["category"]
+                    if "is_primary" in img:
+                        result_item["is_primary"] = img["is_primary"]
+
+                    results.append(result_item)
                 else:
                     failed_ids.append(img["id"])
                     print(f"  Failed: {img['id']} - {img['url'][:50]}...")
