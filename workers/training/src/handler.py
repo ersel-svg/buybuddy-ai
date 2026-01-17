@@ -3,6 +3,7 @@ RunPod Handler for Model Training.
 
 Handles training job requests with:
 - Multi-model support via bb-models
+- Multi-image-type support (synthetic, real, augmented)
 - UPC-based data splitting
 - Checkpoint management
 - Progress reporting
