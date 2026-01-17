@@ -91,10 +91,7 @@ class EmbeddingModel(nn.Module):
 
         # Pooling
         if use_gem_pooling:
-            self.pooling = AdaptiveGeMPooling(
-                input_dim=backbone_dim,
-                output_dim=backbone_dim,
-            )
+            self.pooling = AdaptiveGeMPooling(channels=backbone_dim)
         else:
             self.pooling = nn.Identity()
 
