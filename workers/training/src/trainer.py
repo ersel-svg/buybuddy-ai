@@ -33,7 +33,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LinearLR, Sequ
 from bb_models import get_backbone, get_model_config
 from bb_models.heads.gem_pooling import GeMPooling, AdaptiveGeMPooling
 from bb_models.heads.arcface import ArcFaceHead, EnhancedArcFaceLoss
-from bb_models.heads.projection import ProjectionHead
+from bb_models.heads.projection import MLPProjectionHead
 from bb_models.utils.llrd import get_llrd_optimizer_params
 from bb_models.utils.checkpoint import CheckpointManager
 
@@ -96,12 +96,12 @@ class EmbeddingModel(nn.Module):
             self.pooling = nn.Identity()
 
         # Projection head
-        self.projection = ProjectionHead(
-            input_dim=backbone_dim,
-            output_dim=embedding_dim,
-            hidden_dim=backbone_dim,
-            use_batchnorm=True,
+        self.projection = MLPProjectionHead(
+            in_features=backbone_dim,
+            hidden_features=backbone_dim,
+            out_features=embedding_dim,
             dropout=0.1,
+            normalize=True,
         )
 
         # ArcFace head for training
