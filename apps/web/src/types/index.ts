@@ -640,7 +640,7 @@ export interface CollectionInfo {
 // Advanced Embedding Extraction Types
 // ===========================================
 
-export type FrameSelection = "first" | "key_frames" | "interval";
+export type FrameSelection = "first" | "key_frames" | "interval" | "all";
 
 export interface ProductExtractionConfig {
   frame_selection: FrameSelection;
@@ -967,6 +967,24 @@ export const DEFAULT_SOTA_CONFIG: SOTAConfig = {
   },
 };
 
+// Image configuration for training
+export interface ImageConfig {
+  image_types: ImageType[];
+  frame_selection: FrameSelection;
+  frame_interval: number;
+  max_frames_per_type: number;
+  include_matched_cutouts: boolean;
+}
+
+// Default image config
+export const DEFAULT_IMAGE_CONFIG: ImageConfig = {
+  image_types: ["synthetic", "real", "augmented"],
+  frame_selection: "key_frames",
+  frame_interval: 5,
+  max_frames_per_type: 10,
+  include_matched_cutouts: true,
+};
+
 export interface TrainingRunCreate {
   name: string;
   description?: string;
@@ -974,6 +992,7 @@ export interface TrainingRunCreate {
   data_source: TrainingDataSource;
   dataset_id?: string;
   product_ids?: string[];
+  image_config?: ImageConfig;  // Which image types and frames to include
   label_config?: LabelConfig;  // What to train the model to classify
   split_config: TrainingSplitConfig;
   training_config: TrainingRunConfig;

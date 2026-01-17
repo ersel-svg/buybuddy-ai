@@ -84,8 +84,11 @@ import type {
   LabelStatsResponse,
   ModelComparisonResult,
   SOTAConfig,
+  ImageConfig,
+  ImageType,
+  FrameSelection,
 } from "@/types";
-import { DEFAULT_SOTA_CONFIG } from "@/types";
+import { DEFAULT_SOTA_CONFIG, DEFAULT_IMAGE_CONFIG } from "@/types";
 import { SOTAConfigPanel } from "./components/SOTAConfigPanel";
 
 // Default training config
@@ -164,6 +167,8 @@ export default function TrainingPage() {
     base_model_type: "dinov3-base",
     data_source: "all_products" as TrainingDataSource,
     dataset_id: "",
+    // Image configuration - which image types to include
+    image_config: { ...DEFAULT_IMAGE_CONFIG },
     label_config: {
       label_field: "product_id" as LabelFieldType,
       min_samples_per_class: 2,
@@ -336,6 +341,7 @@ export default function TrainingPage() {
       base_model_type: "dinov3-base",
       data_source: "all_products",
       dataset_id: "",
+      image_config: { ...DEFAULT_IMAGE_CONFIG },
       label_config: {
         label_field: "product_id" as LabelFieldType,
         min_samples_per_class: 2,
@@ -506,6 +512,114 @@ export default function TrainingPage() {
                     </p>
                   </div>
                 )}
+              </div>
+
+              <Separator />
+
+              {/* Image Configuration */}
+              <div className="space-y-4">
+                <Label>Image Types</Label>
+                <p className="text-sm text-muted-foreground">
+                  Select which image types to include in training
+                </p>
+                <div className="flex flex-wrap gap-4">
+                  {(["synthetic", "real", "augmented"] as const).map((type) => (
+                    <label key={type} className="flex items-center gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={formData.image_config.image_types.includes(type)}
+                        onCheckedChange={(checked) => {
+                          const newTypes = checked
+                            ? [...formData.image_config.image_types, type]
+                            : formData.image_config.image_types.filter((t) => t !== type);
+                          setFormData({
+                            ...formData,
+                            image_config: { ...formData.image_config, image_types: newTypes as ImageType[] },
+                          });
+                        }}
+                      />
+                      <span className="capitalize">{type}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {type === "synthetic" && "(3D rendered frames)"}
+                        {type === "real" && "(from matching)"}
+                        {type === "augmented" && "(AI augmented)"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 mt-2">
+                  <Switch
+                    checked={formData.image_config.include_matched_cutouts}
+                    onCheckedChange={(checked) =>
+                      setFormData({
+                        ...formData,
+                        image_config: { ...formData.image_config, include_matched_cutouts: checked },
+                      })
+                    }
+                  />
+                  <Label className="text-sm font-normal cursor-pointer">
+                    Include matched cutouts as real-domain training data
+                  </Label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="space-y-2">
+                    <Label className="text-xs">Frame Selection</Label>
+                    <Select
+                      value={formData.image_config.frame_selection}
+                      onValueChange={(v) =>
+                        setFormData({
+                          ...formData,
+                          image_config: { ...formData.image_config, frame_selection: v as FrameSelection },
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="first">First frame only</SelectItem>
+                        <SelectItem value="key_frames">Key frames (4 angles)</SelectItem>
+                        <SelectItem value="interval">Every N frames</SelectItem>
+                        <SelectItem value="all">All frames</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {formData.image_config.frame_selection === "interval" && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">Frame Interval: {formData.image_config.frame_interval}</Label>
+                      <Slider
+                        value={[formData.image_config.frame_interval]}
+                        onValueChange={([v]) =>
+                          setFormData({
+                            ...formData,
+                            image_config: { ...formData.image_config, frame_interval: v },
+                          })
+                        }
+                        min={1}
+                        max={10}
+                        step={1}
+                      />
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label className="text-xs">Max Frames per Type: {formData.image_config.max_frames_per_type}</Label>
+                    <Slider
+                      value={[formData.image_config.max_frames_per_type]}
+                      onValueChange={([v]) =>
+                        setFormData({
+                          ...formData,
+                          image_config: { ...formData.image_config, max_frames_per_type: v },
+                        })
+                      }
+                      min={1}
+                      max={50}
+                      step={1}
+                    />
+                  </div>
+                </div>
               </div>
 
               <Separator />
