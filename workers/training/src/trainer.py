@@ -107,7 +107,7 @@ class EmbeddingModel(nn.Module):
         # ArcFace head for training
         if use_arcface:
             self.arcface = ArcFaceHead(
-                embedding_dim=embedding_dim,
+                in_features=embedding_dim,
                 num_classes=num_classes,
                 margin=arcface_margin,
                 scale=arcface_scale,
@@ -134,12 +134,16 @@ class EmbeddingModel(nn.Module):
         # Backbone features
         features = self.backbone(x)
 
-        # Pool if needed (backbone may already return pooled)
-        if features.dim() == 3:
-            # [B, N, D] -> need pooling
-            features = features.mean(dim=1)  # Simple mean for now
-
-        pooled = self.pooling(features)
+        # Pool if needed based on feature dimensions
+        if features.dim() == 4:
+            # [B, C, H, W] -> apply spatial pooling (e.g., for CNN backbones)
+            pooled = self.pooling(features)
+        elif features.dim() == 3:
+            # [B, N, D] -> mean pool over sequence (for ViT patch tokens)
+            pooled = features.mean(dim=1)
+        else:
+            # [B, D] -> already pooled (DINOv2 CLS token), skip pooling
+            pooled = features
 
         # Projection to embedding
         embeddings = self.projection(pooled)
