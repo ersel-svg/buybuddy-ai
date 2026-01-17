@@ -577,6 +577,8 @@ def handler(job):
                 "test_samples": len(test_dataset),
             },
             "sota_enabled": use_sota,
+            # Include preprocessing config for deployment
+            "preprocessing_config": train_dataset.preprocessing_config,
         }
 
         # Include recall metrics if available from SOTA trainer

@@ -345,6 +345,89 @@ class SupabaseService:
         )
         return response.data[0] if response.data else None
 
+    async def get_product_identifiers(self, product_id: str) -> list[dict[str, Any]]:
+        """
+        Get all identifiers for a product from product_identifiers table.
+
+        Returns list of dicts with:
+            - identifier_type: barcode, upc, ean, short_code, sku, custom
+            - identifier_value: the actual value
+            - is_primary: whether this is the primary identifier
+        """
+        response = (
+            self.client.table("product_identifiers")
+            .select("identifier_type, identifier_value, is_primary")
+            .eq("product_id", product_id)
+            .order("is_primary", desc=True)
+            .execute()
+        )
+        return response.data or []
+
+    async def get_all_product_identifier_values(self, product_id: str) -> list[str]:
+        """
+        Get all identifier values for a product (just the values, not types).
+
+        Also includes the legacy products.barcode field for backward compatibility.
+        """
+        # Get from product_identifiers table
+        identifiers = await self.get_product_identifiers(product_id)
+        values = [i["identifier_value"] for i in identifiers if i.get("identifier_value")]
+
+        # Also get legacy barcode from products table
+        product = await self.get_product(product_id)
+        if product and product.get("barcode"):
+            legacy_barcode = product["barcode"]
+            if legacy_barcode not in values:
+                values.append(legacy_barcode)
+
+        return values
+
+    async def get_products_by_identifier_value(
+        self, identifier_value: str
+    ) -> list[dict[str, Any]]:
+        """
+        Find products that have the given identifier value.
+
+        Searches both:
+        1. product_identifiers table (all identifier types)
+        2. products.barcode field (legacy, for backward compatibility)
+
+        Returns list of products with their details.
+        """
+        product_ids = set()
+
+        # Search in product_identifiers table
+        id_response = (
+            self.client.table("product_identifiers")
+            .select("product_id")
+            .eq("identifier_value", identifier_value)
+            .execute()
+        )
+        for row in id_response.data or []:
+            product_ids.add(row["product_id"])
+
+        # Search in legacy products.barcode field
+        legacy_response = (
+            self.client.table("products")
+            .select("id")
+            .eq("barcode", identifier_value)
+            .execute()
+        )
+        for row in legacy_response.data or []:
+            product_ids.add(row["id"])
+
+        if not product_ids:
+            return []
+
+        # Fetch full product details
+        products_response = (
+            self.client.table("products")
+            .select("id, barcode, brand_name, product_name, primary_image_url")
+            .in_("id", list(product_ids))
+            .execute()
+        )
+        return products_response.data or []
+
     async def get_or_create_product(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """
         Get existing product by barcode or create new one.

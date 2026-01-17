@@ -142,6 +142,10 @@ def handler(job):
                         result_item["category"] = img["category"]
                     if "is_primary" in img:
                         result_item["is_primary"] = img["is_primary"]
+                    if "external_id" in img:
+                        result_item["external_id"] = img["external_id"]
+                    if "barcode" in img:
+                        result_item["barcode"] = img["barcode"]
 
                     results.append(result_item)
                 else:

@@ -2,9 +2,18 @@
 Model registry with configurations for all supported models.
 """
 
-from dataclasses import dataclass
-from typing import Dict, Optional, Type, Any
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Type, Any, List
 import importlib
+
+
+# Standard normalization values
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+# CLIP uses different normalization
+CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
+CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
 
 
 @dataclass
@@ -19,6 +28,21 @@ class ModelConfig:
     params_millions: float
     description: str
     backbone_class: str  # Module path to backbone class
+    image_mean: List[float] = field(default_factory=lambda: IMAGENET_MEAN.copy())
+    image_std: List[float] = field(default_factory=lambda: IMAGENET_STD.copy())
+
+    @property
+    def input_size(self) -> int:
+        """Alias for image_size (backward compatibility)."""
+        return self.image_size
+
+    def get_preprocessing_config(self) -> Dict[str, Any]:
+        """Get preprocessing configuration for this model."""
+        return {
+            "image_size": self.image_size,
+            "image_mean": self.image_mean,
+            "image_std": self.image_std,
+        }
 
 
 # =============================================
@@ -106,6 +130,8 @@ CLIP_MODELS = {
         params_millions=304,
         description="CLIP ViT-L/14 - High capacity",
         backbone_class="bb_models.backbones.clip.CLIPBackbone",
+        image_mean=CLIP_MEAN,
+        image_std=CLIP_STD,
     ),
 }
 
@@ -223,7 +249,7 @@ def get_model_info(model_id: str) -> Dict[str, Any]:
         model_id: Model identifier
 
     Returns:
-        Dict with model information
+        Dict with model information including preprocessing config
     """
     config = get_model_config(model_id)
     return {
@@ -232,6 +258,9 @@ def get_model_info(model_id: str) -> Dict[str, Any]:
         "hf_model_id": config.hf_model_id,
         "embedding_dim": config.embedding_dim,
         "image_size": config.image_size,
+        "image_mean": config.image_mean,
+        "image_std": config.image_std,
         "params_millions": config.params_millions,
         "description": config.description,
+        "preprocessing": config.get_preprocessing_config(),
     }

@@ -269,7 +269,8 @@ async def get_product_candidates(
     Get candidate cutouts for a product.
 
     Returns cutouts that match by:
-    1. Barcode match: cutout.predicted_upc == product.barcode
+    1. Identifier match: cutout.predicted_upc matches ANY product identifier
+       (barcode, upc, ean, short_code, sku from product_identifiers table)
     2. Similarity match: embedding similarity >= min_similarity (if embeddings exist)
 
     Supports multi-view products: if a product has multiple embeddings (different frames),
@@ -277,36 +278,43 @@ async def get_product_candidates(
 
     Collections can be manually specified or will default to the active embedding model's collections.
 
-    Candidates are sorted by: barcode matches first, then by similarity.
+    Candidates are sorted by: identifier matches first, then by similarity.
     """
     # Get product
     product = await db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    product_barcode = product.get("barcode")
     candidates = []
     barcode_match_ids = set()
     similarity_match_ids = set()
     has_product_embedding = False
 
-    # 1. Get barcode matches
-    if product_barcode:
-        barcode_cutouts = await db.get_cutouts(
-            page=1,
-            limit=limit,
-            predicted_upc=product_barcode,
-            is_matched=None if include_matched else False,
-        )
+    # 1. Get barcode matches using ALL product identifiers
+    # This searches product_identifiers table (barcode, upc, ean, short_code, sku)
+    # plus the legacy products.barcode field
+    all_identifiers = await db.get_all_product_identifier_values(product_id)
 
-        for cutout in barcode_cutouts.get("items", []):
+    if all_identifiers:
+        # Query cutouts where predicted_upc matches ANY of the identifiers
+        cutouts_query = db.client.table("cutout_images").select(
+            "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
+        ).in_("predicted_upc", all_identifiers)
+
+        if not include_matched:
+            cutouts_query = cutouts_query.is_("matched_product_id", "null")
+
+        cutouts_query = cutouts_query.limit(limit)
+        barcode_cutouts_response = cutouts_query.execute()
+
+        for cutout in barcode_cutouts_response.data or []:
             barcode_match_ids.add(cutout["id"])
             candidates.append(CutoutCandidate(
                 id=cutout["id"],
                 external_id=cutout["external_id"],
                 image_url=cutout["image_url"],
                 predicted_upc=cutout.get("predicted_upc"),
-                similarity=1.0,  # Barcode match = perfect match
+                similarity=1.0,  # Barcode/identifier match = perfect match
                 match_type="barcode",
                 has_embedding=cutout.get("has_embedding", False),
                 is_matched=cutout.get("matched_product_id") is not None,
@@ -622,7 +630,8 @@ async def get_cutout_product_candidates(
     Get product candidates for a cutout (reverse matching).
 
     Given a cutout image, find matching products by:
-    1. Barcode match: product.barcode == cutout.predicted_upc
+    1. Identifier match: cutout.predicted_upc matches ANY product identifier
+       (searches product_identifiers table + legacy products.barcode field)
     2. Similarity match: embedding similarity >= min_similarity
 
     Useful for:
@@ -641,14 +650,13 @@ async def get_cutout_product_candidates(
     similarity_match_ids = set()
     has_cutout_embedding = cutout.get("has_embedding", False)
 
-    # 1. Get barcode matches
+    # 1. Get barcode/identifier matches
+    # Search both product_identifiers table AND legacy products.barcode field
     if predicted_upc:
-        # Search products by barcode
-        barcode_products = db.client.table("products").select(
-            "id, barcode, brand_name, product_name, primary_image_url"
-        ).eq("barcode", predicted_upc).execute()
+        # Use the new method that searches product_identifiers + legacy barcode
+        barcode_products = await db.get_products_by_identifier_value(predicted_upc)
 
-        for p in barcode_products.data or []:
+        for p in barcode_products:
             barcode_match_ids.add(p["id"])
             candidates.append(ProductMatchCandidate(
                 id=p["id"],
@@ -656,7 +664,7 @@ async def get_cutout_product_candidates(
                 brand_name=p.get("brand_name"),
                 product_name=p.get("product_name"),
                 primary_image_url=p.get("primary_image_url"),
-                similarity=1.0,  # Barcode match = perfect match
+                similarity=1.0,  # Barcode/identifier match = perfect match
                 match_type="barcode",
             ))
 

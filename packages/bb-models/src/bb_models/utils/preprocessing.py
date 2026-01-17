@@ -293,3 +293,32 @@ class DomainAwareTransform:
         if domain == "synthetic":
             return self.synthetic_transform(image)
         return self.real_transform(image)
+
+
+# Aliases for backward compatibility
+def get_augmentation_transform(
+    image_size: int = 384,
+    image_mean: Optional[List[float]] = None,
+    image_std: Optional[List[float]] = None,
+    strength: str = "moderate",
+) -> transforms.Compose:
+    """Alias for create_train_transforms (backward compatibility)."""
+    return create_train_transforms(
+        image_size=image_size,
+        image_mean=image_mean,
+        image_std=image_std,
+        strength=strength,
+    )
+
+
+def get_eval_transform(
+    image_size: int = 384,
+    image_mean: Optional[List[float]] = None,
+    image_std: Optional[List[float]] = None,
+) -> transforms.Compose:
+    """Alias for create_val_transforms (backward compatibility)."""
+    return create_val_transforms(
+        image_size=image_size,
+        image_mean=image_mean,
+        image_std=image_std,
+    )

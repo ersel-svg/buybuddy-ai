@@ -16,6 +16,8 @@ from bb_models.utils.preprocessing import (
     preprocess_image,
     create_train_transforms,
     create_val_transforms,
+    get_augmentation_transform,
+    get_eval_transform,
 )
 
 __all__ = [
@@ -31,4 +33,6 @@ __all__ = [
     "preprocess_image",
     "create_train_transforms",
     "create_val_transforms",
+    "get_augmentation_transform",
+    "get_eval_transform",
 ]

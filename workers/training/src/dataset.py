@@ -132,16 +132,34 @@ class ProductDataset(Dataset):
                 self.samples.append((prod_idx, 0))
 
     def _setup_transforms(self):
-        """Setup image transforms."""
+        """Setup image transforms with model-specific normalization."""
         image_size = self.model_config.input_size
+        image_mean = self.model_config.image_mean
+        image_std = self.model_config.image_std
+
+        # Store preprocessing config for saving with training results
+        self.preprocessing_config = {
+            "image_size": image_size,
+            "image_mean": image_mean,
+            "image_std": image_std,
+            "augmentation_strength": self.augmentation_strength if self.is_training else "none",
+        }
+
+        print(f"  Preprocessing: size={image_size}, mean={image_mean}, std={image_std}")
 
         if self.is_training and self.augmentation_strength != "none":
             self.transform = get_augmentation_transform(
                 image_size=image_size,
+                image_mean=image_mean,
+                image_std=image_std,
                 strength=self.augmentation_strength,
             )
         else:
-            self.transform = get_eval_transform(image_size=image_size)
+            self.transform = get_eval_transform(
+                image_size=image_size,
+                image_mean=image_mean,
+                image_std=image_std,
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
