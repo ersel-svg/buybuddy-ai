@@ -3,6 +3,7 @@ Product Dataset for Training.
 
 Features:
 - Multi-frame support per product
+- Multi-image-type support (synthetic, real, augmented)
 - Domain-aware sampling
 - Augmentation integration
 - Efficient image loading from URLs
@@ -31,19 +32,26 @@ class ProductDataset(Dataset):
     """
     Dataset for product images with product_id-based class labels.
 
-    Each product can have multiple frames. During training,
-    randomly samples one frame per product per epoch.
+    Supports two data formats:
+    1. NEW FORMAT (recommended): training_images dict with URLs for each product
+       training_images = {
+           "product_id_1": [
+               {"url": "https://...", "image_type": "synthetic", "domain": "synthetic", "frame_index": 0},
+               {"url": "https://...", "image_type": "real", "domain": "real", "frame_index": 0},
+           ],
+           ...
+       }
+
+    2. LEGACY FORMAT: products list with frames_path
+       products = [
+           {"id": "...", "frames_path": "https://.../.../frames", "frame_count": 36, ...},
+           ...
+       ]
 
     NOTE: We use product_id as the class label (not UPC/barcode) because:
     - A product can have multiple identifiers (barcode, short_code, UPC, EAN)
     - product_id is the unique canonical identifier
     - After inference, product_id maps to all associated identifiers
-
-    Attributes:
-        products: List of product dictionaries with frames
-        model_type: Model type for preprocessing config
-        augmentation_strength: 'none', 'light', 'medium', 'heavy'
-        is_training: Whether to apply augmentations
     """
 
     def __init__(
@@ -54,6 +62,7 @@ class ProductDataset(Dataset):
         is_training: bool = True,
         frames_per_product: int = 1,
         http_timeout: float = 30.0,
+        training_images: Optional[dict[str, list[dict]]] = None,
     ):
         """
         Initialize the dataset.
@@ -61,15 +70,16 @@ class ProductDataset(Dataset):
         Args:
             products: List of product dicts with keys:
                 - id: Product ID (unique, used as class label)
-                - frames_path: Base path to frames
-                - frame_count: Number of frames
+                - frames_path: Base path to frames (legacy format)
+                - frame_count: Number of frames (legacy format)
                 - barcode, short_code, upc: Optional identifiers (for metadata only)
                 - brand_name: Optional metadata
             model_type: Model identifier for preprocessing
             augmentation_strength: Augmentation level
             is_training: Enable training augmentations
-            frames_per_product: Frames to sample per product
+            frames_per_product: Frames to sample per product (legacy format)
             http_timeout: HTTP request timeout
+            training_images: NEW FORMAT - Dict mapping product_id to list of images with URLs
         """
         self.products = products
         self.model_type = model_type
@@ -77,6 +87,10 @@ class ProductDataset(Dataset):
         self.is_training = is_training
         self.frames_per_product = frames_per_product
         self.http_timeout = http_timeout
+        self.training_images = training_images
+
+        # Determine which format we're using
+        self.use_new_format = training_images is not None and len(training_images) > 0
 
         # Get model config for preprocessing
         self.model_config = get_model_config(model_type)
@@ -85,15 +99,27 @@ class ProductDataset(Dataset):
         # Each unique product_id becomes a class
         self.product_id_to_idx = {}
         self.idx_to_product_id = {}
-        unique_product_ids = sorted(set(p["id"] for p in products if p.get("id")))
+        self.product_by_id = {}
+
+        if self.use_new_format:
+            # New format: use keys from training_images
+            unique_product_ids = sorted(training_images.keys())
+        else:
+            # Legacy format: use product IDs from products list
+            unique_product_ids = sorted(set(p["id"] for p in products if p.get("id")))
 
         for idx, product_id in enumerate(unique_product_ids):
             self.product_id_to_idx[product_id] = idx
             self.idx_to_product_id[idx] = product_id
 
+        # Build product lookup
+        for p in products:
+            if p.get("id"):
+                self.product_by_id[p["id"]] = p
+
         self.num_classes = len(unique_product_ids)
 
-        # Build samples list: (product_idx, frame_idx)
+        # Build samples list
         self._build_samples()
 
         # Setup transforms
@@ -102,34 +128,87 @@ class ProductDataset(Dataset):
         # HTTP client for downloading images
         self.http_client = httpx.Client(timeout=http_timeout)
 
+        # Count image types
+        image_type_counts = {"synthetic": 0, "real": 0, "augmented": 0, "cutout": 0, "unknown": 0}
+        for sample in self.samples:
+            if self.use_new_format:
+                img_type = sample.get("image_type", "unknown")
+            else:
+                img_type = "synthetic"  # Legacy format is all synthetic
+            image_type_counts[img_type] = image_type_counts.get(img_type, 0) + 1
+
         print(f"ProductDataset initialized:")
-        print(f"  Products: {len(products)}")
+        print(f"  Format: {'NEW (URLs)' if self.use_new_format else 'LEGACY (frames_path)'}")
+        print(f"  Products: {len(unique_product_ids)}")
         print(f"  Samples: {len(self.samples)}")
         print(f"  Classes (unique product_ids): {self.num_classes}")
         print(f"  Model: {model_type}")
         print(f"  Augmentation: {augmentation_strength}")
+        print(f"  Image types: {image_type_counts}")
 
     def _build_samples(self):
-        """Build the samples list."""
+        """Build the samples list based on format."""
         self.samples = []
         self.product_to_samples = defaultdict(list)
 
-        for prod_idx, product in enumerate(self.products):
-            product_id = product.get("id")
-            if not product_id or product_id not in self.product_id_to_idx:
-                continue
+        if self.use_new_format:
+            # NEW FORMAT: Build samples from training_images dict
+            for product_id, images in self.training_images.items():
+                if product_id not in self.product_id_to_idx:
+                    continue
 
-            frame_count = product.get("frame_count", 1)
+                for img in images:
+                    if not img.get("url"):
+                        continue
 
-            if self.is_training:
-                # For training, include all frames as separate samples
-                for frame_idx in range(frame_count):
+                    sample = {
+                        "product_id": product_id,
+                        "url": img["url"],
+                        "image_type": img.get("image_type", "synthetic"),
+                        "domain": img.get("domain", img.get("image_type", "synthetic")),
+                        "frame_index": img.get("frame_index", 0),
+                    }
+
                     sample_idx = len(self.samples)
-                    self.samples.append((prod_idx, frame_idx))
-                    self.product_to_samples[prod_idx].append(sample_idx)
-            else:
-                # For eval, use first frame only
-                self.samples.append((prod_idx, 0))
+                    self.samples.append(sample)
+                    self.product_to_samples[product_id].append(sample_idx)
+        else:
+            # LEGACY FORMAT: Build samples from products with frames_path
+            for prod_idx, product in enumerate(self.products):
+                product_id = product.get("id")
+                if not product_id or product_id not in self.product_id_to_idx:
+                    continue
+
+                frame_count = product.get("frame_count", 1)
+                frames_path = product.get("frames_path", "")
+
+                if self.is_training:
+                    # For training, include all frames as separate samples
+                    for frame_idx in range(frame_count):
+                        sample = {
+                            "product_id": product_id,
+                            "prod_idx": prod_idx,
+                            "frame_idx": frame_idx,
+                            "url": f"{frames_path}/frame_{frame_idx:04d}.png",
+                            "image_type": "synthetic",
+                            "domain": "synthetic",
+                            "frame_index": frame_idx,
+                        }
+                        sample_idx = len(self.samples)
+                        self.samples.append(sample)
+                        self.product_to_samples[product_id].append(sample_idx)
+                else:
+                    # For eval, use first frame only
+                    sample = {
+                        "product_id": product_id,
+                        "prod_idx": prod_idx,
+                        "frame_idx": 0,
+                        "url": f"{frames_path}/frame_0000.png",
+                        "image_type": "synthetic",
+                        "domain": "synthetic",
+                        "frame_index": 0,
+                    }
+                    self.samples.append(sample)
 
     def _setup_transforms(self):
         """Setup image transforms with model-specific normalization."""
@@ -166,46 +245,35 @@ class ProductDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         """Get a sample."""
-        prod_idx, frame_idx = self.samples[idx]
-        product = self.products[prod_idx]
-
-        # Get frame URL
-        frames_path = product.get("frames_path", "")
-        frame_url = f"{frames_path}/frame_{frame_idx:04d}.png"
+        sample = self.samples[idx]
+        product_id = sample["product_id"]
+        url = sample["url"]
 
         # Download and process image
         try:
-            image = self._load_image(frame_url)
+            image = self._load_image(url)
         except Exception as e:
-            print(f"Failed to load {frame_url}: {e}")
+            print(f"Failed to load {url}: {e}")
             # Return a black image as fallback
             image = Image.new("RGB", (224, 224), (0, 0, 0))
 
         # Apply transforms
         image_tensor = self.transform(image)
 
-        # Get label from product_id (not UPC)
-        product_id = product.get("id")
+        # Get label from product_id
         label = self.product_id_to_idx.get(product_id, 0)
 
-        # Determine domain from frame path or product metadata
-        domain = product.get("domain", "unknown")
-        if domain == "unknown":
-            # Infer from frame path if possible
-            if "real" in frames_path.lower() or "_real_" in frames_path.lower():
-                domain = "real"
-            elif "augmented" in frames_path.lower() or "_aug_" in frames_path.lower():
-                domain = "augmented"
-            else:
-                domain = "synthetic"
+        # Get product metadata
+        product = self.product_by_id.get(product_id, {})
 
         return {
             "image": image_tensor,
             "label": label,
             "product_id": product_id,
-            "frame_idx": frame_idx,
+            "frame_idx": sample.get("frame_index", 0),
             # Domain and category for evaluation
-            "domain": domain,
+            "domain": sample.get("domain", "synthetic"),
+            "image_type": sample.get("image_type", "synthetic"),
             "category": product.get("category", "unknown"),
             # Include identifiers as metadata (not used for training)
             "barcode": product.get("barcode"),
@@ -232,29 +300,17 @@ class ProductDataset(Dataset):
         Returns:
             Dictionary with label, domain, and product_id
         """
-        prod_idx, frame_idx = self.samples[idx]
-        product = self.products[prod_idx]
-
-        # Get label from product_id
-        product_id = product.get("id")
+        sample = self.samples[idx]
+        product_id = sample["product_id"]
         label = self.product_id_to_idx.get(product_id, 0)
-
-        # Determine domain
-        domain = product.get("domain", "unknown")
-        if domain == "unknown":
-            frames_path = product.get("frames_path", "")
-            if "real" in frames_path.lower() or "_real_" in frames_path.lower():
-                domain = "real"
-            elif "augmented" in frames_path.lower() or "_aug_" in frames_path.lower():
-                domain = "augmented"
-            else:
-                domain = "synthetic"
+        product = self.product_by_id.get(product_id, {})
 
         return {
             "label": label,
-            "domain": domain,
+            "domain": sample.get("domain", "synthetic"),
+            "image_type": sample.get("image_type", "synthetic"),
             "product_id": product_id,
-            "frame_idx": frame_idx,
+            "frame_idx": sample.get("frame_index", 0),
             "category": product.get("category", "unknown"),
         }
 
@@ -267,9 +323,8 @@ class ProductDataset(Dataset):
         """
         class_counts = np.zeros(self.num_classes)
 
-        for prod_idx, _ in self.samples:
-            product = self.products[prod_idx]
-            product_id = product.get("id")
+        for sample in self.samples:
+            product_id = sample["product_id"]
             if product_id in self.product_id_to_idx:
                 class_counts[self.product_id_to_idx[product_id]] += 1
 
@@ -284,10 +339,13 @@ class ProductDataset(Dataset):
         Resample frames for each product (call between epochs).
 
         This enables different frame views across epochs.
+        Only applicable for legacy format.
         """
-        if not self.is_training:
+        if not self.is_training or self.use_new_format:
+            # New format already has all images, no need to resample
             return
 
+        # Legacy format resampling
         new_samples = []
         for prod_idx, product in enumerate(self.products):
             product_id = product.get("id")
@@ -295,6 +353,7 @@ class ProductDataset(Dataset):
                 continue
 
             frame_count = product.get("frame_count", 1)
+            frames_path = product.get("frames_path", "")
 
             # Sample random frames
             if frame_count > self.frames_per_product:
@@ -306,9 +365,34 @@ class ProductDataset(Dataset):
                 frame_indices = list(range(frame_count))
 
             for frame_idx in frame_indices:
-                new_samples.append((prod_idx, frame_idx))
+                sample = {
+                    "product_id": product_id,
+                    "prod_idx": prod_idx,
+                    "frame_idx": frame_idx,
+                    "url": f"{frames_path}/frame_{frame_idx:04d}.png",
+                    "image_type": "synthetic",
+                    "domain": "synthetic",
+                    "frame_index": frame_idx,
+                }
+                new_samples.append(sample)
 
         self.samples = new_samples
+
+    def get_domain_distribution(self) -> dict[str, int]:
+        """Get count of samples per domain."""
+        distribution = defaultdict(int)
+        for sample in self.samples:
+            domain = sample.get("domain", "unknown")
+            distribution[domain] += 1
+        return dict(distribution)
+
+    def get_image_type_distribution(self) -> dict[str, int]:
+        """Get count of samples per image type."""
+        distribution = defaultdict(int)
+        for sample in self.samples:
+            img_type = sample.get("image_type", "unknown")
+            distribution[img_type] += 1
+        return dict(distribution)
 
 
 class BalancedBatchSampler:
@@ -345,9 +429,8 @@ class BalancedBatchSampler:
 
         # Build class to sample indices mapping (using product_id as class)
         self.class_to_indices = defaultdict(list)
-        for idx, (prod_idx, _) in enumerate(dataset.samples):
-            product = dataset.products[prod_idx]
-            product_id = product.get("id")
+        for idx, sample in enumerate(dataset.samples):
+            product_id = sample["product_id"]
             if product_id in dataset.product_id_to_idx:
                 class_idx = dataset.product_id_to_idx[product_id]
                 self.class_to_indices[class_idx].append(idx)
@@ -407,17 +490,18 @@ class BalancedBatchSampler:
 
 class DomainBalancedSampler:
     """
-    Sampler that balances samples across domains (brands).
+    Sampler that balances samples across domains (image types).
 
-    Ensures each batch contains products from multiple brands,
-    preventing the model from overfitting to brand-specific features.
+    Ensures each batch contains images from multiple domains
+    (synthetic, real, augmented), preventing the model from
+    overfitting to domain-specific features.
     """
 
     def __init__(
         self,
         dataset: ProductDataset,
         batch_size: int,
-        domains_per_batch: int = 4,
+        domains_per_batch: int = 3,
     ):
         """
         Initialize the sampler.
@@ -425,23 +509,24 @@ class DomainBalancedSampler:
         Args:
             dataset: The dataset to sample from
             batch_size: Total batch size
-            domains_per_batch: Number of different brands per batch
+            domains_per_batch: Number of different domains per batch
         """
         self.dataset = dataset
         self.batch_size = batch_size
         self.domains_per_batch = domains_per_batch
 
-        # Build domain (brand) to sample indices mapping
+        # Build domain to sample indices mapping
         self.domain_to_indices = defaultdict(list)
-        for idx, (prod_idx, _) in enumerate(dataset.samples):
-            product = dataset.products[prod_idx]
-            brand = product.get("brand_name", "unknown")
-            self.domain_to_indices[brand].append(idx)
+        for idx, sample in enumerate(dataset.samples):
+            domain = sample.get("domain", "synthetic")
+            self.domain_to_indices[domain].append(idx)
 
         self.domains = list(self.domain_to_indices.keys())
         self.num_samples = len(dataset)
 
-        print(f"DomainBalancedSampler: {len(self.domains)} domains")
+        print(f"DomainBalancedSampler: {len(self.domains)} domains - {dict(self.domain_to_indices.keys())}")
+        for domain, indices in self.domain_to_indices.items():
+            print(f"  {domain}: {len(indices)} samples")
 
     def __iter__(self):
         """Generate batches."""
@@ -453,15 +538,16 @@ class DomainBalancedSampler:
         domain_pointers = {d: 0 for d in self.domains}
 
         available_domains = set(self.domains)
-        samples_per_domain = self.batch_size // self.domains_per_batch
+        samples_per_domain = max(1, self.batch_size // min(self.domains_per_batch, len(self.domains)))
 
-        while len(available_domains) >= self.domains_per_batch:
+        while len(available_domains) >= 1:
             batch = []
 
             # Sample domains for this batch
+            num_domains = min(self.domains_per_batch, len(available_domains))
             batch_domains = random.sample(
                 list(available_domains),
-                min(self.domains_per_batch, len(available_domains)),
+                num_domains,
             )
 
             for domain in batch_domains:
@@ -478,9 +564,13 @@ class DomainBalancedSampler:
 
                 domain_pointers[domain] = ptr
 
-            if batch:
+            if len(batch) >= self.batch_size:
                 random.shuffle(batch)
                 yield batch[: self.batch_size]
+            elif batch:
+                # Yield partial batch at the end
+                random.shuffle(batch)
+                yield batch
 
     def __len__(self):
         """Approximate number of batches."""

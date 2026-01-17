@@ -420,50 +420,142 @@ def handler(job):
         # Fetch training data
         report_progress(training_job_id, "running", 0.05, message="Fetching training data...")
 
-        splitter = UPCStratifiedSplitter(
-            supabase_url=supabase_url,
-            supabase_key=supabase_key,
-        )
+        # Check if API provided training_images (new format with URLs)
+        training_images = job_input.get("training_images")
 
-        product_ids = data_config.get("product_ids") or job_input.get("product_ids")
-        train_data, val_data, test_data = splitter.split(
-            product_ids=product_ids,
-            train_ratio=0.70,
-            val_ratio=0.15,
-            test_ratio=0.15,
-        )
+        if training_images:
+            # NEW FORMAT: API provides images with URLs
+            print("Using NEW format: training_images provided by API")
 
-        print(f"\nData Split:")
-        print(f"  Train: {len(train_data)} products")
-        print(f"  Val: {len(val_data)} products")
-        print(f"  Test: {len(test_data)} products")
+            # Get product_ids for each split from config
+            train_product_ids = set(data_config.get("train_product_ids", []) or config.get("train_product_ids", []))
+            val_product_ids = set(data_config.get("val_product_ids", []) or config.get("val_product_ids", []))
+            test_product_ids = set(data_config.get("test_product_ids", []) or config.get("test_product_ids", []))
 
-        if len(train_data) < 10:
-            return {"error": f"Not enough training data: {len(train_data)} products"}
+            # If splits not provided, use all products for training
+            if not train_product_ids:
+                all_product_ids = list(training_images.keys())
+                n = len(all_product_ids)
+                train_end = int(n * 0.70)
+                val_end = int(n * 0.85)
+                train_product_ids = set(all_product_ids[:train_end])
+                val_product_ids = set(all_product_ids[train_end:val_end])
+                test_product_ids = set(all_product_ids[val_end:])
 
-        # Create datasets
-        report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
+            # Filter training_images by split
+            train_images = {pid: imgs for pid, imgs in training_images.items() if pid in train_product_ids}
+            val_images = {pid: imgs for pid, imgs in training_images.items() if pid in val_product_ids}
+            test_images = {pid: imgs for pid, imgs in training_images.items() if pid in test_product_ids}
 
-        train_dataset = ProductDataset(
-            products=train_data,
-            model_type=model_type,
-            augmentation_strength=config.get("augmentation_strength", "medium"),
-            is_training=True,
-        )
+            # Fetch product metadata for the datasets
+            import httpx
+            headers = {
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+            }
 
-        val_dataset = ProductDataset(
-            products=val_data,
-            model_type=model_type,
-            augmentation_strength="none",
-            is_training=False,
-        )
+            all_product_ids = list(training_images.keys())
+            products_data = []
 
-        test_dataset = ProductDataset(
-            products=test_data,
-            model_type=model_type,
-            augmentation_strength="none",
-            is_training=False,
-        )
+            # Fetch in batches of 100
+            for i in range(0, len(all_product_ids), 100):
+                batch_ids = all_product_ids[i:i + 100]
+                ids_str = ",".join(f'"{pid}"' for pid in batch_ids)
+                response = httpx.get(
+                    f"{supabase_url}/rest/v1/products?select=id,barcode,brand_name,category,product_name&id=in.({ids_str})",
+                    headers=headers,
+                    timeout=60,
+                )
+                if response.status_code == 200:
+                    products_data.extend(response.json())
+
+            # Split product metadata
+            train_data = [p for p in products_data if p["id"] in train_product_ids]
+            val_data = [p for p in products_data if p["id"] in val_product_ids]
+            test_data = [p for p in products_data if p["id"] in test_product_ids]
+
+            print(f"\nData Split (NEW format):")
+            print(f"  Train: {len(train_data)} products, {sum(len(imgs) for imgs in train_images.values())} images")
+            print(f"  Val: {len(val_data)} products, {sum(len(imgs) for imgs in val_images.values())} images")
+            print(f"  Test: {len(test_data)} products, {sum(len(imgs) for imgs in test_images.values())} images")
+
+            if len(train_data) < 10:
+                return {"error": f"Not enough training data: {len(train_data)} products"}
+
+            # Create datasets with training_images
+            report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
+
+            train_dataset = ProductDataset(
+                products=train_data,
+                model_type=model_type,
+                augmentation_strength=config.get("augmentation_strength", "medium"),
+                is_training=True,
+                training_images=train_images,
+            )
+
+            val_dataset = ProductDataset(
+                products=val_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+                training_images=val_images,
+            )
+
+            test_dataset = ProductDataset(
+                products=test_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+                training_images=test_images,
+            )
+        else:
+            # LEGACY FORMAT: Fetch from Supabase using UPCStratifiedSplitter
+            print("Using LEGACY format: fetching from Supabase")
+
+            splitter = UPCStratifiedSplitter(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+            )
+
+            product_ids = data_config.get("product_ids") or job_input.get("product_ids")
+            train_data, val_data, test_data = splitter.split(
+                product_ids=product_ids,
+                train_ratio=0.70,
+                val_ratio=0.15,
+                test_ratio=0.15,
+            )
+
+            print(f"\nData Split (LEGACY format):")
+            print(f"  Train: {len(train_data)} products")
+            print(f"  Val: {len(val_data)} products")
+            print(f"  Test: {len(test_data)} products")
+
+            if len(train_data) < 10:
+                return {"error": f"Not enough training data: {len(train_data)} products"}
+
+            # Create datasets (legacy format, no training_images)
+            report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
+
+            train_dataset = ProductDataset(
+                products=train_data,
+                model_type=model_type,
+                augmentation_strength=config.get("augmentation_strength", "medium"),
+                is_training=True,
+            )
+
+            val_dataset = ProductDataset(
+                products=val_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+            )
+
+            test_dataset = ProductDataset(
+                products=test_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+            )
 
         # Initialize trainer
         report_progress(training_job_id, "running", 0.15, message="Initializing model...")
@@ -575,6 +667,9 @@ def handler(job):
                 "train_samples": len(train_dataset),
                 "val_samples": len(val_dataset),
                 "test_samples": len(test_dataset),
+                "train_image_types": train_dataset.get_image_type_distribution(),
+                "train_domain_distribution": train_dataset.get_domain_distribution(),
+                "data_format": "new" if train_dataset.use_new_format else "legacy",
             },
             "sota_enabled": use_sota,
             # Include preprocessing config for deployment

@@ -198,6 +198,7 @@ class RunpodService:
         training_run_id: str,
         model_type: str,
         config: dict[str, Any],
+        training_images: Optional[dict[str, list[dict]]] = None,
         checkpoint_url: Optional[str] = None,
         start_epoch: int = 0,
         webhook_url: Optional[str] = None,
@@ -209,6 +210,7 @@ class RunpodService:
             training_run_id: ID of the training run in database
             model_type: Model type (e.g., "dinov2-base")
             config: Training configuration dict
+            training_images: Dict mapping product_id to list of images with URLs
             checkpoint_url: Optional URL to resume from checkpoint
             start_epoch: Epoch to start from (for resume)
             webhook_url: Optional webhook URL for completion callback
@@ -224,6 +226,10 @@ class RunpodService:
             "supabase_key": settings.supabase_service_role_key,
             "hf_token": settings.hf_token,
         }
+
+        # Add training images if provided (new format with URLs)
+        if training_images:
+            input_data["training_images"] = training_images
 
         # Add resume parameters if provided
         if checkpoint_url:

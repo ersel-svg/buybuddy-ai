@@ -124,6 +124,29 @@ class SOTAConfig(BaseModel):
     triplet_mining_run_id: Optional[str] = Field(None, description="Pre-mined triplets from triplet mining run")
 
 
+class ImageConfig(BaseModel):
+    """Image selection configuration for training."""
+    # Image types to include
+    image_types: list[Literal["synthetic", "real", "augmented"]] = Field(
+        default=["synthetic", "real", "augmented"],
+        description="Which image types to include in training"
+    )
+
+    # Frame selection for synthetic images
+    frame_selection: Literal["first", "key_frames", "interval", "all"] = Field(
+        default="key_frames",
+        description="How to select frames: first (1 frame), key_frames (4 angles), interval, all"
+    )
+    frame_interval: int = Field(5, ge=1, description="For interval selection, pick every N frames")
+    max_frames_per_type: int = Field(10, ge=1, le=50, description="Maximum frames per image type per product")
+
+    # Include matched cutouts as additional training data
+    include_matched_cutouts: bool = Field(
+        default=True,
+        description="Include cutouts matched to products as 'real' domain training data"
+    )
+
+
 class CreateTrainingRunRequest(BaseModel):
     """Request to create a new training run."""
     name: str = Field(..., min_length=1, max_length=255)
@@ -140,6 +163,9 @@ class CreateTrainingRunRequest(BaseModel):
     data_source: Literal["all_products", "matched_products", "dataset", "selected"] = "matched_products"
     dataset_id: Optional[str] = None
     product_ids: Optional[list[str]] = None  # For 'selected' data source
+
+    # Image configuration (which image types and how many frames)
+    image_config: ImageConfig = Field(default_factory=ImageConfig)
 
     # Label configuration (what to train the model to classify)
     label_config: LabelConfig = Field(default_factory=LabelConfig)
@@ -366,6 +392,61 @@ async def create_training_run(
             "identifiers": p.get("identifiers"),  # Additional identifiers (UPC, EAN, etc.)
         }
 
+    # Build training images for each product
+    # Fetch images from product_images table based on image_config
+    image_cfg = request.image_config
+    training_images: dict[str, list[dict]] = {}  # product_id -> list of images
+    image_stats = {"synthetic": 0, "real": 0, "augmented": 0, "cutout": 0}
+
+    for product_id in all_product_ids:
+        product_images = await db.get_product_images_by_types(
+            product_id=product_id,
+            image_types=image_cfg.image_types,
+            frame_selection=image_cfg.frame_selection,
+            frame_interval=image_cfg.frame_interval,
+            max_frames=image_cfg.max_frames_per_type,
+        )
+
+        images_for_product = []
+        for img in product_images:
+            img_type = img.get("image_type", "synthetic")
+            img_url = img.get("image_url") or img.get("image_path")
+            if not img_url:
+                continue
+
+            images_for_product.append({
+                "url": img_url,
+                "image_type": img_type,
+                "frame_index": img.get("frame_index", 0),
+                "domain": img_type,  # domain matches image_type for training
+            })
+            image_stats[img_type] += 1
+
+        # Include matched cutouts as real-domain training data
+        if image_cfg.include_matched_cutouts:
+            matched_cutouts = await db.get_matched_cutouts_for_product(product_id)
+            for cutout in matched_cutouts:
+                images_for_product.append({
+                    "url": cutout["image_url"],
+                    "image_type": "cutout",
+                    "frame_index": 0,
+                    "domain": "real",  # cutouts are real-world images
+                    "cutout_id": cutout["id"],
+                })
+                image_stats["cutout"] += 1
+
+        if images_for_product:
+            training_images[product_id] = images_for_product
+
+    # Check if we have enough images
+    total_images = sum(len(imgs) for imgs in training_images.values())
+    if total_images < 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough training images: {total_images} (minimum 100). "
+                   f"Stats: {image_stats}. Try including more image types.",
+        )
+
     # Build training config
     config = await _build_training_config(
         base_model_type=request.base_model_type,
@@ -383,6 +464,11 @@ async def create_training_run(
     if request.sota_config:
         config["sota_config"] = request.sota_config.model_dump()
 
+    # Add split product IDs to config for worker
+    config["train_product_ids"] = train_product_ids
+    config["val_product_ids"] = val_product_ids
+    config["test_product_ids"] = test_product_ids
+
     # Create run record
     run_data = {
         "name": request.name,
@@ -390,6 +476,8 @@ async def create_training_run(
         "base_model_type": request.base_model_type,
         "data_source": request.data_source,
         "dataset_id": request.dataset_id,
+        "image_config": image_cfg.model_dump(),  # Store image configuration
+        "image_stats": image_stats,  # Store image type counts
         "label_config": request.label_config.model_dump(),  # Store label configuration
         "split_config": request.split_config.model_dump(),
         "train_product_ids": train_product_ids,
@@ -398,6 +486,7 @@ async def create_training_run(
         "train_product_count": len(train_product_ids),
         "val_product_count": len(val_product_ids),
         "test_product_count": len(test_product_ids),
+        "total_images": total_images,
         "num_classes": num_classes,  # Number of unique labels (classes)
         "label_mapping": label_mapping,  # Map label -> class index
         "identifier_mapping": identifier_mapping,  # Map product_id -> identifiers for inference
@@ -415,6 +504,7 @@ async def create_training_run(
             training_run_id=run["id"],
             model_type=request.base_model_type,
             config=config,
+            training_images=training_images,  # Pass images with URLs to worker
         )
         await db.update_training_run(run["id"], {
             "runpod_job_id": runpod_job.get("id"),
