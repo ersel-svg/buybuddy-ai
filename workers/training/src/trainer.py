@@ -229,7 +229,7 @@ class ModelTrainer:
             backbone_params = get_llrd_optimizer_params(
                 self.model.backbone,
                 base_lr=lr,
-                llrd_factor=self.config.get("llrd_factor", 0.9),
+                llrd_decay=self.config.get("llrd_decay", 0.9),
                 weight_decay=weight_decay,
             )
 
