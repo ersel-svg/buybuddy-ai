@@ -681,7 +681,6 @@ class SOTAModelTrainer(ModelTrainer):
         if self.use_curriculum:
             curriculum_config = self.sota_config.get("curriculum", {})
             self.curriculum_scheduler = CurriculumScheduler(
-                total_epochs=num_epochs,
                 warmup_epochs=curriculum_config.get("warmup_epochs", 2),
                 easy_epochs=curriculum_config.get("easy_epochs", 5),
                 hard_epochs=curriculum_config.get("hard_epochs", 10),
