@@ -2597,15 +2597,23 @@ class SupabaseService:
         if not product_ids:
             return []
 
-        # Query all cutouts with matched_product_id in the list
-        response = (
-            self.client.table("cutout_images")
-            .select("*")
-            .in_("matched_product_id", product_ids)
-            .order("matched_at", desc=True)
-            .execute()
-        )
-        return response.data
+        # Batch the query to avoid URL length limits
+        # Each UUID is ~36 chars, plus encoding overhead - limit to 50 IDs per batch
+        batch_size = 50
+        all_cutouts = []
+
+        for i in range(0, len(product_ids), batch_size):
+            batch_ids = product_ids[i:i + batch_size]
+            response = (
+                self.client.table("cutout_images")
+                .select("*")
+                .in_("matched_product_id", batch_ids)
+                .order("matched_at", desc=True)
+                .execute()
+            )
+            all_cutouts.extend(response.data)
+
+        return all_cutouts
 
     async def get_product_images_by_types(
         self,

@@ -276,9 +276,10 @@ class ProductDataset(Dataset):
             "image_type": sample.get("image_type", "synthetic"),
             "category": product.get("category", "unknown"),
             # Include identifiers as metadata (not used for training)
-            "barcode": product.get("barcode"),
-            "short_code": product.get("short_code"),
-            "upc": product.get("upc"),
+            # Use empty string for None to avoid collate errors
+            "barcode": product.get("barcode") or "",
+            "short_code": product.get("short_code") or "",
+            "upc": product.get("upc") or "",
         }
 
     def _load_image(self, url: str) -> Image.Image:
