@@ -858,7 +858,7 @@ class SOTAModelTrainer(ModelTrainer):
                 "recall@1": val_metrics["recall@1"],
                 "recall@5": val_metrics["recall@5"],
             },
-            "metric_history": self.metric_tracker.get_history(),
+            "metric_history": self.metric_tracker.summary(),
         }
 
     def _train_epoch_sota(
