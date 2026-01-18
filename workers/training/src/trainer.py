@@ -298,23 +298,14 @@ class ModelTrainer:
 
     def _build_checkpoint_manager(self) -> CheckpointManager:
         """Build checkpoint manager."""
-        checkpoint_dir = Path(f"/tmp/checkpoints/{self.job_id or 'training'}")
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        # S3 config from environment
-        s3_config = None
-        if os.environ.get("AWS_ACCESS_KEY_ID"):
-            s3_config = {
-                "bucket": os.environ.get("S3_BUCKET", "buybuddy-models"),
-                "prefix": f"checkpoints/{self.job_id or 'training'}",
-            }
+        output_dir = Path(f"/tmp/checkpoints/{self.job_id or 'training'}")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         return CheckpointManager(
-            checkpoint_dir=checkpoint_dir,
-            model_name=f"{self.model_type}_{self.job_id or 'model'}",
+            output_dir=output_dir,
+            model_id=f"{self.model_type}_{self.job_id or 'model'}",
             keep_last_n=3,
             keep_best=True,
-            s3_config=s3_config,
         )
 
     def train(
@@ -429,10 +420,11 @@ class ModelTrainer:
                 self.checkpoint_manager.save(
                     model=self.model,
                     optimizer=self.optimizer,
-                    scheduler=self.scheduler,
                     epoch=epoch,
-                    metrics={"val_loss": val_metrics["loss"], "val_acc": val_metrics["accuracy"]},
-                    is_best=True,
+                    train_loss=train_metrics["loss"],
+                    val_loss=val_metrics["loss"],
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
                 )
             else:
                 patience_counter += 1
@@ -442,10 +434,11 @@ class ModelTrainer:
                 self.checkpoint_manager.save(
                     model=self.model,
                     optimizer=self.optimizer,
-                    scheduler=self.scheduler,
                     epoch=epoch,
-                    metrics={"val_loss": val_metrics["loss"], "val_acc": val_metrics["accuracy"]},
-                    is_best=False,
+                    train_loss=train_metrics["loss"],
+                    val_loss=val_metrics["loss"],
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
                 )
 
             # Early stopping
@@ -828,15 +821,13 @@ class SOTAModelTrainer(ModelTrainer):
                 self.checkpoint_manager.save(
                     model=self.model,
                     optimizer=self.optimizer,
-                    scheduler=self.scheduler,
                     epoch=epoch,
-                    metrics={
-                        "val_loss": val_metrics["loss"],
-                        "val_acc": val_metrics["accuracy"],
-                        "recall@1": val_metrics["recall@1"],
-                        "recall@5": val_metrics["recall@5"],
-                    },
-                    is_best=True,
+                    train_loss=train_metrics["loss"],
+                    val_loss=val_metrics["loss"],
+                    val_recall_at_1=val_metrics["recall@1"],
+                    val_recall_at_5=val_metrics["recall@5"],
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
                 )
 
             # Regular checkpoint
@@ -844,14 +835,13 @@ class SOTAModelTrainer(ModelTrainer):
                 self.checkpoint_manager.save(
                     model=self.model,
                     optimizer=self.optimizer,
-                    scheduler=self.scheduler,
                     epoch=epoch,
-                    metrics={
-                        "val_loss": val_metrics["loss"],
-                        "val_acc": val_metrics["accuracy"],
-                        "recall@1": val_metrics["recall@1"],
-                    },
-                    is_best=False,
+                    train_loss=train_metrics["loss"],
+                    val_loss=val_metrics["loss"],
+                    val_recall_at_1=val_metrics["recall@1"],
+                    val_recall_at_5=val_metrics["recall@5"],
+                    scheduler=self.scheduler,
+                    scaler=self.scaler,
                 )
 
             # Early stopping check
