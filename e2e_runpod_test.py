@@ -39,6 +39,72 @@ TEST_IMAGES = [
 EMBEDDING_MODELS = ["dinov2-small", "dinov2-base", "dinov3-small", "dinov3-base"]
 TRAINING_MODELS = ["dinov2-small", "dinov3-small"]  # Faster models for training test
 
+# SOTA Configuration presets for testing
+SOTA_CONFIGS = {
+    "disabled": {
+        "enabled": False,
+    },
+    "basic_combined_loss": {
+        "enabled": True,
+        "use_combined_loss": True,
+        "use_pk_sampling": False,
+        "use_curriculum": False,
+        "use_domain_adaptation": False,
+        "use_early_stopping": True,
+        "early_stopping_patience": 3,
+        "loss": {
+            "arcface_weight": 1.0,
+            "triplet_weight": 0.5,
+            "domain_weight": 0.0,
+            "triplet_margin": 0.3,
+        },
+    },
+    "combined_loss_pk_sampling": {
+        "enabled": True,
+        "use_combined_loss": True,
+        "use_pk_sampling": True,
+        "use_curriculum": False,
+        "use_domain_adaptation": False,
+        "use_early_stopping": True,
+        "early_stopping_patience": 3,
+        "loss": {
+            "arcface_weight": 1.0,
+            "triplet_weight": 0.5,
+            "domain_weight": 0.0,
+            "triplet_margin": 0.3,
+        },
+        "pk_sampling": {
+            "p": 8,  # products per batch
+            "k": 4,  # samples per product
+        },
+    },
+    "full_sota": {
+        "enabled": True,
+        "use_combined_loss": True,
+        "use_pk_sampling": True,
+        "use_curriculum": True,
+        "use_domain_adaptation": True,
+        "use_early_stopping": True,
+        "early_stopping_patience": 3,
+        "loss": {
+            "arcface_weight": 1.0,
+            "triplet_weight": 0.5,
+            "domain_weight": 0.3,
+            "triplet_margin": 0.3,
+        },
+        "pk_sampling": {
+            "p": 8,
+            "k": 4,
+        },
+        "curriculum": {
+            "warmup_epochs": 1,
+            "easy_epochs": 1,
+            "hard_epochs": 1,
+            "finetune_epochs": 1,
+        },
+    },
+}
+
 
 def log(msg: str, level: str = "INFO"):
     """Print with timestamp."""
@@ -546,16 +612,16 @@ def test_training_basic() -> bool:
     return status == "completed"
 
 
-def test_training_sota() -> bool:
-    """Test SOTA training with triplet mining."""
+def test_training_sota_combined_loss_pk() -> bool:
+    """Test SOTA training with Combined Loss + P-K Sampling."""
     log("\n" + "="*70)
-    log("TEST: SOTA TRAINING (TRIPLET MINING + HARD NEGATIVES)")
+    log("TEST: SOTA TRAINING (COMBINED LOSS + P-K SAMPLING)")
     log("="*70)
 
-    model_type = "dinov3-small"
+    model_type = "dinov2-small"
 
     # Get products
-    products = get_real_products(limit=150)
+    products = get_real_products(limit=100)
     if len(products) < 50:
         log(f"Not enough products ({len(products)}), need at least 50", "WARN")
         return True
@@ -567,7 +633,9 @@ def test_training_sota() -> bool:
     training_run_id = str(uuid.uuid4())
     log(f"Training run ID: {training_run_id}")
 
-    # Submit SOTA training job directly to worker
+    # Use combined_loss_pk_sampling config
+    sota_config = SOTA_CONFIGS["combined_loss_pk_sampling"]
+
     input_data = {
         "training_run_id": training_run_id,
         "model_type": model_type,
@@ -576,26 +644,20 @@ def test_training_sota() -> bool:
         "supabase_url": SUPABASE_URL,
         "supabase_key": SUPABASE_KEY,
         "config": {
-            "epochs": 3,
-            "batch_size": 8,
+            "epochs": 2,  # Quick test
+            "batch_size": 32,  # P*K = 8*4 = 32
             "learning_rate": 5e-5,
             "use_arcface": True,
             "use_gem_pooling": True,
             "use_llrd": True,
-            "warmup_epochs": 1,
-            "augmentation_strength": "strong",
+            "warmup_epochs": 0,
+            "augmentation_strength": "moderate",
             "mixed_precision": True,
-            # SOTA specific
-            "sota_config": {
-                "enabled": True,
-                "triplet_mining": True,
-                "hard_negative_mining": True,
-                "margin": 0.3,
-                "mining_strategy": "semi-hard",
-            },
+            "sota_config": sota_config,
         },
     }
 
+    log(f"SOTA Config: Combined Loss={sota_config.get('use_combined_loss')}, P-K Sampling={sota_config.get('use_pk_sampling')}")
     log(f"Submitting SOTA training job...")
     job_id = run_runpod_job_async(TRAINING_ENDPOINT, input_data)
 
@@ -646,6 +708,169 @@ def test_training_sota() -> bool:
             log(f"    - Cutout: {he.get('cutout_image_url', 'N/A')[:50]}...")
 
     return status == "completed"
+
+
+def test_training_sota_full() -> bool:
+    """Test FULL SOTA training with all features enabled."""
+    log("\n" + "="*70)
+    log("TEST: FULL SOTA TRAINING (ALL FEATURES)")
+    log("="*70)
+
+    model_type = "dinov2-small"
+
+    # Get products
+    products = get_real_products(limit=100)
+    if len(products) < 50:
+        log(f"Not enough products ({len(products)}), need at least 50", "WARN")
+        return True
+
+    product_ids = [p["id"] for p in products]
+    log(f"Using {len(product_ids)} products for FULL SOTA training")
+
+    # Generate a unique training run ID
+    training_run_id = str(uuid.uuid4())
+    log(f"Training run ID: {training_run_id}")
+
+    # Use full_sota config
+    sota_config = SOTA_CONFIGS["full_sota"]
+
+    input_data = {
+        "training_run_id": training_run_id,
+        "model_type": model_type,
+        "product_ids": product_ids,
+        "hf_token": HF_TOKEN,
+        "supabase_url": SUPABASE_URL,
+        "supabase_key": SUPABASE_KEY,
+        "config": {
+            "epochs": 4,  # Minimum for curriculum (1+1+1+1)
+            "batch_size": 32,  # P*K = 8*4 = 32
+            "learning_rate": 5e-5,
+            "use_arcface": True,
+            "use_gem_pooling": True,
+            "use_llrd": True,
+            "warmup_epochs": 0,
+            "augmentation_strength": "strong",
+            "mixed_precision": True,
+            "sota_config": sota_config,
+        },
+    }
+
+    log(f"SOTA Config Features:")
+    log(f"  - Combined Loss: {sota_config.get('use_combined_loss')}")
+    log(f"  - P-K Sampling: {sota_config.get('use_pk_sampling')}")
+    log(f"  - Curriculum Learning: {sota_config.get('use_curriculum')}")
+    log(f"  - Domain Adaptation: {sota_config.get('use_domain_adaptation')}")
+    log(f"  - Early Stopping: {sota_config.get('use_early_stopping')}")
+    log(f"Submitting FULL SOTA training job...")
+
+    job_id = run_runpod_job_async(TRAINING_ENDPOINT, input_data)
+
+    if not job_id:
+        return False
+
+    log(f"Job ID: {job_id}")
+    log(f"Waiting for FULL SOTA training (this may take 15-20 minutes)...")
+
+    result = wait_for_job(TRAINING_ENDPOINT, job_id, timeout=1800, poll_interval=20)
+
+    if "error" in result:
+        log(f"FULL SOTA Training FAILED: {result['error']}", "ERROR")
+        if "result" in result:
+            log(f"  Details: {json.dumps(result['result'], indent=2)[:500]}")
+        return False
+
+    output = result.get("output", {})
+
+    status = output.get("status")
+    epochs_trained = output.get("epochs_trained", 0)
+    sota_enabled = output.get("sota_enabled", False)
+    test_metrics = output.get("test_metrics", {})
+    best_recall = output.get("best_recall_at_1", 0)
+
+    log(f"FULL SOTA Training Results:", "SUCCESS")
+    log(f"  Status: {status}")
+    log(f"  SOTA enabled: {sota_enabled}")
+    log(f"  Epochs trained: {epochs_trained}")
+    log(f"  Best Recall@1: {best_recall}")
+
+    if test_metrics:
+        log(f"  Test Recall@1: {test_metrics.get('recall@1', 'N/A')}")
+        log(f"  Test Recall@5: {test_metrics.get('recall@5', 'N/A')}")
+        log(f"  Test mAP: {test_metrics.get('mAP', 'N/A')}")
+
+    return status == "completed"
+
+
+def test_embedding_key_frames() -> bool:
+    """Test key_frames extraction (0°, 90°, 180°, 270°) simulation."""
+    log("\n" + "="*70)
+    log("TEST: KEY FRAMES EXTRACTION (4 CARDINAL ANGLES)")
+    log("="*70)
+
+    # Simulate key_frames for multiple products
+    key_frame_images = []
+
+    for prod_idx in range(5):  # 5 products
+        product_id = str(uuid.uuid4())
+        # 4 key frames per product (0°, 90°, 180°, 270°)
+        for frame_idx, angle in enumerate([0, 90, 180, 270]):
+            key_frame_images.append({
+                "id": f"{product_id}-frame-{frame_idx}",
+                "url": TEST_IMAGES[(prod_idx * 4 + frame_idx) % len(TEST_IMAGES)]["url"],
+                "type": "product",
+                "domain": "synthetic",
+                "product_id": product_id,
+                "frame_index": frame_idx,
+                "angle": angle,
+                "is_primary": frame_idx == 0,
+                "category": "test",
+            })
+
+    input_data = {
+        "images": key_frame_images,
+        "model_type": "dinov2-base",
+        "batch_size": 8,
+        "hf_token": HF_TOKEN,
+    }
+
+    log(f"Submitting {len(key_frame_images)} key frame images (5 products x 4 frames)...")
+
+    start = time.time()
+    result = run_runpod_job_sync(EMBEDDING_ENDPOINT, input_data, timeout=300)
+    elapsed = time.time() - start
+
+    if "error" in result:
+        log(f"FAILED: {result['error']}", "ERROR")
+        return False
+
+    output = result.get("output", {})
+    embeddings = output.get("embeddings", [])
+
+    # Verify structure
+    products_seen = set()
+    frame_counts = {}
+    primary_count = 0
+
+    for emb in embeddings:
+        pid = emb.get("product_id")
+        if pid:
+            products_seen.add(pid)
+            frame_counts[pid] = frame_counts.get(pid, 0) + 1
+        if emb.get("is_primary"):
+            primary_count += 1
+
+    log(f"Key Frames Results:", "SUCCESS")
+    log(f"  Total embeddings: {len(embeddings)}")
+    log(f"  Products: {len(products_seen)}")
+    log(f"  Primary frames: {primary_count}")
+    log(f"  Avg frames per product: {len(embeddings) / len(products_seen) if products_seen else 0:.1f}")
+    log(f"  Time: {elapsed:.1f}s")
+
+    # Verify 4 frames per product
+    all_have_4_frames = all(count == 4 for count in frame_counts.values())
+    log(f"  All products have 4 frames: {all_have_4_frames}")
+
+    return len(embeddings) == len(key_frame_images) and all_have_4_frames
 
 
 # ============================================================
@@ -707,6 +932,12 @@ def main():
         results["embedding_multiframe"] = False
 
     try:
+        results["embedding_key_frames"] = test_embedding_key_frames()
+    except Exception as e:
+        log(f"Exception in embedding_key_frames: {e}", "ERROR")
+        results["embedding_key_frames"] = False
+
+    try:
         results["embedding_large_batch"] = test_embedding_large_batch()
     except Exception as e:
         log(f"Exception in embedding_large_batch: {e}", "ERROR")
@@ -732,10 +963,16 @@ def main():
         results["training_basic"] = False
 
     try:
-        results["training_sota"] = test_training_sota()
+        results["training_sota_combined_loss_pk"] = test_training_sota_combined_loss_pk()
     except Exception as e:
-        log(f"Exception in training_sota: {e}", "ERROR")
-        results["training_sota"] = False
+        log(f"Exception in training_sota_combined_loss_pk: {e}", "ERROR")
+        results["training_sota_combined_loss_pk"] = False
+
+    try:
+        results["training_sota_full"] = test_training_sota_full()
+    except Exception as e:
+        log(f"Exception in training_sota_full: {e}", "ERROR")
+        results["training_sota_full"] = False
 
     # ============================================
     # FINAL SUMMARY

@@ -266,13 +266,19 @@ class ProductDataset(Dataset):
         # Get product metadata
         product = self.product_by_id.get(product_id, {})
 
+        # Convert domain string to numeric (for collate compatibility)
+        domain_str = sample.get("domain", "synthetic")
+        domain_map = {"synthetic": 0, "real": 1, "augmented": 2}
+        domain_id = domain_map.get(domain_str, 0)
+
         return {
             "image": image_tensor,
             "label": label,
             "product_id": product_id,
             "frame_idx": sample.get("frame_index", 0),
-            # Domain and category for evaluation
-            "domain": sample.get("domain", "synthetic"),
+            # Domain as numeric for tensor compatibility
+            "domain": domain_id,
+            "domain_str": domain_str,  # Keep string version for debugging
             "image_type": sample.get("image_type", "synthetic"),
             "category": product.get("category", "unknown"),
             # Include identifiers as metadata (not used for training)
