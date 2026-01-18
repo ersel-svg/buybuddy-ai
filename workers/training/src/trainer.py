@@ -615,7 +615,10 @@ class SOTAModelTrainer(ModelTrainer):
         self.curriculum_scheduler = None
 
         # Enhanced metrics
-        self.metric_tracker = MetricTracker()
+        self.metric_tracker = MetricTracker(
+            metrics=["val_loss", "val_recall_1", "val_recall_5"],
+            modes={"val_loss": "min", "val_recall_1": "max", "val_recall_5": "max"}
+        )
 
     def _build_loss_function(self, num_classes: int):
         """Build loss function based on config."""
