@@ -803,10 +803,9 @@ class SOTAModelTrainer(ModelTrainer):
 
             # Track metrics
             self.metric_tracker.update({
-                "epoch": epoch + 1,
                 **train_metrics,
                 **{f"val_{k}": v for k, v in val_metrics.items()},
-            })
+            }, epoch)
 
             # Check for improvement
             is_best = val_metrics["loss"] < best_val_loss
