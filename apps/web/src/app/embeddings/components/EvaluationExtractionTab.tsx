@@ -83,6 +83,15 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
     queryFn: () => apiClient.getDatasets(),
   });
 
+  // Fetch existing Qdrant collections for append mode
+  const { data: collections } = useQuery({
+    queryKey: ["qdrant-collections"],
+    queryFn: () => apiClient.getQdrantCollections(),
+  });
+
+  // Selected collection for append mode
+  const [selectedCollection, setSelectedCollection] = useState<string>("");
+
   // Get selected dataset
   const selectedDataset = datasets?.find((d) => d.id === selectedDatasetId);
 
@@ -376,6 +385,12 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                           Every N frames
                         </Label>
                       </div>
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="all" id="eval-all" />
+                        <Label htmlFor="eval-all" className="font-normal">
+                          All frames
+                        </Label>
+                      </div>
                     </RadioGroup>
 
                     {frameSelection === "interval" && (
@@ -428,48 +443,116 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                 <Label>Collection Mode</Label>
                 <Select
                   value={collectionMode}
-                  onValueChange={(v: CollectionMode) => setCollectionMode(v)}
+                  onValueChange={(v: CollectionMode) => {
+                    setCollectionMode(v);
+                    if (v !== "append") {
+                      setSelectedCollection("");
+                    }
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="create">Create New (replace existing)</SelectItem>
-                    <SelectItem value="append">Append to Existing</SelectItem>
+                    <SelectItem value="create">
+                      <div className="flex flex-col items-start">
+                        <span>Create New</span>
+                        <span className="text-xs text-muted-foreground">Create new collection (fails if exists)</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="replace">
+                      <div className="flex flex-col items-start">
+                        <span>Replace Existing</span>
+                        <span className="text-xs text-muted-foreground">Delete and recreate collection</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="append">
+                      <div className="flex flex-col items-start">
+                        <span>Append to Existing</span>
+                        <span className="text-xs text-muted-foreground">Add vectors to existing collection</span>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              <Collapsible open={collectionConfigOpen} onOpenChange={setCollectionConfigOpen}>
-                <CollapsibleTrigger asChild>
-                  <Button variant="outline" className="w-full justify-between">
-                    <span>Custom Collection Name</span>
-                    <ChevronDown
-                      className={`h-4 w-4 transition-transform ${collectionConfigOpen ? "rotate-180" : ""}`}
-                    />
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-4">
-                  <div className="space-y-2">
-                    <Label>Collection Name</Label>
-                    <Input
-                      placeholder={defaultCollectionName}
-                      value={collectionName}
-                      onChange={(e) => setCollectionName(e.target.value)}
-                    />
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
+              {/* Existing collection dropdown for append mode */}
+              {collectionMode === "append" && (
+                <div className="space-y-2">
+                  <Label>Select Existing Collection</Label>
+                  <Select value={selectedCollection} onValueChange={setSelectedCollection}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a collection" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {collections?.map((col) => (
+                        <SelectItem key={col.name} value={col.name}>
+                          <div className="flex items-center gap-2">
+                            <span>{col.name}</span>
+                            <Badge variant="outline" className="text-xs">
+                              {col.vectors_count} vectors
+                            </Badge>
+                            <Badge variant="secondary" className="text-xs">
+                              {col.vector_size}d
+                            </Badge>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {/* Dimension validation warning */}
+                  {selectedCollection && selectedModel && (() => {
+                    const col = collections?.find(c => c.name === selectedCollection);
+                    if (col && col.vector_size !== selectedModel.embedding_dim) {
+                      return (
+                        <div className="flex items-center gap-2 p-2 bg-destructive/10 text-destructive rounded text-sm">
+                          <AlertCircle className="h-4 w-4" />
+                          <span>
+                            Dimension mismatch: Collection is {col.vector_size}d but model outputs {selectedModel.embedding_dim}d
+                          </span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
+              )}
+
+              {/* Custom collection name for create/replace modes */}
+              {collectionMode !== "append" && (
+                <Collapsible open={collectionConfigOpen} onOpenChange={setCollectionConfigOpen}>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" className="w-full justify-between">
+                      <span>Custom Collection Name</span>
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform ${collectionConfigOpen ? "rotate-180" : ""}`}
+                      />
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-4">
+                    <div className="space-y-2">
+                      <Label>Collection Name</Label>
+                      <Input
+                        placeholder={defaultCollectionName}
+                        value={collectionName}
+                        onChange={(e) => setCollectionName(e.target.value)}
+                      />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+              )}
 
               {/* Preview */}
               {selectedModelId && selectedDatasetId && (
                 <div className="p-3 bg-muted rounded-lg text-sm">
                   <p className="flex items-center gap-1 text-muted-foreground mb-2">
                     <Info className="h-4 w-4" />
-                    Collection to be created:
+                    {collectionMode === "append" ? "Appending to:" : "Collection to be created:"}
                   </p>
                   <Badge variant="outline" className="font-mono text-xs">
-                    {collectionName || defaultCollectionName}
+                    {collectionMode === "append"
+                      ? (selectedCollection || "Select a collection")
+                      : (collectionName || defaultCollectionName)}
                   </Badge>
                 </div>
               )}

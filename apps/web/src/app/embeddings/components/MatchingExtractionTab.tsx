@@ -81,7 +81,7 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
   const [selectedCutoutCollection, setSelectedCutoutCollection] = useState("");
 
   // Frame selection
-  const [frameSelection, setFrameSelection] = useState<FrameSelection>("first");
+  const [frameSelection, setFrameSelection] = useState<FrameSelection | "all">("first");
   const [frameInterval, setFrameInterval] = useState([5]);
   const [maxFrames, setMaxFrames] = useState([10]);
 
@@ -299,7 +299,7 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                 <div className="space-y-4 p-4 border rounded-lg bg-muted/50">
                   <RadioGroup
                     value={frameSelection}
-                    onValueChange={(v: FrameSelection) => setFrameSelection(v)}
+                    onValueChange={(v: FrameSelection | "all") => setFrameSelection(v)}
                   >
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="first" id="first" />
@@ -317,6 +317,12 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                       <RadioGroupItem value="interval" id="interval" />
                       <Label htmlFor="interval" className="font-normal">
                         Every N frames
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="all" id="all" />
+                      <Label htmlFor="all" className="font-normal">
+                        All frames
                       </Label>
                     </div>
                   </RadioGroup>
