@@ -73,9 +73,9 @@ SOTA_CONFIGS = {
             "domain_weight": 0.0,
             "triplet_margin": 0.3,
         },
-        "pk_sampling": {
-            "p": 8,  # products per batch
-            "k": 4,  # samples per product
+        "sampling": {
+            "products_per_batch": 8,
+            "samples_per_product": 4,
         },
     },
     "full_sota": {
@@ -92,9 +92,9 @@ SOTA_CONFIGS = {
             "domain_weight": 0.3,
             "triplet_margin": 0.3,
         },
-        "pk_sampling": {
-            "p": 8,
-            "k": 4,
+        "sampling": {
+            "products_per_batch": 8,
+            "samples_per_product": 4,
         },
         "curriculum": {
             "warmup_epochs": 1,
