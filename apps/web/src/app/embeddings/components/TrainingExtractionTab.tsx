@@ -32,6 +32,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Play,
   Loader2,
   ChevronDown,
@@ -269,7 +275,19 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
             {/* Left Column: Image Types */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Image Types</CardTitle>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  Image Types
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-xs">
+                        <p className="text-xs">Select which types of product images to include in training. Using multiple types helps the model learn domain-invariant features and improves generalization.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </CardTitle>
                 <CardDescription>
                   Select which image types to include in training data
                 </CardDescription>
@@ -283,9 +301,21 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
                       onCheckedChange={() => handleImageTypeToggle("synthetic")}
                     />
                     <div className="grid gap-1.5 leading-none">
-                      <Label htmlFor="synthetic" className="font-medium">
-                        Synthetic Frames
-                      </Label>
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="synthetic" className="font-medium">
+                          Synthetic Frames
+                        </Label>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Info className="h-3 w-3 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              <p className="text-xs">360° rotation video frames rendered from 3D product models. High quality, consistent lighting, but may differ from real-world appearance.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         Product video frames (360° rotation)
                       </p>
@@ -299,9 +329,21 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
                       onCheckedChange={() => handleImageTypeToggle("real")}
                     />
                     <div className="grid gap-1.5 leading-none">
-                      <Label htmlFor="real" className="font-medium">
-                        Real Images
-                      </Label>
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="real" className="font-medium">
+                          Real Images
+                        </Label>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Info className="h-3 w-3 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              <p className="text-xs">Real photographs of products taken in store environments. Variable quality and lighting, but represents actual deployment conditions.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         Manually added real product photos
                       </p>
@@ -315,9 +357,21 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
                       onCheckedChange={() => handleImageTypeToggle("augmented")}
                     />
                     <div className="grid gap-1.5 leading-none">
-                      <Label htmlFor="augmented" className="font-medium">
-                        Augmented Images
-                      </Label>
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="augmented" className="font-medium">
+                          Augmented Images
+                        </Label>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Info className="h-3 w-3 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              <p className="text-xs">Synthetically augmented versions with random transforms (rotation, crop, color jitter, blur). Increases training variety and improves robustness.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         Synthetically augmented images
                       </p>
@@ -328,11 +382,23 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
                 {/* Matched Cutouts Toggle */}
                 <div className="pt-4 border-t">
                   <div className="flex items-center justify-between">
-                    <div className="space-y-1">
-                      <Label>Include Matched Cutouts</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Add cutout images as positive pairs
-                      </p>
+                    <div className="space-y-1 flex items-center gap-2">
+                      <div>
+                        <Label>Include Matched Cutouts</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Add cutout images as positive pairs
+                        </p>
+                      </div>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">Include verified cutout matches as additional positive samples. Critical for triplet mining - provides real-world anchor-positive pairs that bridge the synthetic-real domain gap.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     </div>
                     <Switch
                       checked={includeMatchedCutouts}
@@ -345,7 +411,19 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
                 <Collapsible open={frameConfigOpen} onOpenChange={setFrameConfigOpen}>
                   <CollapsibleTrigger asChild>
                     <Button variant="outline" className="w-full justify-between mt-4">
-                      <span>Frame Selection Settings</span>
+                      <div className="flex items-center gap-2">
+                        <span>Frame Selection Settings</span>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger onClick={(e) => e.stopPropagation()}>
+                              <Info className="h-3 w-3 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-xs">
+                              <p className="text-xs">Configure how many frames to extract from 360° rotation videos. Key frames (4 angles) recommended for training - provides view diversity without excessive redundancy.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                       <ChevronDown
                         className={`h-4 w-4 transition-transform ${frameConfigOpen ? "rotate-180" : ""}`}
                       />
@@ -423,7 +501,19 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
             {/* Right Column: Output Configuration */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Output Configuration</CardTitle>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  Output Configuration
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-xs">
+                        <p className="text-xs">Configure where to store extracted training embeddings. Qdrant is recommended for fast similarity search during triplet mining and training.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </CardTitle>
                 <CardDescription>Choose where to store extracted embeddings</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">

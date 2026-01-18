@@ -1,5 +1,13 @@
 """
-Model Trainer for fine-tuning embedding models.
+Unified Model Trainer for fine-tuning embedding models.
+
+All features are controlled via config flags:
+- Combined Loss (ArcFace + Triplet + Domain) vs Single Loss
+- P-K Sampling vs Random Sampling
+- Curriculum Learning (optional)
+- Domain Adaptation (optional)
+- Early Stopping with configurable patience
+- Recall@K metrics
 
 Features:
 - Multi-model support via bb-models
@@ -9,10 +17,6 @@ Features:
 - Mixed precision training
 - Gradient accumulation
 - Checkpoint management
-- SOTA: Multi-loss training (ArcFace + Triplet + Domain)
-- SOTA: P-K batch sampling with domain balancing
-- SOTA: Curriculum learning
-- SOTA: Early stopping with multiple metrics
 """
 
 import os
@@ -37,7 +41,7 @@ from bb_models.heads.projection import MLPProjectionHead
 from bb_models.utils.llrd import get_llrd_optimizer_params
 from bb_models.utils.checkpoint import CheckpointManager
 
-# SOTA imports
+# SOTA components
 from losses import CombinedProductLoss, OnlineHardTripletLoss
 from samplers import PKDomainSampler, CurriculumSampler
 from early_stopping import EarlyStopping, CurriculumScheduler, MetricTracker
@@ -169,17 +173,23 @@ class EmbeddingModel(nn.Module):
             return result["embeddings"]
 
 
-class ModelTrainer:
+class UnifiedTrainer:
     """
-    Trainer for fine-tuning embedding models.
+    Unified Trainer with config-based feature toggles.
 
-    Implements:
+    All SOTA features can be enabled/disabled via sota_config:
+    - use_combined_loss: ArcFace + Triplet + Domain vs single loss
+    - use_pk_sampling: P-K batch sampling vs random shuffle
+    - use_curriculum: Progressive difficulty training
+    - use_domain_adaptation: Domain adversarial training
+    - use_early_stopping: Stop on no improvement
+
+    Basic features (always available):
     - Mixed precision training
     - Gradient accumulation
     - LLRD (Layer-wise Learning Rate Decay)
     - Warmup + Cosine annealing
     - Checkpoint management
-    - Early stopping
     """
 
     def __init__(
@@ -194,16 +204,44 @@ class ModelTrainer:
         self.job_id = job_id
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # Parse SOTA config
+        self.sota_config = config.get("sota_config", {})
+
+        # Feature flags from sota_config (defaults to basic training if not specified)
+        self.use_combined_loss = self.sota_config.get("use_combined_loss", False)
+        self.use_pk_sampling = self.sota_config.get("use_pk_sampling", False)
+        self.use_curriculum = self.sota_config.get("use_curriculum", False)
+        self.use_domain_adaptation = self.sota_config.get("use_domain_adaptation", False)
+        self.use_early_stopping = self.sota_config.get("use_early_stopping", True)
+        # Early stopping patience: check sota_config first, then main config (backward compat)
+        self.early_stopping_patience = self.sota_config.get(
+            "early_stopping_patience",
+            config.get("early_stopping_patience", 5)
+        )
+
         # Will be initialized during training
         self.model = None
         self.optimizer = None
         self.scheduler = None
         self.scaler = None
         self.checkpoint_manager = None
+        self.curriculum_scheduler = None
+        self.metric_tracker = None
 
         # Resume from checkpoint if provided
         self.checkpoint_url = checkpoint_url
         self.start_epoch = 0
+
+        # Print feature configuration
+        print(f"\n{'=' * 60}")
+        print(f"UnifiedTrainer Configuration")
+        print(f"{'=' * 60}")
+        print(f"  Combined Loss: {self.use_combined_loss}")
+        print(f"  P-K Sampling: {self.use_pk_sampling}")
+        print(f"  Curriculum: {self.use_curriculum}")
+        print(f"  Domain Adaptation: {self.use_domain_adaptation}")
+        print(f"  Early Stopping: {self.use_early_stopping} (patience: {self.early_stopping_patience})")
+        print(f"{'=' * 60}\n")
 
     def _build_model(self, num_classes: int) -> EmbeddingModel:
         """Build the embedding model."""
@@ -330,311 +368,6 @@ class ModelTrainer:
             keep_best=True,
         )
 
-    def train(
-        self,
-        train_dataset,
-        val_dataset,
-        progress_callback: Optional[Callable] = None,
-    ) -> dict:
-        """
-        Run training loop.
-
-        Args:
-            train_dataset: Training dataset
-            val_dataset: Validation dataset
-            progress_callback: Callback(epoch, batch, total_batches, metrics)
-
-        Returns:
-            Training result dictionary
-        """
-        # Get number of classes from dataset
-        num_classes = train_dataset.num_classes
-        print(f"Number of classes: {num_classes}")
-
-        # Build model
-        self.model = self._build_model(num_classes)
-        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
-
-        # Build optimizer and scheduler
-        batch_size = self.config.get("batch_size", 32)
-        grad_accum = self.config.get("gradient_accumulation_steps", 1)
-
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            drop_last=True,
-        )
-
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size * 2,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True,
-        )
-
-        self.optimizer = self._build_optimizer()
-        self.scheduler = self._build_scheduler(len(train_loader))
-        self.checkpoint_manager = self._build_checkpoint_manager()
-
-        # Mixed precision scaler
-        use_amp = self.config.get("mixed_precision", True) and self.device.type == "cuda"
-        self.scaler = GradScaler() if use_amp else None
-
-        # Loss function
-        criterion = EnhancedArcFaceLoss(
-            in_features=self.config.get("embedding_dim", 512),
-            num_classes=num_classes,
-            margin=self.config.get("arcface_margin", 0.5),
-            scale=self.config.get("arcface_scale", 64.0),
-            label_smoothing=self.config.get("label_smoothing", 0.1),
-        ).to(self.device) if self.config.get("use_arcface", True) else nn.CrossEntropyLoss()
-
-        # Training state
-        epochs = self.config.get("epochs", 10)
-        best_val_loss = float("inf")
-        best_epoch = 0
-        patience = self.config.get("early_stopping_patience", 5)
-        patience_counter = 0
-
-        print(f"\nStarting training for {epochs} epochs...")
-        print(f"  Batch size: {batch_size}")
-        print(f"  Gradient accumulation: {grad_accum}")
-        print(f"  Effective batch size: {batch_size * grad_accum}")
-        print(f"  Mixed precision: {use_amp}")
-
-        for epoch in range(self.start_epoch, epochs):
-            epoch_start = time.time()
-
-            # Train one epoch
-            train_metrics = self._train_epoch(
-                train_loader=train_loader,
-                criterion=criterion,
-                epoch=epoch,
-                grad_accum=grad_accum,
-                use_amp=use_amp,
-                progress_callback=progress_callback,
-            )
-
-            # Validate
-            val_metrics = self._validate(val_loader, criterion)
-
-            epoch_time = time.time() - epoch_start
-
-            print(
-                f"Epoch {epoch + 1}/{epochs} | "
-                f"Train Loss: {train_metrics['loss']:.4f} | "
-                f"Val Loss: {val_metrics['loss']:.4f} | "
-                f"Val Acc: {val_metrics['accuracy']:.2%} | "
-                f"Time: {epoch_time:.1f}s"
-            )
-
-            # Check for improvement
-            if val_metrics["loss"] < best_val_loss:
-                best_val_loss = val_metrics["loss"]
-                best_epoch = epoch + 1
-                patience_counter = 0
-
-                # Save best checkpoint
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    train_loss=train_metrics["loss"],
-                    val_loss=val_metrics["loss"],
-                    scheduler=self.scheduler,
-                    scaler=self.scaler,
-                )
-            else:
-                patience_counter += 1
-
-            # Regular checkpoint
-            if (epoch + 1) % self.config.get("save_every_n_epochs", 1) == 0:
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    train_loss=train_metrics["loss"],
-                    val_loss=val_metrics["loss"],
-                    scheduler=self.scheduler,
-                    scaler=self.scaler,
-                )
-
-            # Early stopping
-            if patience_counter >= patience:
-                print(f"Early stopping at epoch {epoch + 1}")
-                break
-
-        return {
-            "epochs_trained": epoch + 1,
-            "best_epoch": best_epoch,
-            "best_val_loss": best_val_loss,
-            "final_metrics": {
-                "train_loss": train_metrics["loss"],
-                "val_loss": val_metrics["loss"],
-                "val_accuracy": val_metrics["accuracy"],
-            },
-        }
-
-    def _train_epoch(
-        self,
-        train_loader: DataLoader,
-        criterion,
-        epoch: int,
-        grad_accum: int,
-        use_amp: bool,
-        progress_callback: Optional[Callable],
-    ) -> dict:
-        """Train for one epoch."""
-        self.model.train()
-        total_loss = 0.0
-        num_batches = len(train_loader)
-
-        self.optimizer.zero_grad()
-
-        for batch_idx, batch in enumerate(train_loader):
-            images = batch["image"].to(self.device)
-            labels = batch["label"].to(self.device)
-
-            # Forward pass with mixed precision
-            with autocast(enabled=use_amp):
-                outputs = self.model(images, labels)
-                embeddings = outputs["embeddings"]
-                logits = outputs.get("logits")
-
-                if logits is not None:
-                    loss = criterion(logits, labels)
-                else:
-                    loss = criterion(embeddings, labels)
-
-                loss = loss / grad_accum
-
-            # Backward pass
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
-
-            # Optimizer step
-            if (batch_idx + 1) % grad_accum == 0:
-                if self.scaler is not None:
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    self.optimizer.step()
-
-                self.optimizer.zero_grad()
-                self.scheduler.step()
-
-            total_loss += loss.item() * grad_accum
-
-            # Progress callback
-            if progress_callback and batch_idx % 10 == 0:
-                progress_callback(
-                    epoch,
-                    batch_idx,
-                    num_batches,
-                    {"train_loss": total_loss / (batch_idx + 1)},
-                )
-
-        return {"loss": total_loss / num_batches}
-
-    @torch.no_grad()
-    def _validate(self, val_loader: DataLoader, criterion) -> dict:
-        """Validate the model."""
-        self.model.eval()
-        total_loss = 0.0
-        correct = 0
-        total = 0
-
-        for batch in val_loader:
-            images = batch["image"].to(self.device)
-            labels = batch["label"].to(self.device)
-
-            outputs = self.model(images, labels)
-            embeddings = outputs["embeddings"]
-            logits = outputs.get("logits")
-
-            if logits is not None:
-                loss = criterion(logits, labels)
-                preds = logits.argmax(dim=1)
-            else:
-                loss = criterion(embeddings, labels)
-                preds = embeddings.argmax(dim=1)
-
-            total_loss += loss.item()
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-
-        return {
-            "loss": total_loss / len(val_loader),
-            "accuracy": correct / total,
-        }
-
-    def save_final_checkpoint(self) -> dict:
-        """Save and upload final checkpoint."""
-        if self.checkpoint_manager is None:
-            return {"error": "No checkpoint manager"}
-
-        # Get best checkpoint info
-        best_checkpoint = self.checkpoint_manager.get_best_checkpoint()
-
-        if best_checkpoint and os.environ.get("AWS_ACCESS_KEY_ID"):
-            # Upload to S3
-            url = self.checkpoint_manager.upload_to_s3(best_checkpoint)
-            return {
-                "path": str(best_checkpoint),
-                "url": url,
-                "uploaded": True,
-            }
-
-        return {
-            "path": str(best_checkpoint) if best_checkpoint else None,
-            "uploaded": False,
-        }
-
-
-class SOTAModelTrainer(ModelTrainer):
-    """
-    SOTA Trainer with advanced features.
-
-    Features beyond ModelTrainer:
-    - Multi-loss training (ArcFace + Triplet + Domain Adversarial)
-    - P-K batch sampling with domain balancing
-    - Curriculum learning
-    - Enhanced early stopping
-    - Recall@K metrics
-    """
-
-    def __init__(
-        self,
-        model_type: str,
-        config: dict,
-        checkpoint_url: Optional[str] = None,
-        job_id: Optional[str] = None,
-    ):
-        super().__init__(model_type, config, checkpoint_url, job_id)
-
-        # SOTA-specific config
-        self.sota_config = config.get("sota_config", {})
-        self.use_combined_loss = self.sota_config.get("use_combined_loss", True)
-        self.use_pk_sampling = self.sota_config.get("use_pk_sampling", True)
-        self.use_curriculum = self.sota_config.get("use_curriculum", False)
-        self.use_domain_adaptation = self.sota_config.get("use_domain_adaptation", True)
-
-        # Curriculum state
-        self.curriculum_phase = "warmup"
-        self.curriculum_scheduler = None
-
-        # Enhanced metrics
-        self.metric_tracker = MetricTracker(
-            metrics=["val_loss", "val_recall_1", "val_recall_5"],
-            modes={"val_loss": "min", "val_recall_1": "max", "val_recall_5": "max"}
-        )
-
     def _build_loss_function(self, num_classes: int):
         """Build loss function based on config."""
         if self.use_combined_loss:
@@ -651,17 +384,20 @@ class SOTAModelTrainer(ModelTrainer):
                 use_domain_adaptation=self.use_domain_adaptation,
             ).to(self.device)
         else:
-            # Fall back to standard ArcFace
-            return EnhancedArcFaceLoss(
-                in_features=self.config.get("embedding_dim", 512),
-                num_classes=num_classes,
-                margin=self.config.get("arcface_margin", 0.5),
-                scale=self.config.get("arcface_scale", 64.0),
-                label_smoothing=self.config.get("label_smoothing", 0.1),
-            ).to(self.device)
+            # Standard ArcFace or CrossEntropy
+            if self.config.get("use_arcface", True):
+                return EnhancedArcFaceLoss(
+                    in_features=self.config.get("embedding_dim", 512),
+                    num_classes=num_classes,
+                    margin=self.config.get("arcface_margin", 0.5),
+                    scale=self.config.get("arcface_scale", 64.0),
+                    label_smoothing=self.config.get("label_smoothing", 0.1),
+                ).to(self.device)
+            else:
+                return nn.CrossEntropyLoss()
 
     def _build_train_loader(self, train_dataset, batch_size: int) -> DataLoader:
-        """Build training data loader with P-K sampling."""
+        """Build training data loader with optional P-K sampling."""
         if self.use_pk_sampling:
             # Extract labels and domains from dataset
             labels = []
@@ -688,7 +424,7 @@ class SOTAModelTrainer(ModelTrainer):
                 pin_memory=True,
             )
         else:
-            # Standard DataLoader
+            # Standard DataLoader with random shuffle
             return DataLoader(
                 train_dataset,
                 batch_size=batch_size,
@@ -699,7 +435,7 @@ class SOTAModelTrainer(ModelTrainer):
             )
 
     def _setup_curriculum(self, num_epochs: int):
-        """Setup curriculum learning scheduler."""
+        """Setup curriculum learning scheduler if enabled."""
         if self.use_curriculum:
             curriculum_config = self.sota_config.get("curriculum", {})
             self.curriculum_scheduler = CurriculumScheduler(
@@ -716,7 +452,15 @@ class SOTAModelTrainer(ModelTrainer):
         progress_callback: Optional[Callable] = None,
     ) -> dict:
         """
-        Run SOTA training loop.
+        Run training loop.
+
+        Args:
+            train_dataset: Training dataset
+            val_dataset: Validation dataset
+            progress_callback: Callback(epoch, batch, total_batches, metrics)
+
+        Returns:
+            Training result dictionary
         """
         # Get number of classes from dataset
         num_classes = train_dataset.num_classes
@@ -726,11 +470,10 @@ class SOTAModelTrainer(ModelTrainer):
         self.model = self._build_model(num_classes)
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
 
-        # Build optimizer
+        # Build optimizer and data loaders
         batch_size = self.config.get("batch_size", 32)
         grad_accum = self.config.get("gradient_accumulation_steps", 1)
 
-        # Build data loaders
         train_loader = self._build_train_loader(train_dataset, batch_size)
         val_loader = DataLoader(
             val_dataset,
@@ -744,53 +487,54 @@ class SOTAModelTrainer(ModelTrainer):
         self.scheduler = self._build_scheduler(len(train_loader))
         self.checkpoint_manager = self._build_checkpoint_manager()
 
-        # Mixed precision
+        # Mixed precision scaler
         use_amp = self.config.get("mixed_precision", True) and self.device.type == "cuda"
         self.scaler = GradScaler() if use_amp else None
 
         # Build loss function
         criterion = self._build_loss_function(num_classes)
 
-        # Setup curriculum
+        # Setup curriculum if enabled
         epochs = self.config.get("epochs", 10)
         self._setup_curriculum(epochs)
 
-        # Early stopping
-        early_stopping = EarlyStopping(
-            patience=self.config.get("early_stopping_patience", 5),
-            min_delta=self.config.get("early_stopping_min_delta", 1e-4),
-            mode="min",
+        # Setup metric tracker
+        self.metric_tracker = MetricTracker(
+            metrics=["val_loss", "val_recall_1", "val_recall_5"],
+            modes={"val_loss": "min", "val_recall_1": "max", "val_recall_5": "max"}
         )
+
+        # Early stopping
+        early_stopping = None
+        if self.use_early_stopping:
+            early_stopping = EarlyStopping(
+                patience=self.early_stopping_patience,
+                min_delta=self.config.get("early_stopping_min_delta", 1e-4),
+                mode="min",
+            )
 
         # Training state
         best_val_loss = float("inf")
         best_recall_at_1 = 0.0
         best_epoch = 0
+        current_phase = "normal"
 
-        print(f"\n{'='*60}")
-        print(f"SOTA Training Configuration")
-        print(f"{'='*60}")
-        print(f"  Epochs: {epochs}")
+        print(f"\nStarting training for {epochs} epochs...")
         print(f"  Batch size: {batch_size}")
         print(f"  Gradient accumulation: {grad_accum}")
         print(f"  Effective batch size: {batch_size * grad_accum}")
         print(f"  Mixed precision: {use_amp}")
-        print(f"  Combined loss: {self.use_combined_loss}")
-        print(f"  P-K sampling: {self.use_pk_sampling}")
-        print(f"  Curriculum learning: {self.use_curriculum}")
-        print(f"  Domain adaptation: {self.use_domain_adaptation}")
-        print(f"{'='*60}\n")
 
         for epoch in range(self.start_epoch, epochs):
             epoch_start = time.time()
 
-            # Update curriculum phase
+            # Update curriculum phase if enabled
             if self.curriculum_scheduler:
-                self.curriculum_phase = self.curriculum_scheduler.get_phase(epoch)
-                print(f"Curriculum phase: {self.curriculum_phase}")
+                current_phase = self.curriculum_scheduler.update(epoch)
+                print(f"Curriculum phase: {current_phase}")
 
             # Train one epoch
-            train_metrics = self._train_epoch_sota(
+            train_metrics = self._train_epoch(
                 train_loader=train_loader,
                 criterion=criterion,
                 epoch=epoch,
@@ -799,8 +543,8 @@ class SOTAModelTrainer(ModelTrainer):
                 progress_callback=progress_callback,
             )
 
-            # Validate with recall metrics
-            val_metrics = self._validate_sota(val_loader, criterion)
+            # Validate
+            val_metrics = self._validate(val_loader, criterion)
 
             epoch_time = time.time() - epoch_start
 
@@ -815,7 +559,8 @@ class SOTAModelTrainer(ModelTrainer):
                 f"Time: {epoch_time:.1f}s"
             )
 
-            if self.use_combined_loss:
+            # Log loss components if using combined loss
+            if self.use_combined_loss and "arcface_loss" in train_metrics:
                 print(
                     f"  Loss Components: "
                     f"ArcFace={train_metrics.get('arcface_loss', 0):.4f} | "
@@ -826,7 +571,9 @@ class SOTAModelTrainer(ModelTrainer):
             # Track metrics
             self.metric_tracker.update({
                 **train_metrics,
-                **{f"val_{k}": v for k, v in val_metrics.items()},
+                "val_loss": val_metrics["loss"],
+                "val_recall_1": val_metrics["recall@1"],
+                "val_recall_5": val_metrics["recall@5"],
             }, epoch)
 
             # Check for improvement
@@ -864,7 +611,7 @@ class SOTAModelTrainer(ModelTrainer):
                 )
 
             # Early stopping check
-            if early_stopping(val_metrics["loss"], epoch):
+            if early_stopping and early_stopping(val_metrics["loss"], epoch):
                 print(f"Early stopping triggered at epoch {epoch + 1}")
                 break
 
@@ -883,7 +630,7 @@ class SOTAModelTrainer(ModelTrainer):
             "metric_history": self.metric_tracker.summary(),
         }
 
-    def _train_epoch_sota(
+    def _train_epoch(
         self,
         train_loader: DataLoader,
         criterion,
@@ -892,7 +639,7 @@ class SOTAModelTrainer(ModelTrainer):
         use_amp: bool,
         progress_callback: Optional[Callable],
     ) -> dict:
-        """Train one epoch with SOTA features."""
+        """Train for one epoch."""
         self.model.train()
 
         total_loss = 0.0
@@ -922,8 +669,11 @@ class SOTAModelTrainer(ModelTrainer):
                     arcface_loss_total += losses.get("arcface", torch.tensor(0.0)).item()
                     triplet_loss_total += losses.get("triplet", torch.tensor(0.0)).item()
                     domain_loss_total += losses.get("domain", torch.tensor(0.0)).item()
+                elif isinstance(criterion, EnhancedArcFaceLoss):
+                    # EnhancedArcFaceLoss expects embeddings, not logits
+                    loss = criterion(embeddings, labels)
                 else:
-                    # Standard loss
+                    # Standard CrossEntropy loss uses logits
                     logits = outputs.get("logits")
                     if logits is not None:
                         loss = criterion(logits, labels)
@@ -969,8 +719,8 @@ class SOTAModelTrainer(ModelTrainer):
         return metrics
 
     @torch.no_grad()
-    def _validate_sota(self, val_loader: DataLoader, criterion) -> dict:
-        """Validate with recall@k metrics."""
+    def _validate(self, val_loader: DataLoader, criterion) -> dict:
+        """Validate the model with recall@k metrics."""
         self.model.eval()
 
         total_loss = 0.0
@@ -991,16 +741,21 @@ class SOTAModelTrainer(ModelTrainer):
             all_embeddings.append(embeddings.cpu())
             all_labels.append(labels.cpu())
 
-            if logits is not None:
-                if isinstance(criterion, CombinedProductLoss):
-                    losses = criterion(embeddings, labels)
-                    loss = losses["total"]
-                else:
-                    loss = criterion(logits, labels)
+            if isinstance(criterion, CombinedProductLoss):
+                losses = criterion(embeddings, labels)
+                loss = losses["total"]
+                preds = logits.argmax(dim=1) if logits is not None else labels  # Use logits for preds
+            elif isinstance(criterion, EnhancedArcFaceLoss):
+                # EnhancedArcFaceLoss expects embeddings
+                loss = criterion(embeddings, labels)
+                preds = logits.argmax(dim=1) if logits is not None else labels
+            elif logits is not None:
+                # Standard CrossEntropy loss uses logits
+                loss = criterion(logits, labels)
                 preds = logits.argmax(dim=1)
             else:
                 loss = torch.tensor(0.0)
-                preds = embeddings.argmax(dim=1)
+                preds = labels  # Can't compute preds without logits
 
             total_loss += loss.item()
             correct += (preds == labels).sum().item()
@@ -1054,3 +809,34 @@ class SOTAModelTrainer(ModelTrainer):
                 correct += 1
 
         return correct / len(labels) if len(labels) > 0 else 0.0
+
+    def save_final_checkpoint(self) -> dict:
+        """Save and upload final checkpoint."""
+        if self.checkpoint_manager is None:
+            return {"error": "No checkpoint manager"}
+
+        # Get best checkpoint info
+        best_checkpoint = self.checkpoint_manager.get_best_checkpoint()
+
+        if best_checkpoint and os.environ.get("AWS_ACCESS_KEY_ID"):
+            # Upload to S3
+            url = self.checkpoint_manager.upload_to_s3(best_checkpoint)
+            return {
+                "path": str(best_checkpoint),
+                "url": url,
+                "uploaded": True,
+            }
+
+        return {
+            "path": str(best_checkpoint) if best_checkpoint else None,
+            "uploaded": False,
+        }
+
+
+# =============================================
+# Backward Compatibility Aliases
+# =============================================
+
+# Keep old class names for backward compatibility
+ModelTrainer = UnifiedTrainer
+SOTAModelTrainer = UnifiedTrainer

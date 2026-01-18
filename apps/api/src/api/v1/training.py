@@ -103,17 +103,20 @@ class SOTAConfig(BaseModel):
     """
     SOTA Training configuration.
 
-    Enables advanced features:
-    - Multi-loss training (ArcFace + Triplet + Domain Adversarial)
+    All features can be toggled on/off via config flags:
+    - Combined loss (ArcFace + Triplet + Domain Adversarial)
     - P-K batch sampling with domain balancing
     - Curriculum learning
     - Domain adaptation
+    - Early stopping
     """
     enabled: bool = Field(True, description="Enable SOTA training features")
     use_combined_loss: bool = Field(True, description="Use combined loss (ArcFace + Triplet + Domain)")
     use_pk_sampling: bool = Field(True, description="Use P-K batch sampling with domain balancing")
     use_curriculum: bool = Field(False, description="Enable curriculum learning")
     use_domain_adaptation: bool = Field(True, description="Enable domain adversarial training")
+    use_early_stopping: bool = Field(True, description="Stop training when no improvement")
+    early_stopping_patience: int = Field(5, ge=2, le=20, description="Epochs to wait before stopping")
 
     # Detailed configs
     loss: SOTALossConfig = Field(default_factory=SOTALossConfig)

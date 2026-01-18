@@ -32,6 +32,12 @@ import {
 } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Play,
   Loader2,
   ChevronDown,
@@ -235,7 +241,19 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
           {/* Model Selection */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Model Selection</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                Model Selection
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Choose between evaluating a base pre-trained model (e.g., DINOv2, CLIP) or a fine-tuned model from a completed training run. Comparing both helps measure training improvement.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </CardTitle>
               <CardDescription>
                 Select a base model or a trained model with checkpoint
               </CardDescription>
@@ -418,7 +436,19 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
           {/* Dataset Selection */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Dataset Selection</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                Dataset Selection
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Select a held-out test dataset for evaluation. Use a dataset not seen during training to get unbiased performance metrics (Recall@1, Recall@5, mAP).</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </CardTitle>
               <CardDescription>
                 Select the evaluation dataset
               </CardDescription>
@@ -486,7 +516,19 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
           {/* Image Types */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Image Configuration</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                Image Configuration
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Select which image types to include in evaluation. For realistic performance measurement, evaluate on the same image types you expect in production (typically synthetic for products, real for cutouts).</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </CardTitle>
               <CardDescription>Select image types to evaluate</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -498,9 +540,21 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                     onCheckedChange={() => handleImageTypeToggle("synthetic")}
                   />
                   <div className="grid gap-1.5 leading-none">
-                    <Label htmlFor="eval-synthetic" className="font-medium">
-                      Synthetic Frames
-                    </Label>
+                    <div className="flex items-center gap-1">
+                      <Label htmlFor="eval-synthetic" className="font-medium">
+                        Synthetic Frames
+                      </Label>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">360° rotation video frames. Best for evaluating product catalog embeddings as gallery set.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Product video frames
                     </p>
@@ -514,9 +568,21 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                     onCheckedChange={() => handleImageTypeToggle("real")}
                   />
                   <div className="grid gap-1.5 leading-none">
-                    <Label htmlFor="eval-real" className="font-medium">
-                      Real Images
-                    </Label>
+                    <div className="flex items-center gap-1">
+                      <Label htmlFor="eval-real" className="font-medium">
+                        Real Images
+                      </Label>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">Real store shelf photos. Best for evaluating query set performance (simulating production queries).</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Real product photos
                     </p>
@@ -530,9 +596,21 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                     onCheckedChange={() => handleImageTypeToggle("augmented")}
                   />
                   <div className="grid gap-1.5 leading-none">
-                    <Label htmlFor="eval-augmented" className="font-medium">
-                      Augmented Images
-                    </Label>
+                    <div className="flex items-center gap-1">
+                      <Label htmlFor="eval-augmented" className="font-medium">
+                        Augmented Images
+                      </Label>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">Augmented versions with transforms. Useful for testing model robustness to variations.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Augmented versions
                     </p>
@@ -544,7 +622,19 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
               <Collapsible open={frameConfigOpen} onOpenChange={setFrameConfigOpen}>
                 <CollapsibleTrigger asChild>
                   <Button variant="outline" className="w-full justify-between mt-4">
-                    <span>Frame Selection</span>
+                    <div className="flex items-center gap-2">
+                      <span>Frame Selection</span>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger onClick={(e) => e.stopPropagation()}>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">For evaluation, first frame only is usually sufficient - it represents the canonical product view. Use key frames if you want to evaluate multi-view matching.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                     <ChevronDown
                       className={`h-4 w-4 transition-transform ${frameConfigOpen ? "rotate-180" : ""}`}
                     />
@@ -625,6 +715,16 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
               <CardTitle className="text-lg flex items-center gap-2">
                 <Database className="h-5 w-5" />
                 Output Collection
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Evaluation embeddings are stored in a separate collection for computing retrieval metrics. Name typically includes model and dataset for easy comparison across experiments.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">

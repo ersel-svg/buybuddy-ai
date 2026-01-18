@@ -31,6 +31,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Play,
   Loader2,
   ChevronDown,
@@ -240,7 +246,19 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
         {/* Left Column: Source Configuration */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Product Source</CardTitle>
+            <CardTitle className="text-lg flex items-center gap-2">
+              Product Source
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger>
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="max-w-xs">
+                    <p className="text-xs">Choose which products to extract embeddings for. This determines the product catalog that will be searchable in the Matching page.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
@@ -253,10 +271,30 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Products</SelectItem>
-                  <SelectItem value="dataset">From Dataset</SelectItem>
-                  <SelectItem value="matched">Matched Products Only</SelectItem>
-                  <SelectItem value="new">New Products (no embeddings)</SelectItem>
+                  <SelectItem value="all">
+                    <div className="flex flex-col items-start">
+                      <span>All Products</span>
+                      <span className="text-xs text-muted-foreground">Extract embeddings for entire product catalog</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="dataset">
+                    <div className="flex flex-col items-start">
+                      <span>From Dataset</span>
+                      <span className="text-xs text-muted-foreground">Only products in a specific dataset</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="matched">
+                    <div className="flex flex-col items-start">
+                      <span>Matched Products Only</span>
+                      <span className="text-xs text-muted-foreground">Products with verified cutout matches</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="new">
+                    <div className="flex flex-col items-start">
+                      <span>New Products</span>
+                      <span className="text-xs text-muted-foreground">Only products without existing embeddings</span>
+                    </div>
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -289,6 +327,16 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                   <div className="flex items-center gap-2">
                     <Settings2 className="h-4 w-4" />
                     Frame Selection
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger onClick={(e) => e.stopPropagation()}>
+                          <Info className="h-3 w-3 text-muted-foreground" />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          <p className="text-xs">Products have 360° rotation videos with multiple frames. Choose how many frames to extract embeddings from. More frames = better multi-angle matching but higher storage/computation cost.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                   <ChevronDown
                     className={`h-4 w-4 transition-transform ${productConfigOpen ? "rotate-180" : ""}`}
@@ -303,27 +351,39 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                   >
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="first" id="first" />
-                      <Label htmlFor="first" className="font-normal">
-                        First frame only (fastest)
-                      </Label>
+                      <div className="grid gap-0.5">
+                        <Label htmlFor="first" className="font-normal">
+                          First frame only
+                        </Label>
+                        <p className="text-[10px] text-muted-foreground">Fastest - single front-facing view</p>
+                      </div>
                     </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="key_frames" id="key_frames" />
-                      <Label htmlFor="key_frames" className="font-normal">
-                        Key frames (0°, 90°, 180°, 270°)
-                      </Label>
+                      <div className="grid gap-0.5">
+                        <Label htmlFor="key_frames" className="font-normal">
+                          Key frames (0°, 90°, 180°, 270°)
+                        </Label>
+                        <p className="text-[10px] text-muted-foreground">Recommended - 4 cardinal angles for good coverage</p>
+                      </div>
                     </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="interval" id="interval" />
-                      <Label htmlFor="interval" className="font-normal">
-                        Every N frames
-                      </Label>
+                      <div className="grid gap-0.5">
+                        <Label htmlFor="interval" className="font-normal">
+                          Every N frames
+                        </Label>
+                        <p className="text-[10px] text-muted-foreground">Custom interval sampling</p>
+                      </div>
                     </div>
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="all" id="all" />
-                      <Label htmlFor="all" className="font-normal">
-                        All frames
-                      </Label>
+                      <div className="grid gap-0.5">
+                        <Label htmlFor="all" className="font-normal">
+                          All frames
+                        </Label>
+                        <p className="text-[10px] text-muted-foreground">Maximum coverage - high storage cost</p>
+                      </div>
                     </div>
                   </RadioGroup>
 
@@ -372,26 +432,60 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
               <CardTitle className="text-lg flex items-center gap-2">
                 <ImageIcon className="h-5 w-5" />
                 Cutout Configuration
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Cutouts are product images cropped from store shelf photos. They represent real-world query images that need to be matched to product catalog embeddings.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label>Include Cutouts</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Extract embeddings for cutout images
-                  </p>
+                <div className="space-y-1 flex items-center gap-2">
+                  <div>
+                    <Label>Include Cutouts</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Extract embeddings for cutout images
+                    </p>
+                  </div>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-3 w-3 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-xs">
+                        <p className="text-xs">Enable to also extract embeddings for cutout images stored in a separate collection. Required for matching cutouts against products on the Matching page.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 </div>
                 <Switch checked={includeCutouts} onCheckedChange={setIncludeCutouts} />
               </div>
 
               {includeCutouts && (
                 <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label>Filter: Has UPC</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Only cutouts with predicted UPC
-                    </p>
+                  <div className="space-y-1 flex items-center gap-2">
+                    <div>
+                      <Label>Filter: Has UPC</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Only cutouts with predicted UPC
+                      </p>
+                    </div>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Info className="h-3 w-3 text-muted-foreground" />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          <p className="text-xs">Filter to only include cutouts where OCR has detected a UPC barcode. These cutouts can be validated against known product barcodes for higher confidence matching.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                   <Switch
                     checked={cutoutFilterHasUpc}
@@ -408,11 +502,33 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
               <CardTitle className="text-lg flex items-center gap-2">
                 <Database className="h-5 w-5" />
                 Collection Configuration
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs">
+                      <p className="text-xs">Embeddings are stored in Qdrant vector collections. Products and cutouts are stored in separate collections for efficient cross-domain similarity search.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Collection Mode</Label>
+                <div className="flex items-center gap-2">
+                  <Label>Collection Mode</Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-3 w-3 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="max-w-xs">
+                        <p className="text-xs">Choose how to handle existing collections: Create (fails if exists), Replace (delete and recreate), or Append (add to existing). Use Append for incremental updates.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
                 <Select
                   value={collectionMode}
                   onValueChange={(v: CollectionMode) => setCollectionMode(v)}

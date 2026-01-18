@@ -34,7 +34,36 @@ Output:
 import os
 import runpod
 import traceback
+from pathlib import Path
 from typing import Optional
+
+
+# =============================================
+# Load environment variables from .env file
+# =============================================
+def load_env_file():
+    """Load environment variables from .env file if it exists."""
+    env_paths = [
+        Path("/workspace/.env"),
+        Path(__file__).parent.parent / ".env",
+        Path.cwd() / ".env",
+    ]
+
+    for env_path in env_paths:
+        if env_path.exists():
+            print(f"Loading environment from: {env_path}")
+            for line in env_path.read_text().strip().split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            break
+
+# Load .env on module import
+load_env_file()
 
 # Local extractor
 from extractor import get_extractor

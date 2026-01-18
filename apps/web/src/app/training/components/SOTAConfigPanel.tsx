@@ -1,13 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/lib/api-client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -29,8 +37,9 @@ import {
   Globe,
   Info,
   Hand,
+  Loader2,
 } from "lucide-react";
-import type { SOTAConfig } from "@/types";
+import type { SOTAConfig, TripletMiningRun } from "@/types";
 
 interface SOTAConfigPanelProps {
   config: SOTAConfig;
@@ -42,6 +51,13 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
   const [lossOpen, setLossOpen] = useState(false);
   const [samplingOpen, setSamplingOpen] = useState(false);
   const [curriculumOpen, setCurriculumOpen] = useState(false);
+
+  // Fetch triplet mining runs for dropdown
+  const { data: tripletRuns, isLoading: tripletRunsLoading } = useQuery({
+    queryKey: ["triplet-mining-runs"],
+    queryFn: () => apiClient.getTripletMiningRuns({ status: "completed" }),
+    enabled: config.enabled && config.use_combined_loss,
+  });
 
   const updateConfig = (updates: Partial<SOTAConfig>) => {
     onChange({ ...config, ...updates });
@@ -100,6 +116,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               checked={config.use_combined_loss}
               onChange={(v) => updateConfig({ use_combined_loss: v })}
               disabled={disabled}
+              tooltip="Combines three complementary loss functions: ArcFace for angular margin-based classification, Triplet for metric learning with hard negative mining, and Domain for synthetic-real alignment. This multi-objective approach typically improves embedding quality by 5-15% compared to single loss training."
             />
 
             {/* P-K Sampling */}
@@ -110,6 +127,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               checked={config.use_pk_sampling}
               onChange={(v) => updateConfig({ use_pk_sampling: v })}
               disabled={disabled}
+              tooltip="Creates batches with P unique products and K samples per product, enabling effective triplet mining within each batch. Essential for triplet loss - without this, hard negatives cannot be mined efficiently. Recommended: P=16, K=4 for 64 effective batch size."
             />
 
             {/* Curriculum Learning */}
@@ -120,6 +138,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               checked={config.use_curriculum}
               onChange={(v) => updateConfig({ use_curriculum: v })}
               disabled={disabled}
+              tooltip="Progressively increases training difficulty through 4 phases: Warmup (low LR, no hard mining), Easy (simple examples), Hard (difficult confusing pairs), Finetune (full dataset, low LR). Helps model learn robust features without getting stuck in local minima early in training."
             />
 
             {/* Domain Adaptation */}
@@ -130,6 +149,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               checked={config.use_domain_adaptation}
               onChange={(v) => updateConfig({ use_domain_adaptation: v })}
               disabled={disabled}
+              tooltip="Uses adversarial training to align synthetic (360° rendered) and real (store shelf) image embeddings. A domain classifier tries to distinguish domains while the encoder learns domain-invariant features. Critical for bridging the synthetic-to-real domain gap."
             />
 
             {/* Early Stopping */}
@@ -140,6 +160,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               checked={config.use_early_stopping}
               onChange={(v) => updateConfig({ use_early_stopping: v })}
               disabled={disabled}
+              tooltip="Monitors validation Recall@1 and stops training if no improvement is seen for N epochs (patience). Prevents overfitting and saves compute time. The best checkpoint is automatically saved for later use."
             />
           </div>
 
@@ -408,11 +429,11 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
             </Collapsible>
           )}
 
-          {/* Triplet Mining Run ID */}
+          {/* Triplet Mining Run Selection */}
           {config.use_combined_loss && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                <Label className="text-xs">Triplet Mining Run ID</Label>
+                <Label className="text-xs">Triplet Mining Run</Label>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger>
@@ -420,20 +441,57 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
                     </TooltipTrigger>
                     <TooltipContent>
                       <p className="text-xs max-w-xs">
-                        Optional: ID of a triplet mining run to use pre-computed hard negatives.
-                        Create one from the Triplets page first.
+                        Optional: Select a completed triplet mining run to use pre-computed hard negatives during training.
+                        Hard negatives significantly improve embedding quality by focusing training on difficult examples.
                       </p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               </div>
-              <Input
-                placeholder="e.g., abc123-def456..."
-                value={config.triplet_mining_run_id || ""}
-                onChange={(e) => updateConfig({ triplet_mining_run_id: e.target.value || undefined })}
+              <Select
+                value={config.triplet_mining_run_id || "_none"}
+                onValueChange={(v) => updateConfig({ triplet_mining_run_id: v === "_none" ? undefined : v })}
                 disabled={disabled}
-                className="text-xs font-mono h-8"
-              />
+              >
+                <SelectTrigger className="text-xs h-8">
+                  <SelectValue placeholder="Select a triplet mining run (optional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none">
+                    <span className="text-muted-foreground">None - Use online mining only</span>
+                  </SelectItem>
+                  {tripletRunsLoading ? (
+                    <SelectItem value="_loading" disabled>
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        <span>Loading runs...</span>
+                      </div>
+                    </SelectItem>
+                  ) : tripletRuns && tripletRuns.length > 0 ? (
+                    tripletRuns.map((run: TripletMiningRun) => (
+                      <SelectItem key={run.id} value={run.id}>
+                        <div className="flex items-center gap-2">
+                          <span>{run.name}</span>
+                          {run.total_triplets && (
+                            <Badge variant="outline" className="text-[10px] px-1">
+                              {run.total_triplets.toLocaleString()} triplets
+                            </Badge>
+                          )}
+                          {run.hard_triplets && (
+                            <Badge variant="secondary" className="text-[10px] px-1">
+                              {run.hard_triplets.toLocaleString()} hard
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value="_empty" disabled>
+                      <span className="text-muted-foreground">No completed runs - Create one on Triplets page</span>
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
           )}
         </CardContent>
@@ -450,6 +508,7 @@ function FeatureToggle({
   checked,
   onChange,
   disabled,
+  tooltip,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -457,6 +516,7 @@ function FeatureToggle({
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  tooltip?: string;
 }) {
   return (
     <div
@@ -469,9 +529,23 @@ function FeatureToggle({
     >
       <div className="flex items-center gap-2">
         <div className={checked ? "text-primary" : "text-muted-foreground"}>{icon}</div>
-        <div>
-          <p className="text-xs font-medium">{label}</p>
-          <p className="text-[10px] text-muted-foreground">{description}</p>
+        <div className="flex items-center gap-1">
+          <div>
+            <p className="text-xs font-medium">{label}</p>
+            <p className="text-[10px] text-muted-foreground">{description}</p>
+          </div>
+          {tooltip && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger onClick={(e) => e.stopPropagation()}>
+                  <Info className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <p className="text-xs">{tooltip}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
         </div>
       </div>
       <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} />

@@ -13,12 +13,41 @@ import os
 import json
 import time
 import traceback
+from pathlib import Path
 from typing import Optional
 
 import runpod
 import torch
 
-from trainer import ModelTrainer, SOTAModelTrainer
+
+# =============================================
+# Load environment variables from .env file
+# =============================================
+def load_env_file():
+    """Load environment variables from .env file if it exists."""
+    env_paths = [
+        Path("/workspace/.env"),
+        Path(__file__).parent.parent / ".env",
+        Path.cwd() / ".env",
+    ]
+
+    for env_path in env_paths:
+        if env_path.exists():
+            print(f"Loading environment from: {env_path}")
+            for line in env_path.read_text().strip().split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            break
+
+# Load .env on module import
+load_env_file()
+
+from trainer import UnifiedTrainer
 from dataset import ProductDataset
 from splitter import UPCStratifiedSplitter
 from evaluator import ModelEvaluator, DomainAwareEvaluator
@@ -558,27 +587,15 @@ def handler(job):
                 is_training=False,
             )
 
-        # Initialize trainer
+        # Initialize trainer (UnifiedTrainer handles all feature toggles via config)
         report_progress(training_job_id, "running", 0.15, message="Initializing model...")
 
-        # Use SOTA trainer if sota_config is present
-        use_sota = "sota_config" in config and config.get("sota_config", {}).get("enabled", False)
-
-        if use_sota:
-            print("Using SOTA Trainer with advanced features")
-            trainer = SOTAModelTrainer(
-                model_type=model_type,
-                config=config,
-                checkpoint_url=checkpoint_url,
-                job_id=training_job_id,
-            )
-        else:
-            trainer = ModelTrainer(
-                model_type=model_type,
-                config=config,
-                checkpoint_url=checkpoint_url,
-                job_id=training_job_id,
-            )
+        trainer = UnifiedTrainer(
+            model_type=model_type,
+            config=config,
+            checkpoint_url=checkpoint_url,
+            job_id=training_job_id,
+        )
 
         # Training callback for progress
         def progress_callback(epoch, batch, total_batches, metrics):
@@ -672,7 +689,7 @@ def handler(job):
                 "train_domain_distribution": train_dataset.get_domain_distribution(),
                 "data_format": "new" if train_dataset.use_new_format else "legacy",
             },
-            "sota_enabled": use_sota,
+            "sota_enabled": config.get("sota_config", {}).get("enabled", False),
             # Include preprocessing config for deployment
             "preprocessing_config": train_dataset.preprocessing_config,
         }
