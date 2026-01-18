@@ -223,7 +223,24 @@ class CurriculumScheduler:
     Scheduler for curriculum learning phases.
 
     Automatically transitions between phases based on epoch.
+    Loss weights and mining ratios are configurable per phase.
     """
+
+    # Default loss weights per phase
+    DEFAULT_LOSS_WEIGHTS = {
+        "warmup": {"arcface": 1.0, "triplet": 0.0, "domain": 0.0},
+        "easy": {"arcface": 1.0, "triplet": 0.3, "domain": 0.05},
+        "hard": {"arcface": 1.0, "triplet": 0.5, "domain": 0.1},
+        "finetune": {"arcface": 0.5, "triplet": 0.8, "domain": 0.15},
+    }
+
+    # Default mining ratios per phase
+    DEFAULT_MINING_RATIOS = {
+        "warmup": {"hard": 0.0, "semi_hard": 0.2, "random": 0.8},
+        "easy": {"hard": 0.2, "semi_hard": 0.3, "random": 0.5},
+        "hard": {"hard": 0.5, "semi_hard": 0.3, "random": 0.2},
+        "finetune": {"hard": 0.7, "semi_hard": 0.2, "random": 0.1},
+    }
 
     def __init__(
         self,
@@ -231,6 +248,8 @@ class CurriculumScheduler:
         easy_epochs: int = 5,
         hard_epochs: int = 10,
         finetune_epochs: int = 3,
+        loss_weights: dict = None,
+        mining_ratios: dict = None,
     ):
         """
         Args:
@@ -238,6 +257,17 @@ class CurriculumScheduler:
             easy_epochs: Epochs for easy phase
             hard_epochs: Epochs for hard phase
             finetune_epochs: Epochs for finetune phase
+            loss_weights: Custom loss weights per phase, e.g.:
+                {
+                    "warmup": {"arcface": 1.0, "triplet": 0.0, "domain": 0.0},
+                    "easy": {"arcface": 1.0, "triplet": 0.3, "domain": 0.05},
+                    ...
+                }
+            mining_ratios: Custom mining ratios per phase, e.g.:
+                {
+                    "warmup": {"hard": 0.0, "semi_hard": 0.2, "random": 0.8},
+                    ...
+                }
         """
         self.warmup_epochs = warmup_epochs
         self.easy_epochs = easy_epochs
@@ -246,6 +276,23 @@ class CurriculumScheduler:
 
         self.total_epochs = warmup_epochs + easy_epochs + hard_epochs + finetune_epochs
         self.current_phase = "warmup"
+
+        # Use custom weights/ratios or defaults
+        self.loss_weights = self._merge_config(
+            self.DEFAULT_LOSS_WEIGHTS, loss_weights or {}
+        )
+        self.mining_ratios = self._merge_config(
+            self.DEFAULT_MINING_RATIOS, mining_ratios or {}
+        )
+
+    def _merge_config(self, defaults: dict, custom: dict) -> dict:
+        """Merge custom config with defaults (custom overrides defaults)."""
+        result = {}
+        for phase in ["warmup", "easy", "hard", "finetune"]:
+            result[phase] = defaults.get(phase, {}).copy()
+            if phase in custom:
+                result[phase].update(custom[phase])
+        return result
 
     def get_phase(self, epoch: int) -> str:
         """Get curriculum phase for given epoch."""
@@ -267,21 +314,9 @@ class CurriculumScheduler:
         return self.current_phase
 
     def get_loss_weights(self) -> dict:
-        """Get recommended loss weights for current phase."""
-        weights = {
-            "warmup": {"arcface": 1.0, "triplet": 0.0, "domain": 0.0},
-            "easy": {"arcface": 1.0, "triplet": 0.3, "domain": 0.05},
-            "hard": {"arcface": 1.0, "triplet": 0.5, "domain": 0.1},
-            "finetune": {"arcface": 0.5, "triplet": 0.8, "domain": 0.15},
-        }
-        return weights.get(self.current_phase, weights["hard"])
+        """Get loss weights for current phase."""
+        return self.loss_weights.get(self.current_phase, self.loss_weights["hard"])
 
     def get_mining_ratio(self) -> dict:
         """Get hard negative mining ratios for current phase."""
-        ratios = {
-            "warmup": {"hard": 0.0, "semi_hard": 0.2, "random": 0.8},
-            "easy": {"hard": 0.2, "semi_hard": 0.3, "random": 0.5},
-            "hard": {"hard": 0.5, "semi_hard": 0.3, "random": 0.2},
-            "finetune": {"hard": 0.7, "semi_hard": 0.2, "random": 0.1},
-        }
-        return ratios.get(self.current_phase, ratios["hard"])
+        return self.mining_ratios.get(self.current_phase, self.mining_ratios["hard"])

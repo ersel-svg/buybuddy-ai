@@ -456,6 +456,8 @@ class UnifiedTrainer:
                 easy_epochs=curriculum_config.get("easy_epochs", 5),
                 hard_epochs=curriculum_config.get("hard_epochs", 10),
                 finetune_epochs=curriculum_config.get("finetune_epochs", 3),
+                loss_weights=curriculum_config.get("loss_weights"),
+                mining_ratios=curriculum_config.get("mining_ratios"),
             )
 
     def train(
