@@ -171,22 +171,57 @@ class ProductSplitter:
 
         train, val, test = [], [], []
 
+        # Collect single-product brands separately for random assignment
+        single_product_brands = []
+
         # Split each brand group proportionally
         for brand, brand_products in brand_groups.items():
             random.shuffle(brand_products)
-
             n = len(brand_products)
+
+            # For single-product brands, collect for later random assignment
+            if n == 1:
+                single_product_brands.append(brand_products[0])
+                continue
+
+            # For brands with 2 products: 1 train, 1 test (skip val)
+            if n == 2:
+                train.append(brand_products[0])
+                test.append(brand_products[1])
+                continue
+
+            # For brands with 3+ products: normal proportional split
             train_end = int(n * train_ratio)
             val_end = train_end + int(n * val_ratio)
 
-            # Ensure at least 1 in each split if possible
-            if n >= 3:
-                train_end = max(train_end, 1)
-                val_end = max(val_end, train_end + 1)
+            # Ensure at least 1 in each split
+            train_end = max(train_end, 1)
+            val_end = max(val_end, train_end + 1)
 
             train.extend(brand_products[:train_end])
             val.extend(brand_products[train_end:val_end])
             test.extend(brand_products[val_end:])
+
+        # Randomly assign single-product brands according to ratios
+        # This prevents all single-product brands from going to test
+        random.shuffle(single_product_brands)
+        n_single = len(single_product_brands)
+        if n_single > 0:
+            train_end = int(n_single * train_ratio)
+            val_end = train_end + int(n_single * val_ratio)
+
+            # Ensure at least some go to train if we have enough
+            if n_single >= 3:
+                train_end = max(train_end, 1)
+                val_end = max(val_end, train_end + 1)
+            elif n_single >= 1:
+                # With 1-2 single products, put them in train
+                train_end = max(train_end, min(n_single, 1))
+                val_end = train_end
+
+            train.extend(single_product_brands[:train_end])
+            val.extend(single_product_brands[train_end:val_end])
+            test.extend(single_product_brands[val_end:])
 
         # Final shuffle within each split
         random.shuffle(train)
