@@ -309,7 +309,8 @@ class DomainClassifier(nn.Module):
     """
     Domain classifier for adversarial training.
 
-    Predicts whether embedding is from synthetic or real domain.
+    Predicts domain type of embeddings.
+    Domain types: 0=synthetic, 1=real, 2=augmented, 3=cutout, 4=unknown
     Used with gradient reversal to encourage domain-invariant features.
     """
 
@@ -317,7 +318,7 @@ class DomainClassifier(nn.Module):
         self,
         embedding_dim: int,
         hidden_dim: int = 256,
-        num_domains: int = 2,
+        num_domains: int = 5,  # synthetic, real, augmented, cutout, unknown
         dropout: float = 0.5,
     ):
         super().__init__()
@@ -423,9 +424,9 @@ class CombinedProductLoss(nn.Module):
         else:
             self.triplet_loss = None
 
-        # Domain classifier
+        # Domain classifier (5 domains: synthetic, real, augmented, cutout, unknown)
         if use_domain_adaptation:
-            self.domain_classifier = DomainClassifier(embedding_dim)
+            self.domain_classifier = DomainClassifier(embedding_dim, num_domains=5)
             self.domain_loss_fn = nn.CrossEntropyLoss()
         else:
             self.domain_classifier = None

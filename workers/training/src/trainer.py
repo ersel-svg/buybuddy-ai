@@ -412,13 +412,21 @@ class UnifiedTrainer:
                 labels.append(item["label"])
                 domains.append(1 if item.get("domain", "synthetic") == "real" else 0)
 
+            # Support both old ("sampling") and new ("pk_sampling") config keys
+            pk_config = self.sota_config.get("pk_sampling", {})
             sampling_config = self.sota_config.get("sampling", {})
+
+            # Priority: pk_sampling.p > sampling.products_per_batch > default 8
+            products_per_batch = pk_config.get("p", sampling_config.get("products_per_batch", 8))
+            samples_per_product = pk_config.get("k", sampling_config.get("samples_per_product", 4))
+            synthetic_ratio = pk_config.get("synthetic_ratio", sampling_config.get("synthetic_ratio", 0.5))
+
             sampler = PKDomainSampler(
                 labels=labels,
                 domains=domains,
-                products_per_batch=sampling_config.get("products_per_batch", 8),
-                samples_per_product=sampling_config.get("samples_per_product", 4),
-                synthetic_ratio=sampling_config.get("synthetic_ratio", 0.5),
+                products_per_batch=products_per_batch,
+                samples_per_product=samples_per_product,
+                synthetic_ratio=synthetic_ratio,
                 drop_last=True,
             )
 
@@ -495,8 +503,8 @@ class UnifiedTrainer:
                 progress_callback=prefetch_progress,
             )
 
-        # Prefetch val images
-        if hasattr(val_dataset, "prefetch_images"):
+        # Prefetch val images (if val_dataset provided)
+        if val_dataset is not None and hasattr(val_dataset, "prefetch_images"):
             print("\nPrefetching validation images...")
             val_dataset.prefetch_images(max_workers=prefetch_workers)
 
@@ -506,15 +514,17 @@ class UnifiedTrainer:
 
         train_loader = self._build_train_loader(train_dataset, batch_size)
 
-        # Use num_workers=0 when images are prefetched
-        val_prefetched = getattr(val_dataset, "_prefetch_complete", False)
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size * 2,
-            shuffle=False,
-            num_workers=0 if val_prefetched else 4,
-            pin_memory=True,
-        )
+        # Build validation loader only if val_dataset provided
+        val_loader = None
+        if val_dataset is not None:
+            val_prefetched = getattr(val_dataset, "_prefetch_complete", False)
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size * 2,
+                shuffle=False,
+                num_workers=0 if val_prefetched else 4,
+                pin_memory=True,
+            )
 
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler(len(train_loader))
@@ -566,6 +576,20 @@ class UnifiedTrainer:
                 current_phase = self.curriculum_scheduler.update(epoch)
                 print(f"Curriculum phase: {current_phase}")
 
+                # Update loss weights based on curriculum phase
+                if isinstance(criterion, CombinedProductLoss):
+                    curriculum_weights = self.curriculum_scheduler.get_loss_weights()
+                    criterion.arcface_weight = curriculum_weights["arcface"]
+                    criterion.triplet_weight = curriculum_weights["triplet"]
+                    criterion.domain_weight = curriculum_weights["domain"]
+                    print(f"  Loss weights: arcface={curriculum_weights['arcface']:.1f}, "
+                          f"triplet={curriculum_weights['triplet']:.1f}, "
+                          f"domain={curriculum_weights['domain']:.2f}")
+
+                    # Update domain adversarial alpha (ramp up during training)
+                    domain_alpha = min(1.0, epoch / max(1, epochs // 2))
+                    criterion.set_domain_alpha(domain_alpha)
+
             # Train one epoch
             train_metrics = self._train_epoch(
                 train_loader=train_loader,
@@ -576,21 +600,38 @@ class UnifiedTrainer:
                 progress_callback=progress_callback,
             )
 
-            # Validate
-            val_metrics = self._validate(val_loader, criterion)
+            # Validate (only if val_loader provided)
+            if val_loader is not None:
+                val_metrics = self._validate(val_loader, criterion)
+            else:
+                # Use training metrics as proxy when no validation set
+                val_metrics = {
+                    "loss": train_metrics["loss"],
+                    "accuracy": 0.0,
+                    "recall@1": 0.0,
+                    "recall@5": 0.0,
+                    "recall@10": 0.0,
+                }
 
             epoch_time = time.time() - epoch_start
 
             # Log metrics
-            print(
-                f"Epoch {epoch + 1}/{epochs} | "
-                f"Train Loss: {train_metrics['loss']:.4f} | "
-                f"Val Loss: {val_metrics['loss']:.4f} | "
-                f"Val Acc: {val_metrics['accuracy']:.2%} | "
-                f"R@1: {val_metrics['recall@1']:.2%} | "
-                f"R@5: {val_metrics['recall@5']:.2%} | "
-                f"Time: {epoch_time:.1f}s"
-            )
+            if val_loader is not None:
+                print(
+                    f"Epoch {epoch + 1}/{epochs} | "
+                    f"Train Loss: {train_metrics['loss']:.4f} | "
+                    f"Val Loss: {val_metrics['loss']:.4f} | "
+                    f"Val Acc: {val_metrics['accuracy']:.2%} | "
+                    f"R@1: {val_metrics['recall@1']:.2%} | "
+                    f"R@5: {val_metrics['recall@5']:.2%} | "
+                    f"Time: {epoch_time:.1f}s"
+                )
+            else:
+                print(
+                    f"Epoch {epoch + 1}/{epochs} | "
+                    f"Train Loss: {train_metrics['loss']:.4f} | "
+                    f"Time: {epoch_time:.1f}s (no validation)"
+                )
 
             # Log loss components if using combined loss
             if self.use_combined_loss and "arcface_loss" in train_metrics:
