@@ -675,7 +675,7 @@ export interface EmbeddingJobCreateAdvanced {
 
 export type ProductSource = "all" | "selected" | "dataset" | "filter" | "matched" | "new";
 export type ImageType = "synthetic" | "real" | "augmented";
-export type CollectionMode = "create" | "append";
+export type CollectionMode = "create" | "replace" | "append";
 export type OutputTarget = "qdrant" | "file";
 export type JobPurpose = "matching" | "training" | "evaluation";
 

@@ -39,10 +39,12 @@ import {
   Package,
   ImageIcon,
   Info,
+  AlertTriangle,
 } from "lucide-react";
 import type {
   EmbeddingModel,
   Dataset,
+  CollectionInfo,
   MatchingExtractionRequest,
   ProductSource,
   FrameSelection,
@@ -75,6 +77,8 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
   const [collectionMode, setCollectionMode] = useState<CollectionMode>("create");
   const [productCollectionName, setProductCollectionName] = useState("");
   const [cutoutCollectionName, setCutoutCollectionName] = useState("");
+  const [selectedProductCollection, setSelectedProductCollection] = useState("");
+  const [selectedCutoutCollection, setSelectedCutoutCollection] = useState("");
 
   // Frame selection
   const [frameSelection, setFrameSelection] = useState<FrameSelection>("first");
@@ -90,6 +94,33 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
     queryKey: ["datasets"],
     queryFn: () => apiClient.getDatasets(),
   });
+
+  // Fetch existing collections for append mode
+  const { data: collections } = useQuery({
+    queryKey: ["qdrant-collections"],
+    queryFn: () => apiClient.getQdrantCollections(),
+  });
+
+  // Filter collections by dimension when in append mode
+  const compatibleCollections = collections?.filter(
+    (c: CollectionInfo) => !selectedModel || c.vector_size === selectedModel.embedding_dim
+  ) || [];
+
+  // Get selected collection info for dimension validation
+  const selectedProductCollectionInfo = collections?.find(
+    (c: CollectionInfo) => c.name === selectedProductCollection
+  );
+  const selectedCutoutCollectionInfo = collections?.find(
+    (c: CollectionInfo) => c.name === selectedCutoutCollection
+  );
+
+  // Dimension mismatch warning
+  const hasDimensionMismatch = collectionMode === "append" && selectedModel && (
+    (selectedProductCollection && selectedProductCollectionInfo &&
+     selectedProductCollectionInfo.vector_size !== selectedModel.embedding_dim) ||
+    (selectedCutoutCollection && selectedCutoutCollectionInfo &&
+     selectedCutoutCollectionInfo.vector_size !== selectedModel.embedding_dim)
+  );
 
   // Start matching extraction
   const startExtractionMutation = useMutation({
@@ -113,6 +144,24 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
       return;
     }
 
+    if (collectionMode === "append" && !selectedProductCollection) {
+      toast.error("Please select a collection to append to");
+      return;
+    }
+
+    if (hasDimensionMismatch) {
+      toast.error("Selected collection dimension doesn't match model embedding dimension");
+      return;
+    }
+
+    // For append mode, use selected collection names
+    const productCollection = collectionMode === "append"
+      ? selectedProductCollection
+      : productCollectionName || undefined;
+    const cutoutCollection = collectionMode === "append"
+      ? selectedCutoutCollection
+      : cutoutCollectionName || undefined;
+
     const request: MatchingExtractionRequest = {
       model_id: selectedModel.id,
       product_source: productSource,
@@ -120,8 +169,8 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
       include_cutouts: includeCutouts,
       cutout_filter_has_upc: cutoutFilterHasUpc,
       collection_mode: collectionMode,
-      product_collection_name: productCollectionName || undefined,
-      cutout_collection_name: cutoutCollectionName || undefined,
+      product_collection_name: productCollection,
+      cutout_collection_name: cutoutCollection,
       frame_selection: frameSelection,
       frame_interval: frameInterval[0],
       max_frames: maxFrames[0],
@@ -366,62 +415,168 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="create">Create New (replace existing)</SelectItem>
-                    <SelectItem value="append">Append to Existing</SelectItem>
+                    <SelectItem value="create">
+                      <div className="flex flex-col">
+                        <span>Create New</span>
+                        <span className="text-xs text-muted-foreground">Create new collection (fails if exists)</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="replace">
+                      <div className="flex flex-col">
+                        <span>Replace Existing</span>
+                        <span className="text-xs text-muted-foreground">Delete and recreate collection</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="append">
+                      <div className="flex flex-col">
+                        <span>Append to Existing</span>
+                        <span className="text-xs text-muted-foreground">Add vectors to existing collection</span>
+                      </div>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              <Collapsible
-                open={collectionConfigOpen}
-                onOpenChange={setCollectionConfigOpen}
-              >
-                <CollapsibleTrigger asChild>
-                  <Button variant="outline" className="w-full justify-between">
-                    <span>Custom Collection Names</span>
-                    <ChevronDown
-                      className={`h-4 w-4 transition-transform ${collectionConfigOpen ? "rotate-180" : ""}`}
-                    />
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-4 space-y-4">
+              {/* Append Mode: Select existing collections */}
+              {collectionMode === "append" && (
+                <div className="space-y-4 p-3 border rounded-lg bg-muted/30">
                   <div className="space-y-2">
                     <Label>Product Collection</Label>
-                    <Input
-                      placeholder={defaultProductCollection}
-                      value={productCollectionName}
-                      onChange={(e) => setProductCollectionName(e.target.value)}
-                    />
+                    <Select
+                      value={selectedProductCollection}
+                      onValueChange={setSelectedProductCollection}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select collection to append to" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {compatibleCollections.length === 0 ? (
+                          <SelectItem value="_none" disabled>
+                            No compatible collections found
+                          </SelectItem>
+                        ) : (
+                          compatibleCollections.map((c: CollectionInfo) => (
+                            <SelectItem key={c.name} value={c.name}>
+                              <div className="flex items-center gap-2">
+                                <span>{c.name}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {c.vector_size}d
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  ({c.vectors_count} vectors)
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
                   </div>
+
                   {includeCutouts && (
                     <div className="space-y-2">
                       <Label>Cutout Collection</Label>
-                      <Input
-                        placeholder={defaultCutoutCollection}
-                        value={cutoutCollectionName}
-                        onChange={(e) => setCutoutCollectionName(e.target.value)}
-                      />
+                      <Select
+                        value={selectedCutoutCollection}
+                        onValueChange={setSelectedCutoutCollection}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select collection to append to" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {compatibleCollections.length === 0 ? (
+                            <SelectItem value="_none" disabled>
+                              No compatible collections found
+                            </SelectItem>
+                          ) : (
+                            compatibleCollections.map((c: CollectionInfo) => (
+                              <SelectItem key={c.name} value={c.name}>
+                                <div className="flex items-center gap-2">
+                                  <span>{c.name}</span>
+                                  <Badge variant="outline" className="text-xs">
+                                    {c.vector_size}d
+                                  </Badge>
+                                  <span className="text-xs text-muted-foreground">
+                                    ({c.vectors_count} vectors)
+                                  </span>
+                                </div>
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
                     </div>
                   )}
-                </CollapsibleContent>
-              </Collapsible>
+
+                  {/* Dimension mismatch warning */}
+                  {hasDimensionMismatch && (
+                    <div className="flex items-center gap-2 p-2 bg-orange-500/10 border border-orange-500/30 rounded text-sm text-orange-600">
+                      <AlertTriangle className="h-4 w-4" />
+                      <span>Vector dimension mismatch! Model: {selectedModel?.embedding_dim}d</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Create/Replace Mode: Custom collection names */}
+              {collectionMode !== "append" && (
+                <Collapsible
+                  open={collectionConfigOpen}
+                  onOpenChange={setCollectionConfigOpen}
+                >
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" className="w-full justify-between">
+                      <span>Custom Collection Names</span>
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform ${collectionConfigOpen ? "rotate-180" : ""}`}
+                      />
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-4 space-y-4">
+                    <div className="space-y-2">
+                      <Label>Product Collection</Label>
+                      <Input
+                        placeholder={defaultProductCollection}
+                        value={productCollectionName}
+                        onChange={(e) => setProductCollectionName(e.target.value)}
+                      />
+                    </div>
+                    {includeCutouts && (
+                      <div className="space-y-2">
+                        <Label>Cutout Collection</Label>
+                        <Input
+                          placeholder={defaultCutoutCollection}
+                          value={cutoutCollectionName}
+                          onChange={(e) => setCutoutCollectionName(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </CollapsibleContent>
+                </Collapsible>
+              )}
 
               {/* Preview */}
               <div className="p-3 bg-muted rounded-lg text-sm">
                 <p className="flex items-center gap-1 text-muted-foreground mb-2">
                   <Info className="h-4 w-4" />
-                  Collections to be {collectionMode === "create" ? "created" : "updated"}:
+                  {collectionMode === "create" && "Collections to be created:"}
+                  {collectionMode === "replace" && "Collections to be replaced:"}
+                  {collectionMode === "append" && "Collections to append to:"}
                 </p>
                 <ul className="space-y-1">
                   <li>
                     <Badge variant="outline" className="font-mono text-xs">
-                      {productCollectionName || defaultProductCollection}
+                      {collectionMode === "append"
+                        ? (selectedProductCollection || "Select a collection")
+                        : (productCollectionName || defaultProductCollection)}
                     </Badge>
                   </li>
                   {includeCutouts && (
                     <li>
                       <Badge variant="outline" className="font-mono text-xs">
-                        {cutoutCollectionName || defaultCutoutCollection}
+                        {collectionMode === "append"
+                          ? (selectedCutoutCollection || "Select a collection")
+                          : (cutoutCollectionName || defaultCutoutCollection)}
                       </Badge>
                     </li>
                   )}
