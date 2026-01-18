@@ -16,7 +16,7 @@ import random
 from collections import defaultdict
 from typing import Optional
 
-import httpx
+from supabase import create_client, Client
 
 
 class ProductSplitter:
@@ -44,7 +44,8 @@ class ProductSplitter:
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
         self.random_seed = random_seed
-        self.http_client = httpx.Client(timeout=60)
+        # Use Supabase SDK instead of raw httpx for better DNS handling
+        self.client: Client = create_client(supabase_url, supabase_key)
 
     def fetch_products(
         self,
@@ -61,28 +62,22 @@ class ProductSplitter:
         Returns:
             List of product dictionaries
         """
-        headers = {
-            "apikey": self.supabase_key,
-            "Authorization": f"Bearer {self.supabase_key}",
-            "Content-Type": "application/json",
-        }
-
-        # Build query
-        # Select products with frames
-        query = f"{self.supabase_url}/rest/v1/products?select=id,barcode,brand_name,frames_path,frame_count,identifiers"
+        # Build query using Supabase SDK
+        query = self.client.table("products").select(
+            "id,barcode,brand_name,frames_path,frame_count,identifiers"
+        )
 
         # Filter by frame count
-        query += f"&frame_count=gte.{min_frames}"
+        query = query.gte("frame_count", min_frames)
 
         # Filter by specific IDs if provided
         if product_ids:
-            ids_param = ",".join(f'"{pid}"' for pid in product_ids)
-            query += f"&id=in.({ids_param})"
+            query = query.in_("id", product_ids)
 
-        response = self.http_client.get(query, headers=headers)
-        response.raise_for_status()
+        # Execute query
+        response = query.execute()
+        products = response.data
 
-        products = response.json()
         print(f"Fetched {len(products)} products from database")
 
         return products

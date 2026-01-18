@@ -19,6 +19,9 @@ numpy>=1.24.0
 # HTTP client
 httpx>=0.24.0
 
+# Supabase SDK (better DNS handling than raw httpx)
+supabase>=2.0.0
+
 # Training utilities
 tqdm>=4.65.0
 tensorboard>=2.14.0

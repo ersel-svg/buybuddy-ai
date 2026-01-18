@@ -18,6 +18,29 @@ from typing import Optional
 
 import runpod
 import torch
+import httpx
+from supabase import create_client, Client
+
+
+# Global Supabase client (lazily initialized)
+_supabase_client: Optional[Client] = None
+
+
+def get_supabase_client() -> Optional[Client]:
+    """Get or create Supabase client singleton."""
+    global _supabase_client
+
+    if _supabase_client is not None:
+        return _supabase_client
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not supabase_key:
+        return None
+
+    _supabase_client = create_client(supabase_url, supabase_key)
+    return _supabase_client
 
 
 # =============================================
@@ -124,13 +147,10 @@ def report_progress(
     metrics: Optional[dict] = None,
     message: Optional[str] = None,
 ):
-    """Report training progress to API."""
-    import httpx
+    """Report training progress to API using Supabase SDK."""
+    client = get_supabase_client()
 
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-
-    if not supabase_url or not supabase_key:
+    if client is None:
         print(f"[Progress] {status}: {progress:.1%} - {message}")
         return
 
@@ -145,18 +165,7 @@ def report_progress(
         if message:
             payload["message"] = message
 
-        response = httpx.patch(
-            f"{supabase_url}/rest/v1/training_runs?id=eq.{job_id}",
-            headers={
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal",
-            },
-            json=payload,
-            timeout=30,
-        )
-        response.raise_for_status()
+        client.table("training_runs").update(payload).eq("id", job_id).execute()
     except Exception as e:
         print(f"Failed to report progress: {e}")
 
@@ -167,8 +176,6 @@ def handle_evaluation(job_input: dict) -> dict:
 
     Loads a checkpoint and evaluates it on provided test products.
     """
-    import httpx
-
     training_run_id = job_input.get("training_run_id")
     checkpoint_id = job_input.get("checkpoint_id")
     checkpoint_url = job_input.get("checkpoint_url")
@@ -192,33 +199,25 @@ def handle_evaluation(job_input: dict) -> dict:
     print(f"=" * 60)
 
     try:
-        # Fetch test products from Supabase
-        headers = {
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-        }
+        # Get Supabase client
+        client = get_supabase_client()
+        if client is None:
+            # Fallback: create a new client with provided credentials
+            from supabase import create_client
+            client = create_client(supabase_url, supabase_key)
 
-        # Get product details
-        response = httpx.post(
-            f"{supabase_url}/rest/v1/rpc/get_products_by_ids",
-            headers=headers,
-            json={"product_ids": test_product_ids},
-            timeout=60,
-        )
-
-        if response.status_code != 200:
+        # Fetch test products using Supabase SDK
+        try:
+            response = client.rpc("get_products_by_ids", {"product_ids": test_product_ids}).execute()
+            test_products = response.data
+        except Exception:
             # Fallback: query products directly
-            ids_str = ",".join(f'"{pid}"' for pid in test_product_ids)
-            response = httpx.get(
-                f"{supabase_url}/rest/v1/products?id=in.({ids_str})",
-                headers=headers,
-                timeout=60,
-            )
+            response = client.table("products").select("*").in_("id", test_product_ids).execute()
+            test_products = response.data
 
-        if response.status_code != 200:
-            return {"error": f"Failed to fetch products: {response.text}"}
+        if not test_products:
+            return {"error": "Failed to fetch products or no products found"}
 
-        test_products = response.json()
         print(f"Fetched {len(test_products)} test products")
 
         # Create test dataset
@@ -299,12 +298,7 @@ def handle_evaluation(job_input: dict) -> dict:
             },
         }
 
-        httpx.patch(
-            f"{supabase_url}/rest/v1/training_checkpoints?id=eq.{checkpoint_id}",
-            headers={**headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
-            json=update_payload,
-            timeout=30,
-        )
+        client.table("training_checkpoints").update(update_payload).eq("id", checkpoint_id).execute()
 
         result = {
             "status": "completed",
@@ -335,19 +329,16 @@ def handle_evaluation(job_input: dict) -> dict:
         print(traceback_str)
 
         # Update checkpoint status
-        if checkpoint_id and supabase_url and supabase_key:
+        if checkpoint_id:
             try:
-                httpx.patch(
-                    f"{supabase_url}/rest/v1/training_checkpoints?id=eq.{checkpoint_id}",
-                    headers={
-                        "apikey": supabase_key,
-                        "Authorization": f"Bearer {supabase_key}",
-                        "Content-Type": "application/json",
-                        "Prefer": "return=minimal",
-                    },
-                    json={"evaluation_status": "failed", "evaluation_error": error_msg},
-                    timeout=30,
-                )
+                eval_client = get_supabase_client()
+                if eval_client is None and supabase_url and supabase_key:
+                    from supabase import create_client
+                    eval_client = create_client(supabase_url, supabase_key)
+                if eval_client:
+                    eval_client.table("training_checkpoints").update(
+                        {"evaluation_status": "failed", "evaluation_error": error_msg}
+                    ).eq("id", checkpoint_id).execute()
             except:
                 pass
 
@@ -477,12 +468,11 @@ def handler(job):
             val_images = {pid: imgs for pid, imgs in training_images.items() if pid in val_product_ids}
             test_images = {pid: imgs for pid, imgs in training_images.items() if pid in test_product_ids}
 
-            # Fetch product metadata for the datasets
-            import httpx
-            headers = {
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
-            }
+            # Fetch product metadata for the datasets using Supabase SDK
+            handler_client = get_supabase_client()
+            if handler_client is None:
+                from supabase import create_client
+                handler_client = create_client(supabase_url, supabase_key)
 
             all_product_ids = list(training_images.keys())
             products_data = []
@@ -490,14 +480,13 @@ def handler(job):
             # Fetch in batches of 100
             for i in range(0, len(all_product_ids), 100):
                 batch_ids = all_product_ids[i:i + 100]
-                ids_str = ",".join(f'"{pid}"' for pid in batch_ids)
-                response = httpx.get(
-                    f"{supabase_url}/rest/v1/products?select=id,barcode,brand_name,category,product_name&id=in.({ids_str})",
-                    headers=headers,
-                    timeout=60,
-                )
-                if response.status_code == 200:
-                    products_data.extend(response.json())
+                try:
+                    response = handler_client.table("products").select(
+                        "id,barcode,brand_name,category,product_name"
+                    ).in_("id", batch_ids).execute()
+                    products_data.extend(response.data)
+                except Exception as e:
+                    print(f"Warning: Failed to fetch batch {i}: {e}")
 
             # Split product metadata
             train_data = [p for p in products_data if p["id"] in train_product_ids]
