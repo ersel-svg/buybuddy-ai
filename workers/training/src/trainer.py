@@ -738,7 +738,6 @@ class SOTAModelTrainer(ModelTrainer):
             patience=self.config.get("early_stopping_patience", 5),
             min_delta=self.config.get("early_stopping_min_delta", 1e-4),
             mode="min",
-            metric_name="val_loss",
         )
 
         # Training state
@@ -844,7 +843,7 @@ class SOTAModelTrainer(ModelTrainer):
                 )
 
             # Early stopping check
-            if early_stopping.should_stop(val_metrics["loss"]):
+            if early_stopping(val_metrics["loss"], epoch):
                 print(f"Early stopping triggered at epoch {epoch + 1}")
                 break
 
