@@ -146,6 +146,7 @@ def report_progress(
     progress: float,
     metrics: Optional[dict] = None,
     message: Optional[str] = None,
+    checkpoint_url: Optional[str] = None,
 ):
     """Report training progress to API using Supabase SDK."""
     client = get_supabase_client()
@@ -164,6 +165,8 @@ def report_progress(
             payload["metrics"] = metrics
         if message:
             payload["message"] = message
+        if checkpoint_url:
+            payload["checkpoint_url"] = checkpoint_url
 
         client.table("training_runs").update(payload).eq("id", job_id).execute()
     except Exception as e:
@@ -689,7 +692,7 @@ def handler(job):
         if "metric_history" in training_result:
             result["metric_history"] = training_result["metric_history"]
 
-        # Report completion
+        # Report completion with checkpoint URL
         all_metrics = {
             **training_result["final_metrics"],
             **{f"test_{k}": v for k, v in test_metrics.items() if isinstance(v, (int, float))},
@@ -702,6 +705,7 @@ def handler(job):
             1.0,
             metrics=all_metrics,
             message="Training completed successfully",
+            checkpoint_url=checkpoint_info.get("url"),
         )
 
         print(f"\n{'=' * 60}")

@@ -32,7 +32,7 @@ TEST_IMAGES = [
     {"id": "test-7", "url": "https://images.unsplash.com/photo-1546868871-7041f2a55e12?w=400", "type": "product"},
     {"id": "test-8", "url": "https://images.unsplash.com/photo-1585386959984-a4155224a1ad?w=400", "type": "product"},
     {"id": "test-9", "url": "https://images.unsplash.com/photo-1598327105666-5b89351aff97?w=400", "type": "product"},
-    {"id": "test-10", "url": "https://images.unsplash.com/photo-1491553895911-0055cda1ae?w=400", "type": "product"},
+    {"id": "test-10", "url": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=400", "type": "product"},
 ]
 
 # Models to test

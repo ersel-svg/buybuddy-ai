@@ -849,26 +849,85 @@ class UnifiedTrainer:
         return correct / len(labels) if len(labels) > 0 else 0.0
 
     def save_final_checkpoint(self) -> dict:
-        """Save and upload final checkpoint."""
+        """Save and upload final checkpoint to Supabase Storage."""
         if self.checkpoint_manager is None:
             return {"error": "No checkpoint manager"}
 
         # Get best checkpoint info
         best_checkpoint = self.checkpoint_manager.get_best_checkpoint()
 
-        if best_checkpoint and os.environ.get("AWS_ACCESS_KEY_ID"):
-            # Upload to S3
-            url = self.checkpoint_manager.upload_to_s3(best_checkpoint)
-            return {
-                "path": str(best_checkpoint),
-                "url": url,
-                "uploaded": True,
-            }
+        if not best_checkpoint:
+            return {"path": None, "uploaded": False}
+
+        # Try to upload to Supabase Storage
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+        if supabase_url and supabase_key:
+            try:
+                url = self._upload_to_supabase_storage(
+                    best_checkpoint,
+                    bucket="training-checkpoints",
+                )
+                return {
+                    "path": str(best_checkpoint),
+                    "url": url,
+                    "uploaded": True,
+                }
+            except Exception as e:
+                print(f"Warning: Failed to upload to Supabase Storage: {e}")
 
         return {
-            "path": str(best_checkpoint) if best_checkpoint else None,
+            "path": str(best_checkpoint),
             "uploaded": False,
         }
+
+    def _upload_to_supabase_storage(
+        self,
+        file_path: Path,
+        bucket: str = "training-checkpoints",
+    ) -> str:
+        """
+        Upload checkpoint to Supabase Storage.
+
+        Args:
+            file_path: Path to the checkpoint file
+            bucket: Supabase Storage bucket name
+
+        Returns:
+            Public URL of the uploaded file
+        """
+        from supabase import create_client
+
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+        if not supabase_url or not supabase_key:
+            raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+
+        client = create_client(supabase_url, supabase_key)
+
+        # Generate storage path: checkpoints/{job_id}/{filename}
+        filename = file_path.name
+        storage_path = f"checkpoints/{self.job_id or 'unknown'}/{filename}"
+
+        # Read file
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+
+        # Upload to Supabase Storage
+        response = client.storage.from_(bucket).upload(
+            path=storage_path,
+            file=file_data,
+            file_options={"content-type": "application/octet-stream", "upsert": "true"},
+        )
+
+        # Get public URL
+        public_url = client.storage.from_(bucket).get_public_url(storage_path)
+
+        print(f"Uploaded checkpoint to Supabase Storage: {storage_path}")
+
+        return public_url
 
 
 # =============================================
