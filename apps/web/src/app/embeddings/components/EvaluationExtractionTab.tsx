@@ -30,6 +30,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Play,
   Loader2,
@@ -38,6 +39,8 @@ import {
   FlaskConical,
   AlertCircle,
   Info,
+  GraduationCap,
+  Layers,
 } from "lucide-react";
 import type {
   EmbeddingModel,
@@ -46,6 +49,8 @@ import type {
   ImageType,
   FrameSelection,
   CollectionMode,
+  TrainingRun,
+  TrainingCheckpoint,
 } from "@/types";
 
 interface EvaluationExtractionTabProps {
@@ -55,8 +60,15 @@ interface EvaluationExtractionTabProps {
 export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps) {
   const queryClient = useQueryClient();
 
-  // Model selection (specific trained model for evaluation)
+  // Model source: base model or trained model
+  const [modelSource, setModelSource] = useState<"base" | "trained">("base");
+
+  // Base model selection
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+
+  // Trained model selection
+  const [selectedTrainingRunId, setSelectedTrainingRunId] = useState<string>("");
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string>("");
 
   // Dataset selection
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
@@ -89,14 +101,39 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
     queryFn: () => apiClient.getQdrantCollections(),
   });
 
+  // Fetch completed training runs
+  const { data: trainingRunsData, isLoading: trainingRunsLoading } = useQuery({
+    queryKey: ["training-runs", "completed"],
+    queryFn: () => apiClient.getTrainingRuns({ status: "completed", limit: 100 }),
+  });
+  const trainingRuns = trainingRunsData?.items || [];
+
+  // Fetch checkpoints for selected training run
+  const { data: checkpoints, isLoading: checkpointsLoading } = useQuery({
+    queryKey: ["training-checkpoints", selectedTrainingRunId],
+    queryFn: () => apiClient.getTrainingCheckpoints(selectedTrainingRunId),
+    enabled: !!selectedTrainingRunId,
+  });
+
   // Selected collection for append mode
   const [selectedCollection, setSelectedCollection] = useState<string>("");
 
   // Get selected dataset
   const selectedDataset = datasets?.find((d) => d.id === selectedDatasetId);
 
-  // Get selected model
+  // Get selected base model
   const selectedModel = models?.find((m) => m.id === selectedModelId);
+
+  // Get selected training run
+  const selectedTrainingRun = trainingRuns.find((r: TrainingRun) => r.id === selectedTrainingRunId);
+
+  // Get selected checkpoint
+  const selectedCheckpoint = checkpoints?.find((c: TrainingCheckpoint) => c.id === selectedCheckpointId);
+
+  // Get effective embedding dimension based on model source
+  const effectiveEmbeddingDim = modelSource === "base"
+    ? selectedModel?.embedding_dim
+    : selectedTrainingRun?.training_config?.embedding_dim;
 
   // Start evaluation extraction
   const startExtractionMutation = useMutation({
@@ -121,9 +158,21 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
   };
 
   const handleStartExtraction = () => {
-    if (!selectedModelId) {
-      toast.error("Select a model to evaluate");
-      return;
+    // Validate model selection based on source
+    if (modelSource === "base") {
+      if (!selectedModelId) {
+        toast.error("Select a base model to evaluate");
+        return;
+      }
+    } else {
+      if (!selectedTrainingRunId) {
+        toast.error("Select a training run");
+        return;
+      }
+      if (!selectedCheckpointId) {
+        toast.error("Select a checkpoint");
+        return;
+      }
     }
 
     if (!selectedDatasetId) {
@@ -137,7 +186,9 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
     }
 
     const request: EvaluationExtractionRequest = {
-      model_id: selectedModelId,
+      model_id: modelSource === "base" ? selectedModelId : undefined,
+      training_run_id: modelSource === "trained" ? selectedTrainingRunId : undefined,
+      checkpoint_id: modelSource === "trained" ? selectedCheckpointId : undefined,
       dataset_id: selectedDatasetId,
       image_types: imageTypes,
       frame_selection: frameSelection,
@@ -151,11 +202,15 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
   };
 
   const datasetName = selectedDataset?.name.toLowerCase().replace(/\s+/g, "_") || "dataset";
-  const modelName = selectedModel?.name.toLowerCase().replace(/\s+/g, "_") || "model";
-  const defaultCollectionName = `eval_${datasetName}_${modelName}`;
+  const modelName = modelSource === "base"
+    ? (selectedModel?.name.toLowerCase().replace(/\s+/g, "_") || "model")
+    : (selectedTrainingRun?.name.toLowerCase().replace(/\s+/g, "_") || "trained");
+  const checkpointSuffix = selectedCheckpoint ? `_ep${selectedCheckpoint.epoch}` : "";
+  const defaultCollectionName = `eval_${datasetName}_${modelName}${checkpointSuffix}`;
 
-  const canStartExtraction =
-    selectedModelId && selectedDatasetId && imageTypes.length > 0;
+  const canStartExtraction = modelSource === "base"
+    ? (selectedModelId && selectedDatasetId && imageTypes.length > 0)
+    : (selectedTrainingRunId && selectedCheckpointId && selectedDatasetId && imageTypes.length > 0);
 
   return (
     <div className="space-y-6">
@@ -182,47 +237,181 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
             <CardHeader>
               <CardTitle className="text-lg">Model Selection</CardTitle>
               <CardDescription>
-                Select the trained model to evaluate
+                Select a base model or a trained model with checkpoint
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Embedding Model</Label>
-                <Select value={selectedModelId} onValueChange={setSelectedModelId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models?.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>
-                        <div className="flex items-center gap-2">
-                          {model.name}
-                          {model.is_matching_active && (
-                            <Badge variant="secondary" className="text-xs">
-                              Active
-                            </Badge>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <Tabs value={modelSource} onValueChange={(v) => setModelSource(v as "base" | "trained")}>
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="base" className="flex items-center gap-2">
+                    <Layers className="h-4 w-4" />
+                    Base Model
+                  </TabsTrigger>
+                  <TabsTrigger value="trained" className="flex items-center gap-2">
+                    <GraduationCap className="h-4 w-4" />
+                    Trained Model
+                  </TabsTrigger>
+                </TabsList>
 
-              {selectedModel && (
-                <div className="p-3 bg-muted rounded-lg text-sm">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <p className="text-muted-foreground">Type</p>
-                      <p className="font-medium">{selectedModel.model_type}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Dimension</p>
-                      <p className="font-medium">{selectedModel.embedding_dim}d</p>
-                    </div>
+                {/* Base Model Selection */}
+                <TabsContent value="base" className="space-y-4 mt-4">
+                  <div className="space-y-2">
+                    <Label>Embedding Model</Label>
+                    <Select value={selectedModelId} onValueChange={setSelectedModelId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {models?.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            <div className="flex items-center gap-2">
+                              {model.name}
+                              {model.is_matching_active && (
+                                <Badge variant="secondary" className="text-xs">
+                                  Active
+                                </Badge>
+                              )}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                </div>
-              )}
+
+                  {selectedModel && (
+                    <div className="p-3 bg-muted rounded-lg text-sm">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-muted-foreground">Type</p>
+                          <p className="font-medium">{selectedModel.model_type}</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Dimension</p>
+                          <p className="font-medium">{selectedModel.embedding_dim}d</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Trained Model Selection */}
+                <TabsContent value="trained" className="space-y-4 mt-4">
+                  {/* Training Run Selection */}
+                  <div className="space-y-2">
+                    <Label>Training Run</Label>
+                    <Select
+                      value={selectedTrainingRunId}
+                      onValueChange={(v) => {
+                        setSelectedTrainingRunId(v);
+                        setSelectedCheckpointId(""); // Reset checkpoint when run changes
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a completed training run" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {trainingRunsLoading ? (
+                          <SelectItem value="_loading" disabled>
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            Loading...
+                          </SelectItem>
+                        ) : trainingRuns.length === 0 ? (
+                          <SelectItem value="_none" disabled>
+                            No completed training runs
+                          </SelectItem>
+                        ) : (
+                          trainingRuns.map((run: TrainingRun) => (
+                            <SelectItem key={run.id} value={run.id}>
+                              <div className="flex items-center gap-2">
+                                <span>{run.name}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {run.base_model_type}
+                                </Badge>
+                                {run.best_val_recall_at_1 && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    R@1: {(run.best_val_recall_at_1 * 100).toFixed(1)}%
+                                  </Badge>
+                                )}
+                              </div>
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Checkpoint Selection */}
+                  {selectedTrainingRunId && (
+                    <div className="space-y-2">
+                      <Label>Checkpoint</Label>
+                      <Select value={selectedCheckpointId} onValueChange={setSelectedCheckpointId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select a checkpoint" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {checkpointsLoading ? (
+                            <SelectItem value="_loading" disabled>
+                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                              Loading...
+                            </SelectItem>
+                          ) : !checkpoints || checkpoints.length === 0 ? (
+                            <SelectItem value="_none" disabled>
+                              No checkpoints available
+                            </SelectItem>
+                          ) : (
+                            checkpoints.map((cp: TrainingCheckpoint) => (
+                              <SelectItem key={cp.id} value={cp.id}>
+                                <div className="flex items-center gap-2">
+                                  <span>Epoch {cp.epoch}</span>
+                                  {cp.is_best && (
+                                    <Badge variant="default" className="text-xs">
+                                      Best
+                                    </Badge>
+                                  )}
+                                  {cp.is_final && (
+                                    <Badge variant="secondary" className="text-xs">
+                                      Final
+                                    </Badge>
+                                  )}
+                                  {cp.val_recall_at_1 && (
+                                    <span className="text-xs text-muted-foreground">
+                                      R@1: {(cp.val_recall_at_1 * 100).toFixed(1)}%
+                                    </span>
+                                  )}
+                                </div>
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  {/* Training Run Info */}
+                  {selectedTrainingRun && (
+                    <div className="p-3 bg-muted rounded-lg text-sm">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-muted-foreground">Base Model</p>
+                          <p className="font-medium">{selectedTrainingRun.base_model_type}</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Dimension</p>
+                          <p className="font-medium">{selectedTrainingRun.training_config?.embedding_dim || "N/A"}d</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Train Products</p>
+                          <p className="font-medium">{selectedTrainingRun.train_product_count}</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Best Epoch</p>
+                          <p className="font-medium">{selectedTrainingRun.best_epoch || "N/A"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
 
@@ -501,14 +690,14 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                     </SelectContent>
                   </Select>
                   {/* Dimension validation warning */}
-                  {selectedCollection && selectedModel && (() => {
+                  {selectedCollection && effectiveEmbeddingDim && (() => {
                     const col = collections?.find(c => c.name === selectedCollection);
-                    if (col && col.vector_size !== selectedModel.embedding_dim) {
+                    if (col && col.vector_size !== effectiveEmbeddingDim) {
                       return (
                         <div className="flex items-center gap-2 p-2 bg-destructive/10 text-destructive rounded text-sm">
                           <AlertCircle className="h-4 w-4" />
                           <span>
-                            Dimension mismatch: Collection is {col.vector_size}d but model outputs {selectedModel.embedding_dim}d
+                            Dimension mismatch: Collection is {col.vector_size}d but model outputs {effectiveEmbeddingDim}d
                           </span>
                         </div>
                       );
@@ -543,7 +732,7 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
               )}
 
               {/* Preview */}
-              {selectedModelId && selectedDatasetId && (
+              {((modelSource === "base" && selectedModelId) || (modelSource === "trained" && selectedTrainingRunId)) && selectedDatasetId && (
                 <div className="p-3 bg-muted rounded-lg text-sm">
                   <p className="flex items-center gap-1 text-muted-foreground mb-2">
                     <Info className="h-4 w-4" />
@@ -568,8 +757,13 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
             <div>
               <p className="font-medium">Ready to extract evaluation embeddings</p>
               <p className="text-sm text-muted-foreground">
-                {selectedModel?.name || "No model selected"} +{" "}
-                {selectedDataset?.name || "No dataset selected"} ({imageTypes.length}{" "}
+                {modelSource === "base"
+                  ? (selectedModel?.name || "No model selected")
+                  : (selectedTrainingRun?.name
+                      ? `${selectedTrainingRun.name}${selectedCheckpoint ? ` (Epoch ${selectedCheckpoint.epoch})` : ""}`
+                      : "No training run selected")
+                }{" "}
+                + {selectedDataset?.name || "No dataset selected"} ({imageTypes.length}{" "}
                 image type{imageTypes.length !== 1 ? "s" : ""})
               </p>
             </div>

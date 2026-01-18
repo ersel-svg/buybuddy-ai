@@ -734,7 +734,10 @@ export interface TrainingExtractionResponse {
 
 // Tab 3: Evaluation Extraction
 export interface EvaluationExtractionRequest {
-  model_id: string;
+  // Either model_id (base model) OR training_run_id + checkpoint_id (trained model)
+  model_id?: string;
+  training_run_id?: string;
+  checkpoint_id?: string;
   dataset_id: string;
   image_types: ImageType[];
   frame_selection: FrameSelection | "all";
