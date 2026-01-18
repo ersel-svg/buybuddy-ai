@@ -867,7 +867,7 @@ class UnifiedTrainer:
             try:
                 url = self._upload_to_supabase_storage(
                     best_checkpoint,
-                    bucket="training-checkpoints",
+                    bucket="models",
                 )
                 return {
                     "path": str(best_checkpoint),
