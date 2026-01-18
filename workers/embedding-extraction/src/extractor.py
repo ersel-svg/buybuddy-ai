@@ -28,9 +28,8 @@ except ImportError:
     BB_MODELS_AVAILABLE = False
     print("Warning: bb-models package not found, using legacy extractor")
 
-# Fallback imports for legacy mode
-if not BB_MODELS_AVAILABLE:
-    from transformers import AutoImageProcessor, AutoModel
+# Note: AutoImageProcessor and AutoModel are imported inside methods
+# to avoid issues when bb-models is available but legacy fallback is needed
 
 
 class EmbeddingExtractor:
@@ -99,6 +98,8 @@ class EmbeddingExtractor:
 
     def _init_legacy(self, model_path: Optional[str], checkpoint_url: Optional[str]):
         """Legacy initialization for DINOv2 only."""
+        from transformers import AutoImageProcessor, AutoModel
+
         self._use_bb_models = False
 
         # Determine model
