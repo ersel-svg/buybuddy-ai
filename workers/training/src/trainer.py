@@ -398,6 +398,11 @@ class UnifiedTrainer:
 
     def _build_train_loader(self, train_dataset, batch_size: int) -> DataLoader:
         """Build training data loader with optional P-K sampling."""
+        # Use num_workers=0 when images are prefetched (in-memory access)
+        # This avoids multiprocessing overhead and memory issues
+        use_prefetch = getattr(train_dataset, "_prefetch_complete", False)
+        num_workers = 0 if use_prefetch else 4
+
         if self.use_pk_sampling:
             # Extract labels and domains from dataset
             labels = []
@@ -420,7 +425,7 @@ class UnifiedTrainer:
             return DataLoader(
                 train_dataset,
                 batch_sampler=sampler,
-                num_workers=4,
+                num_workers=num_workers,
                 pin_memory=True,
             )
         else:
@@ -429,7 +434,7 @@ class UnifiedTrainer:
                 train_dataset,
                 batch_size=batch_size,
                 shuffle=True,
-                num_workers=4,
+                num_workers=num_workers,
                 pin_memory=True,
                 drop_last=True,
             )
@@ -470,16 +475,44 @@ class UnifiedTrainer:
         self.model = self._build_model(num_classes)
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
 
+        # Prefetch images for faster training (parallel downloads)
+        prefetch_workers = self.config.get("prefetch_workers", 32)
+        print(f"\nPrefetching training images with {prefetch_workers} workers...")
+
+        def prefetch_progress(current, total):
+            if progress_callback:
+                progress = current / total * 0.1  # Prefetch is 10% of total
+                progress_callback(0, current, total, {
+                    "phase": "prefetching",
+                    "progress": progress,
+                    "message": f"Downloading images: {current}/{total}",
+                })
+
+        # Prefetch train images
+        if hasattr(train_dataset, "prefetch_images"):
+            train_dataset.prefetch_images(
+                max_workers=prefetch_workers,
+                progress_callback=prefetch_progress,
+            )
+
+        # Prefetch val images
+        if hasattr(val_dataset, "prefetch_images"):
+            print("\nPrefetching validation images...")
+            val_dataset.prefetch_images(max_workers=prefetch_workers)
+
         # Build optimizer and data loaders
         batch_size = self.config.get("batch_size", 32)
         grad_accum = self.config.get("gradient_accumulation_steps", 1)
 
         train_loader = self._build_train_loader(train_dataset, batch_size)
+
+        # Use num_workers=0 when images are prefetched
+        val_prefetched = getattr(val_dataset, "_prefetch_complete", False)
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size * 2,
             shuffle=False,
-            num_workers=4,
+            num_workers=0 if val_prefetched else 4,
             pin_memory=True,
         )
 

@@ -7,12 +7,15 @@ Features:
 - Domain-aware sampling
 - Augmentation integration
 - Efficient image loading from URLs
+- Parallel image prefetching for faster training
 """
 
 import io
 import random
 from typing import Optional, Any
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import torch
 from torch.utils.data import Dataset
@@ -125,8 +128,16 @@ class ProductDataset(Dataset):
         # Setup transforms
         self._setup_transforms()
 
-        # HTTP client for downloading images
-        self.http_client = httpx.Client(timeout=http_timeout)
+        # HTTP client for downloading images (with connection pooling)
+        self.http_client = httpx.Client(
+            timeout=http_timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
+
+        # Image cache for prefetched images
+        self._image_cache: dict[str, Image.Image] = {}
+        self._cache_lock = threading.Lock()
+        self._prefetch_complete = False
 
         # Count image types
         image_type_counts = {"synthetic": 0, "real": 0, "augmented": 0, "cutout": 0, "unknown": 0}
@@ -145,6 +156,83 @@ class ProductDataset(Dataset):
         print(f"  Model: {model_type}")
         print(f"  Augmentation: {augmentation_strength}")
         print(f"  Image types: {image_type_counts}")
+
+    def prefetch_images(
+        self,
+        max_workers: int = 32,
+        progress_callback: Optional[callable] = None,
+    ) -> int:
+        """
+        Prefetch all images in parallel for faster training.
+
+        Downloads all images concurrently and caches them in memory.
+        Call this before training starts.
+
+        Args:
+            max_workers: Number of parallel download threads (default 32)
+            progress_callback: Optional callback(current, total) for progress updates
+
+        Returns:
+            Number of successfully prefetched images
+        """
+        urls = [sample["url"] for sample in self.samples]
+        total = len(urls)
+        unique_urls = list(set(urls))
+
+        print(f"Prefetching {len(unique_urls)} unique images ({total} total samples)...")
+        print(f"  Using {max_workers} parallel workers")
+
+        success_count = 0
+        failed_urls = []
+
+        def download_one(url: str) -> tuple[str, Optional[Image.Image]]:
+            """Download a single image."""
+            try:
+                response = self.http_client.get(url)
+                response.raise_for_status()
+                image = Image.open(io.BytesIO(response.content)).convert("RGB")
+                return url, image
+            except Exception as e:
+                return url, None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(download_one, url): url for url in unique_urls}
+
+            for i, future in enumerate(as_completed(futures)):
+                url, image = future.result()
+
+                if image is not None:
+                    with self._cache_lock:
+                        self._image_cache[url] = image
+                    success_count += 1
+                else:
+                    failed_urls.append(url)
+
+                # Progress update every 100 images or at the end
+                if progress_callback and (i % 100 == 0 or i == len(unique_urls) - 1):
+                    progress_callback(i + 1, len(unique_urls))
+
+                # Print progress every 500 images
+                if (i + 1) % 500 == 0:
+                    print(f"  Downloaded {i + 1}/{len(unique_urls)} images...")
+
+        self._prefetch_complete = True
+
+        print(f"Prefetch complete: {success_count}/{len(unique_urls)} images cached")
+        if failed_urls:
+            print(f"  Failed to download {len(failed_urls)} images")
+            if len(failed_urls) <= 5:
+                for url in failed_urls:
+                    print(f"    - {url[:80]}...")
+
+        return success_count
+
+    def clear_cache(self):
+        """Clear the image cache to free memory."""
+        with self._cache_lock:
+            self._image_cache.clear()
+            self._prefetch_complete = False
+        print("Image cache cleared")
 
     def _build_samples(self):
         """Build the samples list based on format."""
@@ -289,7 +377,14 @@ class ProductDataset(Dataset):
         }
 
     def _load_image(self, url: str) -> Image.Image:
-        """Load image from URL."""
+        """Load image from URL or cache."""
+        # Check cache first
+        with self._cache_lock:
+            if url in self._image_cache:
+                # Return a copy to avoid modifying cached image
+                return self._image_cache[url].copy()
+
+        # Download if not cached
         response = self.http_client.get(url)
         response.raise_for_status()
         image = Image.open(io.BytesIO(response.content)).convert("RGB")
