@@ -121,6 +121,30 @@ DINOV3_MODELS = {
 # CLIP Family
 # =============================================
 CLIP_MODELS = {
+    "clip-vit-b-16": ModelConfig(
+        model_id="clip-vit-b-16",
+        family="clip",
+        hf_model_id="openai/clip-vit-base-patch16",
+        embedding_dim=512,
+        image_size=224,
+        params_millions=86,
+        description="CLIP ViT-B/16 - Balanced performance",
+        backbone_class="bb_models.backbones.clip.CLIPBackbone",
+        image_mean=CLIP_MEAN,
+        image_std=CLIP_STD,
+    ),
+    "clip-vit-b-32": ModelConfig(
+        model_id="clip-vit-b-32",
+        family="clip",
+        hf_model_id="openai/clip-vit-base-patch32",
+        embedding_dim=512,
+        image_size=224,
+        params_millions=86,
+        description="CLIP ViT-B/32 - Fast and efficient",
+        backbone_class="bb_models.backbones.clip.CLIPBackbone",
+        image_mean=CLIP_MEAN,
+        image_std=CLIP_STD,
+    ),
     "clip-vit-l-14": ModelConfig(
         model_id="clip-vit-l-14",
         family="clip",
