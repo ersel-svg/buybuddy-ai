@@ -688,10 +688,12 @@ class UnifiedTrainer:
             labels = batch["label"].to(self.device)
             domains = batch.get("domain")
             if domains is not None:
-                # Convert list to tensor if needed
+                # Convert domain strings to tensor if needed
                 if isinstance(domains, list):
-                    domains = torch.tensor(domains, dtype=torch.long)
-                domains = domains.to(self.device)
+                    domain_map = {"synthetic": 0, "real": 1, "augmented": 2, "cutout": 3, "unknown": 4}
+                    domains = torch.tensor([domain_map.get(d, 4) for d in domains], device=self.device)
+                elif isinstance(domains, torch.Tensor):
+                    domains = domains.to(self.device)
 
             # Forward pass with mixed precision
             with autocast(enabled=use_amp):
