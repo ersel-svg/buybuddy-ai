@@ -69,7 +69,7 @@ class ProductSplitter:
 
         # Build query
         # Select products with frames
-        query = f"{self.supabase_url}/rest/v1/products?select=id,barcode,short_code,upc,brand_name,frames_path,frame_count"
+        query = f"{self.supabase_url}/rest/v1/products?select=id,barcode,brand_name,frames_path,frame_count,identifiers"
 
         # Filter by frame count
         query += f"&frame_count=gte.{min_frames}"
@@ -281,10 +281,12 @@ def create_identifier_mapping(products: list[dict]) -> dict:
         if not product_id:
             continue
 
+        # Extract identifiers from JSON field if available
+        identifiers = product.get("identifiers") or {}
         mapping[product_id] = {
             "barcode": product.get("barcode"),
-            "short_code": product.get("short_code"),
-            "upc": product.get("upc"),
+            "short_code": identifiers.get("short_code"),
+            "upc": identifiers.get("upc"),
             "brand_name": product.get("brand_name"),
         }
 
