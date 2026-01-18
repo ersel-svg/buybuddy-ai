@@ -106,8 +106,27 @@ class ProductSplitter:
 
         Returns:
             Tuple of (train_products, val_products, test_products)
+
+        NOTE: Use keyword arguments for ratios to avoid positional argument errors:
+            splitter.split(products=products, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)
         """
-        # Validate ratios
+        # Type validation to catch common positional argument mistakes
+        if product_ids is not None and not isinstance(product_ids, list):
+            raise TypeError(
+                f"product_ids must be a list or None, got {type(product_ids).__name__}. "
+                "Did you pass ratios positionally? Use keyword arguments: "
+                "split(products=..., train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)"
+            )
+
+        # Validate ratios are floats
+        if not isinstance(train_ratio, (int, float)):
+            raise TypeError(f"train_ratio must be a number, got {type(train_ratio).__name__}")
+        if not isinstance(val_ratio, (int, float)):
+            raise TypeError(f"val_ratio must be a number, got {type(val_ratio).__name__}")
+        if not isinstance(test_ratio, (int, float)):
+            raise TypeError(f"test_ratio must be a number, got {type(test_ratio).__name__}")
+
+        # Validate ratios sum to 1.0
         total = train_ratio + val_ratio + test_ratio
         if abs(total - 1.0) > 0.01:
             raise ValueError(f"Ratios must sum to 1.0, got {total}")
