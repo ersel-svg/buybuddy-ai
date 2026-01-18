@@ -271,7 +271,31 @@ class ModelTrainer:
         warmup_steps = warmup_epochs * steps_per_epoch
         total_steps = epochs * steps_per_epoch
 
-        # Warmup scheduler
+        # Ensure warmup_steps doesn't exceed total_steps
+        warmup_steps = min(warmup_steps, total_steps)
+
+        # Calculate remaining steps for cosine annealing
+        cosine_steps = total_steps - warmup_steps
+
+        # If no warmup (or very short training), just use cosine
+        if warmup_steps == 0:
+            return CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=max(1, total_steps),
+                T_mult=1,
+                eta_min=1e-6,
+            )
+
+        # If no steps left after warmup, just use warmup scheduler
+        if cosine_steps <= 0:
+            return LinearLR(
+                self.optimizer,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=max(1, warmup_steps),
+            )
+
+        # Normal case: warmup + cosine annealing
         warmup_scheduler = LinearLR(
             self.optimizer,
             start_factor=0.1,
@@ -279,15 +303,13 @@ class ModelTrainer:
             total_iters=warmup_steps,
         )
 
-        # Cosine annealing
         cosine_scheduler = CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=total_steps - warmup_steps,
+            T_0=cosine_steps,
             T_mult=1,
             eta_min=1e-6,
         )
 
-        # Combine
         scheduler = SequentialLR(
             self.optimizer,
             schedulers=[warmup_scheduler, cosine_scheduler],
@@ -364,7 +386,7 @@ class ModelTrainer:
 
         # Loss function
         criterion = EnhancedArcFaceLoss(
-            embedding_dim=self.config.get("embedding_dim", 512),
+            in_features=self.config.get("embedding_dim", 512),
             num_classes=num_classes,
             margin=self.config.get("arcface_margin", 0.5),
             scale=self.config.get("arcface_scale", 64.0),
@@ -631,7 +653,7 @@ class SOTAModelTrainer(ModelTrainer):
         else:
             # Fall back to standard ArcFace
             return EnhancedArcFaceLoss(
-                embedding_dim=self.config.get("embedding_dim", 512),
+                in_features=self.config.get("embedding_dim", 512),
                 num_classes=num_classes,
                 margin=self.config.get("arcface_margin", 0.5),
                 scale=self.config.get("arcface_scale", 64.0),

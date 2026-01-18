@@ -117,7 +117,7 @@ def report_progress(
             payload["message"] = message
 
         response = httpx.patch(
-            f"{supabase_url}/rest/v1/training_jobs?id=eq.{job_id}",
+            f"{supabase_url}/rest/v1/training_runs?id=eq.{job_id}",
             headers={
                 "apikey": supabase_key,
                 "Authorization": f"Bearer {supabase_key}",
