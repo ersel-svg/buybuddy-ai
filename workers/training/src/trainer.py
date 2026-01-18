@@ -1008,6 +1008,13 @@ class SOTAModelTrainer(ModelTrainer):
         k: int,
     ) -> float:
         """Compute recall@k metric."""
+        n_samples = embeddings.size(0)
+
+        # Clamp k to max possible value (n_samples - 1 because we exclude self)
+        k = min(k, n_samples - 1)
+        if k <= 0:
+            return 0.0
+
         # Compute similarity matrix
         sim_matrix = torch.mm(embeddings, embeddings.t())
 
