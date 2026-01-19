@@ -65,13 +65,20 @@ def upload_checkpoint_to_storage(
         # Extract only model weights (skip optimizer, scheduler, etc.)
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             # Standard checkpoint format - extract only model weights
+            # Convert to float16 to reduce size (safe for inference)
+            model_state = checkpoint["model_state_dict"]
+            model_state_fp16 = {
+                k: v.half() if v.dtype == torch.float32 else v
+                for k, v in model_state.items()
+            }
             lightweight_checkpoint = {
-                "model_state_dict": checkpoint["model_state_dict"],
+                "model_state_dict": model_state_fp16,
                 "epoch": checkpoint.get("epoch", epoch),
                 "val_loss": checkpoint.get("val_loss"),
                 "val_recall_at_1": checkpoint.get("val_recall_at_1"),
+                "dtype": "float16",  # Mark as fp16 for loading
             }
-            print(f"Extracted model weights only (removed optimizer state)")
+            print(f"Extracted model weights (fp16, removed optimizer state)")
         else:
             # Already just weights or unknown format - use as is
             lightweight_checkpoint = checkpoint
