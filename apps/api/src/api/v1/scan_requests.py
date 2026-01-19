@@ -154,8 +154,14 @@ async def send_slack_notification(scan_request: dict) -> bool:
         # Add reference images as clickable links
         if images:
             image_links = []
-            for i, img_url in enumerate(images, 1):
-                image_links.append(f"<{img_url}|Image {i}>")
+            storage_base_url = "https://qvyxpfcwfktxnaeavkxx.supabase.co/storage/v1/object/public/scan-request-images"
+            for i, img_path in enumerate(images, 1):
+                # Convert relative path to full URL if needed
+                if img_path.startswith("http"):
+                    full_url = img_path
+                else:
+                    full_url = f"{storage_base_url}/{img_path}"
+                image_links.append(f"<{full_url}|Image {i}>")
             message["attachments"][0]["blocks"].append({
                 "type": "section",
                 "text": {

@@ -3096,9 +3096,33 @@ class SupabaseService:
         )
         return response.data[0] if response.data else None
 
-    async def delete_training_checkpoint(self, checkpoint_id: str) -> bool:
-        """Delete training checkpoint."""
-        self.client.table("training_checkpoints").delete().eq("id", checkpoint_id).execute()
+    async def delete_training_checkpoint(
+        self, checkpoint_id: str, delete_storage: bool = True
+    ) -> bool:
+        """Delete training checkpoint and optionally the file from storage."""
+        # First get the checkpoint to find the storage URL
+        checkpoint = await self.get_training_checkpoint(checkpoint_id)
+        if not checkpoint:
+            return False
+
+        # Delete from storage if requested and URL exists
+        if delete_storage and checkpoint.get("checkpoint_url"):
+            try:
+                url = checkpoint["checkpoint_url"]
+                # Extract storage path from URL
+                # URL format: https://xxx.supabase.co/storage/v1/object/public/checkpoints/training/run_id/file.pth
+                if "/checkpoints/" in url:
+                    storage_path = url.split("/checkpoints/")[-1]
+                    self.client.storage.from_("checkpoints").remove([storage_path])
+                    print(f"Deleted checkpoint file from storage: {storage_path}")
+            except Exception as e:
+                print(f"Warning: Failed to delete checkpoint file from storage: {e}")
+                # Continue with database deletion even if storage deletion fails
+
+        # Delete from database
+        self.client.table("training_checkpoints").delete().eq(
+            "id", checkpoint_id
+        ).execute()
         return True
 
     # ===========================================

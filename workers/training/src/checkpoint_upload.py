@@ -2,7 +2,7 @@
 Checkpoint upload and metrics history utilities.
 
 Handles:
-- Uploading checkpoints to Supabase Storage (with compression)
+- Uploading checkpoints to Supabase Storage (model weights only, compressed)
 - Saving per-epoch metrics to training_metrics_history
 - Updating training progress in training_runs
 """
@@ -11,9 +11,21 @@ import os
 import io
 import gzip
 import time
+import tempfile
 from pathlib import Path
 from typing import Optional, Any
 from supabase import Client
+
+# Lazy import torch to avoid import errors when not needed
+_torch = None
+
+
+def _get_torch():
+    global _torch
+    if _torch is None:
+        import torch
+        _torch = torch
+    return _torch
 
 
 # Maximum file size for Supabase Storage (50MB)
@@ -28,7 +40,10 @@ def upload_checkpoint_to_storage(
     is_best: bool = False,
 ) -> Optional[str]:
     """
-    Upload a checkpoint file to Supabase Storage with compression.
+    Upload a checkpoint file to Supabase Storage.
+
+    Extracts only model weights (no optimizer state) to reduce size,
+    then compresses with gzip if needed.
 
     Args:
         client: Supabase client
@@ -41,30 +56,56 @@ def upload_checkpoint_to_storage(
         Public URL of uploaded checkpoint, or None if failed
     """
     try:
-        # Read original file
-        with open(checkpoint_path, "rb") as f:
+        torch = _get_torch()
+
+        # Load full checkpoint
+        print(f"Loading checkpoint for upload...")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+        # Extract only model weights (skip optimizer, scheduler, etc.)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            # Standard checkpoint format - extract only model weights
+            lightweight_checkpoint = {
+                "model_state_dict": checkpoint["model_state_dict"],
+                "epoch": checkpoint.get("epoch", epoch),
+                "val_loss": checkpoint.get("val_loss"),
+                "val_recall_at_1": checkpoint.get("val_recall_at_1"),
+            }
+            print(f"Extracted model weights only (removed optimizer state)")
+        else:
+            # Already just weights or unknown format - use as is
+            lightweight_checkpoint = checkpoint
+
+        # Save lightweight checkpoint to temp file
+        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
+            torch.save(lightweight_checkpoint, tmp.name)
+            tmp_path = tmp.name
+
+        # Read the lightweight checkpoint
+        with open(tmp_path, "rb") as f:
             file_data = f.read()
 
-        original_size = len(file_data)
+        # Clean up temp file
+        os.unlink(tmp_path)
 
-        # Compress with gzip if file is larger than threshold
+        original_size = len(file_data)
+        print(f"Lightweight checkpoint size: {original_size / 1024 / 1024:.1f}MB")
+
+        # Compress with gzip if larger than threshold
         if original_size > MAX_UPLOAD_SIZE:
-            print(f"Compressing checkpoint ({original_size / 1024 / 1024:.1f}MB)...")
+            print(f"Compressing checkpoint...")
             compressed_buffer = io.BytesIO()
-            # Use maximum compression (9) for better size reduction
             with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=9) as gz:
                 gz.write(file_data)
             file_data = compressed_buffer.getvalue()
             compressed_size = len(file_data)
-            print(f"Compressed: {original_size / 1024 / 1024:.1f}MB -> {compressed_size / 1024 / 1024:.1f}MB ({100 * compressed_size / original_size:.0f}%)")
+            print(f"Compressed: {original_size / 1024 / 1024:.1f}MB -> {compressed_size / 1024 / 1024:.1f}MB")
 
-            # Check if still too large
             if compressed_size > MAX_UPLOAD_SIZE:
-                print(f"Warning: Compressed checkpoint ({compressed_size / 1024 / 1024:.1f}MB) still exceeds 50MB limit")
-                print("Checkpoint will be saved locally only, not uploaded to storage")
+                print(f"Warning: Checkpoint ({compressed_size / 1024 / 1024:.1f}MB) still exceeds 50MB limit")
+                print("Checkpoint saved locally only, not uploaded to storage")
                 return None
 
-            # Use .pth.gz extension for compressed files
             suffix = "best" if is_best else f"epoch_{epoch:03d}"
             storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth.gz"
             content_type = "application/gzip"
@@ -97,6 +138,8 @@ def upload_checkpoint_to_storage(
 
     except Exception as e:
         print(f"Failed to upload checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
