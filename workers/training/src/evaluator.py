@@ -7,6 +7,12 @@ Evaluates trained models on test set with metrics:
 - Accuracy
 - AUC
 
+Features:
+- Test-Time Augmentation (TTA) for robust embeddings
+- Cross-domain evaluation (synthetic ↔ real)
+- Per-category breakdown
+- Hard example detection
+
 NOTE: Evaluation is done using product_id as ground truth.
 The model should retrieve images of the same product_id.
 """
@@ -15,9 +21,54 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from typing import Optional
+from typing import Optional, List, Callable
 from collections import defaultdict
 from tqdm import tqdm
+import torchvision.transforms as T
+
+
+# TTA Transform Definitions
+def get_tta_transforms(image_size: int = 224) -> List[Callable]:
+    """
+    Get TTA transforms for test-time augmentation.
+
+    Returns a list of transform functions that can be applied
+    to batches of images. Each transform produces a different
+    view of the same image.
+
+    Args:
+        image_size: Expected image size
+
+    Returns:
+        List of transform functions
+    """
+    return [
+        # Original (no augmentation)
+        lambda x: x,
+        # Horizontal flip
+        lambda x: torch.flip(x, dims=[-1]),
+        # Small rotation variants via affine
+        lambda x: T.functional.rotate(x, angle=5),
+        lambda x: T.functional.rotate(x, angle=-5),
+        # Center crop + resize (simulates slight zoom)
+        lambda x: T.functional.center_crop(
+            T.functional.resize(x, int(image_size * 1.1)),
+            image_size
+        ),
+    ]
+
+
+def get_tta_transforms_light() -> List[Callable]:
+    """
+    Lightweight TTA with just flip (faster).
+
+    Returns:
+        List with original and horizontal flip
+    """
+    return [
+        lambda x: x,
+        lambda x: torch.flip(x, dims=[-1]),
+    ]
 
 
 class ModelEvaluator:
@@ -28,6 +79,10 @@ class ModelEvaluator:
     1. Extracting embeddings for all test images
     2. For each query, finding nearest neighbors
     3. Checking if neighbors have the same product_id
+
+    Features:
+    - Test-Time Augmentation (TTA) for more robust embeddings
+    - Configurable TTA modes: "full" (5 views), "light" (2 views), "none"
     """
 
     def __init__(
@@ -36,6 +91,9 @@ class ModelEvaluator:
         model_type: str,
         device: Optional[torch.device] = None,
         batch_size: int = 64,
+        use_tta: bool = False,
+        tta_mode: str = "light",  # "full", "light", "none"
+        image_size: int = 224,
     ):
         """
         Initialize the evaluator.
@@ -45,11 +103,27 @@ class ModelEvaluator:
             model_type: Model type identifier
             device: Device to run on
             batch_size: Batch size for embedding extraction
+            use_tta: Enable Test-Time Augmentation
+            tta_mode: TTA mode - "full" (5 views), "light" (2 views flip only)
+            image_size: Image size for TTA transforms
         """
         self.model = model
         self.model_type = model_type
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.batch_size = batch_size
+        self.use_tta = use_tta
+        self.tta_mode = tta_mode
+        self.image_size = image_size
+
+        # Setup TTA transforms
+        if use_tta:
+            if tta_mode == "full":
+                self.tta_transforms = get_tta_transforms(image_size)
+            else:  # "light" or default
+                self.tta_transforms = get_tta_transforms_light()
+            print(f"TTA enabled: {len(self.tta_transforms)} views ({tta_mode} mode)")
+        else:
+            self.tta_transforms = None
 
         self.model.to(self.device)
         self.model.eval()
@@ -58,12 +132,21 @@ class ModelEvaluator:
         """
         Extract embeddings for all samples in dataset.
 
+        If TTA is enabled, extracts multiple augmented views and averages them.
+
         Args:
             dataset: The dataset to extract from
 
         Returns:
             Tuple of (embeddings, product_ids, frame_indices)
         """
+        if self.use_tta and self.tta_transforms:
+            return self._extract_embeddings_with_tta(dataset)
+        else:
+            return self._extract_embeddings_standard(dataset)
+
+    def _extract_embeddings_standard(self, dataset) -> tuple[np.ndarray, list[str], list[int]]:
+        """Standard embedding extraction without TTA."""
         loader = DataLoader(
             dataset,
             batch_size=self.batch_size,
@@ -83,15 +166,7 @@ class ModelEvaluator:
                 frame_indices = batch["frame_idx"]
 
                 # Get embeddings
-                if hasattr(self.model, "get_embedding"):
-                    embeddings = self.model.get_embedding(images)
-                else:
-                    outputs = self.model(images)
-                    if isinstance(outputs, dict):
-                        embeddings = outputs["embeddings"]
-                    else:
-                        embeddings = outputs
-
+                embeddings = self._get_embeddings(images)
                 embeddings = F.normalize(embeddings, p=2, dim=1)
 
                 all_embeddings.append(embeddings.cpu().numpy())
@@ -101,10 +176,94 @@ class ModelEvaluator:
         embeddings = np.vstack(all_embeddings)
         return embeddings, all_product_ids, all_frame_indices
 
+    def _extract_embeddings_with_tta(self, dataset) -> tuple[np.ndarray, list[str], list[int]]:
+        """
+        Extract embeddings with Test-Time Augmentation.
+
+        For each image, applies multiple augmentations and averages
+        the resulting embeddings for a more robust representation.
+        """
+        loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
+        )
+
+        all_embeddings = []
+        all_product_ids = []
+        all_frame_indices = []
+        n_transforms = len(self.tta_transforms)
+
+        with torch.no_grad():
+            for batch in tqdm(loader, desc=f"Extracting embeddings (TTA x{n_transforms})"):
+                images = batch["image"].to(self.device)
+                product_ids = batch["product_id"]
+                frame_indices = batch["frame_idx"]
+
+                # Collect embeddings from all TTA views
+                tta_embeddings = []
+
+                for transform in self.tta_transforms:
+                    # Apply transform
+                    aug_images = transform(images)
+
+                    # Get embeddings for augmented view
+                    embeddings = self._get_embeddings(aug_images)
+                    tta_embeddings.append(embeddings)
+
+                # Average embeddings across all TTA views
+                stacked = torch.stack(tta_embeddings, dim=0)  # [n_transforms, B, D]
+                averaged = stacked.mean(dim=0)  # [B, D]
+
+                # Normalize the averaged embedding
+                averaged = F.normalize(averaged, p=2, dim=1)
+
+                all_embeddings.append(averaged.cpu().numpy())
+                all_product_ids.extend(product_ids)
+                all_frame_indices.extend(frame_indices.tolist())
+
+        embeddings = np.vstack(all_embeddings)
+        return embeddings, all_product_ids, all_frame_indices
+
+    def _get_embeddings(self, images: torch.Tensor) -> torch.Tensor:
+        """Helper to extract embeddings from images."""
+        if hasattr(self.model, "get_embedding"):
+            return self.model.get_embedding(images)
+        else:
+            outputs = self.model(images)
+            if isinstance(outputs, dict):
+                return outputs["embeddings"]
+            else:
+                return outputs
+
+    def set_tta(self, enabled: bool, mode: str = "light"):
+        """
+        Enable or disable TTA dynamically.
+
+        Args:
+            enabled: Whether to enable TTA
+            mode: TTA mode - "full" or "light"
+        """
+        self.use_tta = enabled
+        self.tta_mode = mode
+
+        if enabled:
+            if mode == "full":
+                self.tta_transforms = get_tta_transforms(self.image_size)
+            else:
+                self.tta_transforms = get_tta_transforms_light()
+            print(f"TTA enabled: {len(self.tta_transforms)} views ({mode} mode)")
+        else:
+            self.tta_transforms = None
+            print("TTA disabled")
+
     def evaluate(
         self,
         test_dataset,
         k_values: list[int] = [1, 5, 10],
+        use_tta: Optional[bool] = None,
     ) -> dict:
         """
         Evaluate model on test dataset.
@@ -112,11 +271,18 @@ class ModelEvaluator:
         Args:
             test_dataset: Test dataset
             k_values: K values for Recall@K
+            use_tta: Override TTA setting for this evaluation (None = use instance setting)
 
         Returns:
             Dictionary of metrics
         """
-        print(f"Evaluating on {len(test_dataset)} samples...")
+        # Temporarily override TTA setting if specified
+        original_tta = self.use_tta
+        if use_tta is not None:
+            self.use_tta = use_tta
+
+        tta_status = "with TTA" if self.use_tta else "without TTA"
+        print(f"Evaluating on {len(test_dataset)} samples ({tta_status})...")
 
         # Extract embeddings
         embeddings, product_ids, frame_indices = self.extract_embeddings(test_dataset)
@@ -163,7 +329,64 @@ class ModelEvaluator:
         for name, value in metrics.items():
             print(f"  {name}: {value:.4f}")
 
+        # Restore original TTA setting
+        if use_tta is not None:
+            self.use_tta = original_tta
+
         return metrics
+
+    def evaluate_with_tta_comparison(
+        self,
+        test_dataset,
+        k_values: list[int] = [1, 5, 10],
+    ) -> dict:
+        """
+        Evaluate model both with and without TTA for comparison.
+
+        Returns metrics for both modes to show TTA improvement.
+
+        Args:
+            test_dataset: Test dataset
+            k_values: K values for Recall@K
+
+        Returns:
+            Dictionary with 'no_tta' and 'with_tta' sub-dictionaries
+        """
+        print("=" * 60)
+        print("TTA Comparison Evaluation")
+        print("=" * 60)
+
+        # Evaluate without TTA
+        print("\n--- Without TTA ---")
+        no_tta_metrics = self.evaluate(test_dataset, k_values, use_tta=False)
+
+        # Evaluate with TTA (light mode for speed)
+        print("\n--- With TTA (light) ---")
+        original_transforms = self.tta_transforms
+        self.tta_transforms = get_tta_transforms_light()
+        tta_metrics = self.evaluate(test_dataset, k_values, use_tta=True)
+        self.tta_transforms = original_transforms
+
+        # Print comparison
+        print("\n" + "=" * 60)
+        print("TTA Improvement Summary")
+        print("=" * 60)
+        for k in k_values:
+            key = f"recall@{k}"
+            no_tta_val = no_tta_metrics.get(key, 0)
+            tta_val = tta_metrics.get(key, 0)
+            improvement = (tta_val - no_tta_val) * 100
+            sign = "+" if improvement >= 0 else ""
+            print(f"  {key}: {no_tta_val:.4f} → {tta_val:.4f} ({sign}{improvement:.2f}%)")
+
+        return {
+            "no_tta": no_tta_metrics,
+            "with_tta": tta_metrics,
+            "improvement": {
+                f"recall@{k}": tta_metrics.get(f"recall@{k}", 0) - no_tta_metrics.get(f"recall@{k}", 0)
+                for k in k_values
+            }
+        }
 
     def _compute_similarity_matrix(self, embeddings: np.ndarray) -> np.ndarray:
         """Compute cosine similarity matrix."""

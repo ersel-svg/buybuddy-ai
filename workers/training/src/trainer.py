@@ -213,6 +213,7 @@ class UnifiedTrainer:
         self.use_curriculum = self.sota_config.get("use_curriculum", False)
         self.use_domain_adaptation = self.sota_config.get("use_domain_adaptation", False)
         self.use_early_stopping = self.sota_config.get("use_early_stopping", True)
+        self.disable_checkpointing = config.get("disable_checkpointing", False)
         # Early stopping patience: check sota_config first, then main config (backward compat)
         self.early_stopping_patience = self.sota_config.get(
             "early_stopping_patience",
@@ -377,6 +378,10 @@ class UnifiedTrainer:
                 embedding_dim=self.config.get("embedding_dim", 512),
                 arcface_weight=loss_config.get("arcface_weight", 1.0),
                 triplet_weight=loss_config.get("triplet_weight", 0.5),
+                # Circle Loss (CVPR 2020) - ideal for fine-grained products
+                circle_weight=loss_config.get("circle_weight", 0.0),
+                circle_margin=loss_config.get("circle_margin", 0.25),
+                circle_gamma=loss_config.get("circle_gamma", 256.0),
                 domain_weight=loss_config.get("domain_weight", 0.1),
                 arcface_margin=loss_config.get("arcface_margin", 0.5),
                 arcface_scale=loss_config.get("arcface_scale", 64.0),
@@ -585,10 +590,16 @@ class UnifiedTrainer:
                     curriculum_weights = self.curriculum_scheduler.get_loss_weights()
                     criterion.arcface_weight = curriculum_weights["arcface"]
                     criterion.triplet_weight = curriculum_weights["triplet"]
+                    criterion.circle_weight = curriculum_weights.get("circle", criterion.circle_weight)
                     criterion.domain_weight = curriculum_weights["domain"]
-                    print(f"  Loss weights: arcface={curriculum_weights['arcface']:.1f}, "
-                          f"triplet={curriculum_weights['triplet']:.1f}, "
-                          f"domain={curriculum_weights['domain']:.2f}")
+                    weight_info = (
+                        f"arcface={curriculum_weights['arcface']:.1f}, "
+                        f"triplet={curriculum_weights['triplet']:.1f}"
+                    )
+                    if criterion.circle_weight > 0:
+                        weight_info += f", circle={criterion.circle_weight:.1f}"
+                    weight_info += f", domain={curriculum_weights['domain']:.2f}"
+                    print(f"  Loss weights: {weight_info}")
 
                     # Update domain adversarial alpha (ramp up during training)
                     domain_alpha = min(1.0, epoch / max(1, epochs // 2))
@@ -639,12 +650,15 @@ class UnifiedTrainer:
 
             # Log loss components if using combined loss
             if self.use_combined_loss and "arcface_loss" in train_metrics:
-                print(
-                    f"  Loss Components: "
-                    f"ArcFace={train_metrics.get('arcface_loss', 0):.4f} | "
-                    f"Triplet={train_metrics.get('triplet_loss', 0):.4f} | "
-                    f"Domain={train_metrics.get('domain_loss', 0):.4f}"
-                )
+                circle_loss = train_metrics.get('circle_loss', 0)
+                loss_parts = [
+                    f"ArcFace={train_metrics.get('arcface_loss', 0):.4f}",
+                    f"Triplet={train_metrics.get('triplet_loss', 0):.4f}",
+                ]
+                if circle_loss > 0:
+                    loss_parts.append(f"Circle={circle_loss:.4f}")
+                loss_parts.append(f"Domain={train_metrics.get('domain_loss', 0):.4f}")
+                print(f"  Loss Components: {' | '.join(loss_parts)}")
 
             # Track metrics
             self.metric_tracker.update({
@@ -661,32 +675,40 @@ class UnifiedTrainer:
                 best_recall_at_1 = val_metrics["recall@1"]
                 best_epoch = epoch + 1
 
-                # Save best checkpoint
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    train_loss=train_metrics["loss"],
-                    val_loss=val_metrics["loss"],
-                    val_recall_at_1=val_metrics["recall@1"],
-                    val_recall_at_5=val_metrics["recall@5"],
-                    scheduler=self.scheduler,
-                    scaler=self.scaler,
-                )
+                # Save best checkpoint (skip if checkpointing is disabled)
+                if not self.disable_checkpointing:
+                    try:
+                        self.checkpoint_manager.save(
+                            model=self.model,
+                            optimizer=self.optimizer,
+                            epoch=epoch,
+                            train_loss=train_metrics["loss"],
+                            val_loss=val_metrics["loss"],
+                            val_recall_at_1=val_metrics["recall@1"],
+                            val_recall_at_5=val_metrics["recall@5"],
+                            scheduler=self.scheduler,
+                            scaler=self.scaler,
+                        )
+                    except Exception as e:
+                        print(f"Warning: Failed to save best checkpoint: {e}")
+                        print("Training will continue without saving checkpoint.")
 
-            # Regular checkpoint
-            if (epoch + 1) % self.config.get("save_every_n_epochs", 1) == 0:
-                self.checkpoint_manager.save(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    train_loss=train_metrics["loss"],
-                    val_loss=val_metrics["loss"],
-                    val_recall_at_1=val_metrics["recall@1"],
-                    val_recall_at_5=val_metrics["recall@5"],
-                    scheduler=self.scheduler,
-                    scaler=self.scaler,
-                )
+            # Regular checkpoint (skip if checkpointing is disabled)
+            if not self.disable_checkpointing and (epoch + 1) % self.config.get("save_every_n_epochs", 1) == 0:
+                try:
+                    self.checkpoint_manager.save(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        epoch=epoch,
+                        train_loss=train_metrics["loss"],
+                        val_loss=val_metrics["loss"],
+                        val_recall_at_1=val_metrics["recall@1"],
+                        val_recall_at_5=val_metrics["recall@5"],
+                        scheduler=self.scheduler,
+                        scaler=self.scaler,
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to save epoch checkpoint: {e}")
 
             # Epoch callback for metrics history and checkpoint uploads
             if epoch_callback:
@@ -741,6 +763,7 @@ class UnifiedTrainer:
         total_loss = 0.0
         arcface_loss_total = 0.0
         triplet_loss_total = 0.0
+        circle_loss_total = 0.0
         domain_loss_total = 0.0
         num_batches = len(train_loader)
 
@@ -769,6 +792,7 @@ class UnifiedTrainer:
                     loss = losses["total"]
                     arcface_loss_total += losses.get("arcface", torch.tensor(0.0)).item()
                     triplet_loss_total += losses.get("triplet", torch.tensor(0.0)).item()
+                    circle_loss_total += losses.get("circle", torch.tensor(0.0)).item()
                     domain_loss_total += losses.get("domain", torch.tensor(0.0)).item()
                 elif isinstance(criterion, EnhancedArcFaceLoss):
                     # EnhancedArcFaceLoss expects embeddings, not logits
@@ -815,6 +839,7 @@ class UnifiedTrainer:
         if self.use_combined_loss:
             metrics["arcface_loss"] = arcface_loss_total / num_batches
             metrics["triplet_loss"] = triplet_loss_total / num_batches
+            metrics["circle_loss"] = circle_loss_total / num_batches
             metrics["domain_loss"] = domain_loss_total / num_batches
 
         return metrics
@@ -913,6 +938,9 @@ class UnifiedTrainer:
 
     def save_final_checkpoint(self) -> dict:
         """Save and upload final checkpoint to Supabase Storage."""
+        if self.disable_checkpointing:
+            return {"path": None, "uploaded": False, "disabled": True}
+
         if self.checkpoint_manager is None:
             return {"error": "No checkpoint manager"}
 

@@ -912,6 +912,10 @@ export interface SOTALossConfig {
   arcface_margin: number;
   arcface_scale: number;
   triplet_margin: number;
+  // Circle Loss (CVPR 2020) - unified similarity optimization
+  circle_weight: number;
+  circle_margin: number;
+  circle_gamma: number;
 }
 
 export interface SOTASamplingConfig {
@@ -927,6 +931,14 @@ export interface SOTACurriculumConfig {
   finetune_epochs: number;
 }
 
+// TTA (Test-Time Augmentation) configuration for evaluation
+export type TTAMode = "light" | "standard" | "full";
+
+export interface SOTATTAConfig {
+  enabled: boolean;
+  mode: TTAMode;
+}
+
 export interface SOTAConfig {
   enabled: boolean;
   use_combined_loss: boolean;
@@ -938,6 +950,7 @@ export interface SOTAConfig {
   loss: SOTALossConfig;
   sampling: SOTASamplingConfig;
   curriculum: SOTACurriculumConfig;
+  tta: SOTATTAConfig;  // Test-Time Augmentation for evaluation
   triplet_mining_run_id?: string;
 }
 
@@ -956,6 +969,10 @@ export const DEFAULT_SOTA_CONFIG: SOTAConfig = {
     arcface_margin: 0.5,
     arcface_scale: 64.0,
     triplet_margin: 0.3,
+    // Circle Loss (CVPR 2020) defaults
+    circle_weight: 0.3,
+    circle_margin: 0.25,
+    circle_gamma: 256.0,
   },
   sampling: {
     products_per_batch: 8,
@@ -967,6 +984,10 @@ export const DEFAULT_SOTA_CONFIG: SOTAConfig = {
     easy_epochs: 5,
     hard_epochs: 10,
     finetune_epochs: 3,
+  },
+  tta: {
+    enabled: true,
+    mode: "light",
   },
 };
 

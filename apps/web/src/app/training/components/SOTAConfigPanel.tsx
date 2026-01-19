@@ -38,6 +38,8 @@ import {
   Info,
   Hand,
   Loader2,
+  Circle,
+  FlipHorizontal,
 } from "lucide-react";
 import type { SOTAConfig, TripletMiningRun } from "@/types";
 
@@ -84,6 +86,13 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
     });
   };
 
+  const updateTTA = (updates: Partial<SOTAConfig["tta"]>) => {
+    onChange({
+      ...config,
+      tta: { ...config.tta, ...updates },
+    });
+  };
+
   return (
     <Card className={disabled ? "opacity-50" : ""}>
       <CardHeader className="pb-3">
@@ -100,7 +109,7 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
           />
         </div>
         <CardDescription className="text-xs">
-          State-of-the-art training techniques: multi-loss, P-K sampling, curriculum learning
+          State-of-the-art techniques: multi-loss (ArcFace + Triplet + Circle), P-K sampling, TTA
         </CardDescription>
       </CardHeader>
 
@@ -112,11 +121,11 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
             <FeatureToggle
               icon={<Target className="h-4 w-4" />}
               label="Combined Loss"
-              description="ArcFace + Triplet + Domain"
+              description="ArcFace + Triplet + Circle + Domain"
               checked={config.use_combined_loss}
               onChange={(v) => updateConfig({ use_combined_loss: v })}
               disabled={disabled}
-              tooltip="Combines three complementary loss functions: ArcFace for angular margin-based classification, Triplet for metric learning with hard negative mining, and Domain for synthetic-real alignment. This multi-objective approach typically improves embedding quality by 5-15% compared to single loss training."
+              tooltip="Combines four complementary loss functions: ArcFace for angular margin-based classification, Triplet for metric learning with hard negative mining, Circle Loss (CVPR 2020) for unified similarity optimization, and Domain for synthetic-real alignment. This multi-objective approach typically improves embedding quality by 5-15% compared to single loss training."
             />
 
             {/* P-K Sampling */}
@@ -162,6 +171,17 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
               disabled={disabled}
               tooltip="Monitors validation Recall@1 and stops training if no improvement is seen for N epochs (patience). Prevents overfitting and saves compute time. The best checkpoint is automatically saved for later use."
             />
+
+            {/* TTA (Test-Time Augmentation) */}
+            <FeatureToggle
+              icon={<FlipHorizontal className="h-4 w-4" />}
+              label="TTA"
+              description="Test-time augmentation"
+              checked={config.tta.enabled}
+              onChange={(v) => updateTTA({ enabled: v })}
+              disabled={disabled}
+              tooltip="Test-Time Augmentation averages predictions from multiple augmented views of the same image during evaluation. Improves robustness and typically boosts Recall@1 by 1-3% without retraining."
+            />
           </div>
 
           {/* Early Stopping Patience */}
@@ -178,6 +198,59 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
                 tooltip="Number of epochs without improvement before stopping training"
                 formatValue={(v) => `${v} epochs`}
               />
+            </div>
+          )}
+
+          {/* TTA Mode Selection */}
+          {config.tta.enabled && (
+            <div className="p-3 border rounded-lg bg-cyan-50/30 border-cyan-200/50">
+              <div className="flex items-center gap-2 mb-2">
+                <FlipHorizontal className="h-4 w-4 text-cyan-500" />
+                <Label className="text-xs font-medium">TTA Mode</Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-3 w-3 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="text-xs max-w-xs">
+                        Light: 2 views (original + flip), fast<br />
+                        Standard: 4 views (+ rotations), balanced<br />
+                        Full: 5+ views (+ crops), highest accuracy
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <Select
+                value={config.tta.mode}
+                onValueChange={(v) => updateTTA({ mode: v as "light" | "standard" | "full" })}
+                disabled={disabled}
+              >
+                <SelectTrigger className="text-xs h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="light">
+                    <div className="flex items-center gap-2">
+                      <span>Light</span>
+                      <Badge variant="outline" className="text-[10px]">2 views</Badge>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="standard">
+                    <div className="flex items-center gap-2">
+                      <span>Standard</span>
+                      <Badge variant="outline" className="text-[10px]">4 views</Badge>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="full">
+                    <div className="flex items-center gap-2">
+                      <span>Full</span>
+                      <Badge variant="outline" className="text-[10px]">5+ views</Badge>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           )}
 
@@ -232,6 +305,24 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
                   tooltip="Weight for domain adversarial loss (synth-real alignment)"
                 />
 
+                {/* Circle Loss Weight */}
+                <div className="pt-2 border-t border-dashed">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Circle className="h-3.5 w-3.5 text-cyan-500" />
+                    <span className="text-xs font-medium text-cyan-600">Circle Loss (CVPR 2020)</span>
+                  </div>
+                  <SliderWithLabel
+                    label="Circle Weight"
+                    value={config.loss.circle_weight}
+                    onChange={(v) => updateLoss({ circle_weight: v })}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    disabled={disabled}
+                    tooltip="Weight for Circle Loss - unified similarity optimization that jointly optimizes positive and negative similarity scores"
+                  />
+                </div>
+
                 <Separator className="my-2" />
 
                 {/* ArcFace Margin */}
@@ -269,6 +360,38 @@ export function SOTAConfigPanel({ config, onChange, disabled }: SOTAConfigPanelP
                   disabled={disabled}
                   tooltip="Margin for triplet loss (distance between positive and negative)"
                 />
+
+                {/* Circle Loss Parameters */}
+                {config.loss.circle_weight > 0 && (
+                  <>
+                    <Separator className="my-2" />
+                    <div className="flex items-center gap-2 mb-2">
+                      <Circle className="h-3.5 w-3.5 text-cyan-500" />
+                      <span className="text-xs font-medium text-muted-foreground">Circle Loss Parameters</span>
+                    </div>
+                    <SliderWithLabel
+                      label="Circle Margin"
+                      value={config.loss.circle_margin}
+                      onChange={(v) => updateLoss({ circle_margin: v })}
+                      min={0.1}
+                      max={0.5}
+                      step={0.05}
+                      disabled={disabled}
+                      tooltip="Relaxation margin for Circle Loss (default: 0.25)"
+                    />
+                    <SliderWithLabel
+                      label="Circle Gamma (Scale)"
+                      value={config.loss.circle_gamma}
+                      onChange={(v) => updateLoss({ circle_gamma: v })}
+                      min={64}
+                      max={512}
+                      step={32}
+                      disabled={disabled}
+                      tooltip="Scale factor for Circle Loss similarity scores (default: 256)"
+                      formatValue={(v) => v.toFixed(0)}
+                    />
+                  </>
+                )}
               </CollapsibleContent>
             </Collapsible>
           )}

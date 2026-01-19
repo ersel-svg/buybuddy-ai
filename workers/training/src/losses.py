@@ -65,12 +65,14 @@ class TripletLoss(nn.Module):
 
 class OnlineHardTripletLoss(nn.Module):
     """
-    Triplet Loss with Online Hard Negative Mining.
+    Triplet Loss with Online Hard Negative Mining (Vectorized).
 
-    Mines hard triplets from the batch:
-    - Hard negatives: Closest negatives to anchor
-    - Semi-hard negatives: Negatives within margin
-    - Random negatives: For diversity
+    Efficiently mines hard and semi-hard triplets using matrix operations.
+    O(B²) complexity instead of O(B³).
+
+    Mining strategies:
+    - Hard negatives: an_dist < ap_dist (violating triplets)
+    - Semi-hard negatives: ap_dist < an_dist < ap_dist + margin
 
     Reference: "In Defense of the Triplet Loss for Person Re-Identification"
     """
@@ -78,24 +80,18 @@ class OnlineHardTripletLoss(nn.Module):
     def __init__(
         self,
         margin: float = 0.3,
-        hard_ratio: float = 0.5,
-        semi_hard_ratio: float = 0.3,
-        random_ratio: float = 0.2,
+        mining_type: str = "hard",  # "hard", "semi_hard", "all"
         squared: bool = False,
     ):
         """
         Args:
             margin: Triplet margin
-            hard_ratio: Ratio of hard negatives to mine
-            semi_hard_ratio: Ratio of semi-hard negatives
-            random_ratio: Ratio of random negatives
+            mining_type: Type of mining - "hard", "semi_hard", or "all"
             squared: Use squared Euclidean distance
         """
         super().__init__()
         self.margin = margin
-        self.hard_ratio = hard_ratio
-        self.semi_hard_ratio = semi_hard_ratio
-        self.random_ratio = random_ratio
+        self.mining_type = mining_type
         self.squared = squared
 
     def forward(
@@ -104,7 +100,7 @@ class OnlineHardTripletLoss(nn.Module):
         labels: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute triplet loss with online mining.
+        Compute triplet loss with vectorized online mining.
 
         Args:
             embeddings: [B, D] normalized embeddings
@@ -116,83 +112,123 @@ class OnlineHardTripletLoss(nn.Module):
         device = embeddings.device
         batch_size = embeddings.size(0)
 
-        # Compute pairwise distance matrix
+        # Compute pairwise distance matrix [B, B]
         dist_mat = self._pairwise_distances(embeddings)
 
-        # Create masks
-        labels = labels.view(-1, 1)
-        positive_mask = (labels == labels.T).float()
-        negative_mask = (labels != labels.T).float()
+        # Create masks [B, B]
+        labels_col = labels.view(-1, 1)
+        labels_row = labels.view(1, -1)
+        positive_mask = (labels_col == labels_row)
+        negative_mask = (labels_col != labels_row)
 
         # Remove diagonal (self-similarity)
-        eye = torch.eye(batch_size, device=device)
-        positive_mask = positive_mask - eye
+        eye = torch.eye(batch_size, dtype=torch.bool, device=device)
+        positive_mask = positive_mask & ~eye
 
-        # Mine triplets
-        triplet_loss = torch.tensor(0.0, device=device)
-        num_valid_triplets = 0
+        # For each anchor, get hardest positive distance [B]
+        # Set non-positives to 0, then take max
+        ap_dist_mat = dist_mat * positive_mask.float()
+        hardest_positive_dist, _ = ap_dist_mat.max(dim=1)  # [B]
 
-        for i in range(batch_size):
-            # Get positive indices for anchor i
-            pos_indices = torch.where(positive_mask[i] > 0)[0]
-            neg_indices = torch.where(negative_mask[i] > 0)[0]
+        # For each anchor, get hardest negative distance [B]
+        # Set positives to large value, then take min
+        large_value = dist_mat.max() + 1
+        an_dist_mat = dist_mat + (~negative_mask).float() * large_value
+        hardest_negative_dist, _ = an_dist_mat.min(dim=1)  # [B]
 
-            if len(pos_indices) == 0 or len(neg_indices) == 0:
-                continue
+        if self.mining_type == "hard":
+            # Batch hard: hardest positive, hardest negative per anchor
+            triplet_loss = F.relu(hardest_positive_dist - hardest_negative_dist + self.margin)
 
-            # Anchor-positive distances
-            ap_dists = dist_mat[i, pos_indices]
+            # Only count anchors that have at least one positive
+            valid_anchors = positive_mask.sum(dim=1) > 0
+            if valid_anchors.sum() > 0:
+                triplet_loss = triplet_loss[valid_anchors].mean()
+            else:
+                triplet_loss = torch.tensor(0.0, device=device)
 
-            # Anchor-negative distances
-            an_dists = dist_mat[i, neg_indices]
+        elif self.mining_type == "semi_hard":
+            # Semi-hard mining: negatives within margin
+            # For each (anchor, positive) pair, find semi-hard negatives
+            triplet_loss = self._semi_hard_mining(dist_mat, positive_mask, negative_mask)
 
-            # For each positive, mine negatives
-            for pos_idx in pos_indices:
-                ap_dist = dist_mat[i, pos_idx]
-
-                # Classify negatives
-                # Hard: an_dist < ap_dist
-                hard_mask = an_dists < ap_dist
-                # Semi-hard: ap_dist < an_dist < ap_dist + margin
-                semi_hard_mask = (an_dists > ap_dist) & (an_dists < ap_dist + self.margin)
-
-                # Sample negatives based on ratios
-                num_neg = len(neg_indices)
-                num_hard = max(1, int(num_neg * self.hard_ratio))
-                num_semi = max(1, int(num_neg * self.semi_hard_ratio))
-
-                # Get hard negatives (smallest distance)
-                if hard_mask.any():
-                    hard_neg_dists = an_dists[hard_mask]
-                    hard_neg_dists = hard_neg_dists[:num_hard]
-                    for an_dist in hard_neg_dists:
-                        loss = F.relu(ap_dist - an_dist + self.margin)
-                        triplet_loss += loss
-                        num_valid_triplets += 1
-
-                # Get semi-hard negatives
-                if semi_hard_mask.any():
-                    semi_hard_neg_dists = an_dists[semi_hard_mask]
-                    semi_hard_neg_dists = semi_hard_neg_dists[:num_semi]
-                    for an_dist in semi_hard_neg_dists:
-                        loss = F.relu(ap_dist - an_dist + self.margin)
-                        triplet_loss += loss
-                        num_valid_triplets += 1
-
-        if num_valid_triplets > 0:
-            triplet_loss = triplet_loss / num_valid_triplets
+        else:  # "all"
+            # All valid triplets
+            triplet_loss = self._all_triplets(dist_mat, positive_mask, negative_mask)
 
         return triplet_loss
 
-    def _pairwise_distances(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute pairwise Euclidean distances."""
-        dot_product = torch.mm(embeddings, embeddings.t())
-        square_norm = torch.diag(dot_product)
-        distances = square_norm.unsqueeze(0) - 2.0 * dot_product + square_norm.unsqueeze(1)
-        distances = F.relu(distances)  # Numerical stability
+    def _semi_hard_mining(
+        self,
+        dist_mat: torch.Tensor,
+        positive_mask: torch.Tensor,
+        negative_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mine semi-hard triplets vectorized."""
+        device = dist_mat.device
+        batch_size = dist_mat.size(0)
 
-        if not self.squared:
-            distances = torch.sqrt(distances + 1e-16)
+        # Get anchor-positive distances for all valid pairs
+        # Shape: [B, B] where (i,j) is dist(anchor_i, positive_j)
+        ap_distances = dist_mat.unsqueeze(2)  # [B, B, 1]
+        an_distances = dist_mat.unsqueeze(1)  # [B, 1, B]
+
+        # Triplet loss: ap - an + margin for all (a, p, n) combinations
+        # Shape: [B, B, B]
+        loss_tensor = ap_distances - an_distances + self.margin
+
+        # Valid triplets mask [B, B, B]
+        # (i, j, k) is valid if j is positive of i and k is negative of i
+        pos_mask_3d = positive_mask.unsqueeze(2)  # [B, B, 1]
+        neg_mask_3d = negative_mask.unsqueeze(1)  # [B, 1, B]
+        valid_triplets = pos_mask_3d & neg_mask_3d  # [B, B, B]
+
+        # Semi-hard: an > ap and an < ap + margin
+        semi_hard_mask = (an_distances > ap_distances) & (an_distances < ap_distances + self.margin)
+        semi_hard_mask = semi_hard_mask.squeeze() if semi_hard_mask.dim() > 3 else semi_hard_mask
+
+        # Combine masks
+        final_mask = valid_triplets & semi_hard_mask
+
+        # Apply mask and compute mean loss
+        valid_losses = loss_tensor[final_mask]
+        if valid_losses.numel() > 0:
+            return F.relu(valid_losses).mean()
+        else:
+            # Fallback to batch hard if no semi-hard triplets
+            return torch.tensor(0.0, device=device)
+
+    def _all_triplets(
+        self,
+        dist_mat: torch.Tensor,
+        positive_mask: torch.Tensor,
+        negative_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute loss over all valid triplets."""
+        device = dist_mat.device
+
+        ap_distances = dist_mat.unsqueeze(2)  # [B, B, 1]
+        an_distances = dist_mat.unsqueeze(1)  # [B, 1, B]
+
+        loss_tensor = ap_distances - an_distances + self.margin  # [B, B, B]
+
+        pos_mask_3d = positive_mask.unsqueeze(2)
+        neg_mask_3d = negative_mask.unsqueeze(1)
+        valid_triplets = pos_mask_3d & neg_mask_3d
+
+        valid_losses = loss_tensor[valid_triplets]
+        if valid_losses.numel() > 0:
+            return F.relu(valid_losses).mean()
+        else:
+            return torch.tensor(0.0, device=device)
+
+    def _pairwise_distances(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Compute pairwise Euclidean distances efficiently."""
+        # Using torch.cdist for cleaner code
+        distances = torch.cdist(embeddings, embeddings, p=2)
+
+        if self.squared:
+            distances = distances ** 2
 
         return distances
 
@@ -358,9 +394,10 @@ class CombinedProductLoss(nn.Module):
     Combines:
     1. ArcFace Loss - Angular margin classification
     2. Triplet Loss - Metric learning with hard mining
-    3. Domain Adversarial Loss - Domain adaptation (optional)
+    3. Circle Loss - Unified similarity optimization (CVPR 2020)
+    4. Domain Adversarial Loss - Domain adaptation (optional)
 
-    Total Loss = w1 * ArcFace + w2 * Triplet + w3 * Domain
+    Total Loss = w1 * ArcFace + w2 * Triplet + w3 * Circle + w4 * Domain
     """
 
     def __init__(
@@ -375,6 +412,10 @@ class CombinedProductLoss(nn.Module):
         triplet_weight: float = 0.5,
         triplet_margin: float = 0.3,
         triplet_mining: str = "batch_hard",  # "online", "batch_hard", "batch_all"
+        # Circle Loss params (CVPR 2020)
+        circle_weight: float = 0.0,  # Default disabled, enable for fine-grained products
+        circle_margin: float = 0.25,
+        circle_gamma: float = 256.0,
         # Domain params
         domain_weight: float = 0.1,
         use_domain_adaptation: bool = False,
@@ -391,6 +432,9 @@ class CombinedProductLoss(nn.Module):
             triplet_weight: Weight for triplet loss
             triplet_margin: Margin for triplet loss
             triplet_mining: Mining strategy
+            circle_weight: Weight for Circle Loss (0 = disabled)
+            circle_margin: Margin for Circle Loss
+            circle_gamma: Scale factor for Circle Loss
             domain_weight: Weight for domain loss
             use_domain_adaptation: Enable domain adversarial training
             label_smoothing: Label smoothing factor
@@ -399,6 +443,7 @@ class CombinedProductLoss(nn.Module):
 
         self.arcface_weight = arcface_weight
         self.triplet_weight = triplet_weight
+        self.circle_weight = circle_weight
         self.domain_weight = domain_weight
         self.use_domain_adaptation = use_domain_adaptation
 
@@ -423,6 +468,12 @@ class CombinedProductLoss(nn.Module):
                 self.triplet_loss = OnlineHardTripletLoss(margin=triplet_margin)
         else:
             self.triplet_loss = None
+
+        # Circle Loss (CVPR 2020) - ideal for fine-grained product recognition
+        if circle_weight > 0:
+            self.circle_loss = CircleLoss(margin=circle_margin, gamma=circle_gamma)
+        else:
+            self.circle_loss = None
 
         # Domain classifier (5 domains: synthetic, real, augmented, cutout, unknown)
         if use_domain_adaptation:
@@ -467,7 +518,15 @@ class CombinedProductLoss(nn.Module):
             triplet_loss = torch.tensor(0.0, device=device)
             losses["triplet"] = triplet_loss
 
-        # 3. Domain Adversarial Loss
+        # 3. Circle Loss (CVPR 2020)
+        if self.circle_loss is not None and self.circle_weight > 0:
+            circle_loss = self.circle_loss(embeddings, labels)
+            losses["circle"] = circle_loss
+        else:
+            circle_loss = torch.tensor(0.0, device=device)
+            losses["circle"] = circle_loss
+
+        # 4. Domain Adversarial Loss
         if self.domain_classifier is not None and domains is not None and self.domain_weight > 0:
             domain_logits = self.domain_classifier(embeddings)
             domain_loss = self.domain_loss_fn(domain_logits, domains)
@@ -480,6 +539,7 @@ class CombinedProductLoss(nn.Module):
         total_loss = (
             self.arcface_weight * arcface_loss +
             self.triplet_weight * triplet_loss +
+            self.circle_weight * circle_loss +
             self.domain_weight * domain_loss
         )
         losses["total"] = total_loss
