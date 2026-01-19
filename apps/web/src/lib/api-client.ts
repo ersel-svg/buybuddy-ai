@@ -1561,14 +1561,14 @@ class ApiClient {
   async createScanRequest(data: ScanRequestCreate): Promise<ScanRequest> {
     return this.request<ScanRequest>("/api/v1/scan-requests", {
       method: "POST",
-      body: JSON.stringify(data),
+      body: data,
     });
   }
 
   async updateScanRequest(id: string, data: { status?: string; notes?: string }): Promise<ScanRequest> {
     return this.request<ScanRequest>(`/api/v1/scan-requests/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(data),
+      body: data,
     });
   }
 
