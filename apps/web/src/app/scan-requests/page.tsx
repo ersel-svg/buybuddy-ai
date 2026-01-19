@@ -232,7 +232,11 @@ export default function ScanRequestsPage() {
               </TableRow>
             ) : (
               data.items.map((request) => (
-                <TableRow key={request.id}>
+                <TableRow
+                  key={request.id}
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => window.location.href = `/scan-requests/${request.id}`}
+                >
                   <TableCell className="font-mono">{request.barcode}</TableCell>
                   <TableCell>{request.product_name || "-"}</TableCell>
                   <TableCell>{request.brand_name || "-"}</TableCell>
@@ -255,7 +259,7 @@ export default function ScanRequestsPage() {
                   <TableCell className="text-sm text-gray-500">
                     {formatDate(request.created_at)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon">

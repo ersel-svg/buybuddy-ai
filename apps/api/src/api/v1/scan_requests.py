@@ -103,7 +103,7 @@ async def send_slack_notification(scan_request: dict) -> bool:
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*:barcode: New Scan Request*\n\nSomeone requested a scan for a product not in the system."
+                                "text": f"*:package: New Scan Request*\n\nSomeone requested a scan for a product not in the system."
                             }
                         },
                         {
@@ -142,6 +142,19 @@ async def send_slack_notification(scan_request: dict) -> bool:
                 "text": {
                     "type": "mrkdwn",
                     "text": f"*Notes:*\n_{scan_request['notes']}_"
+                }
+            })
+
+        # Add reference images as clickable links
+        if images:
+            image_links = []
+            for i, img_url in enumerate(images, 1):
+                image_links.append(f"<{img_url}|Image {i}>")
+            message["attachments"][0]["blocks"].append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Reference Images:*\n{' • '.join(image_links)}"
                 }
             })
 

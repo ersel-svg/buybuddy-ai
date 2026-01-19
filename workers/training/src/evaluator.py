@@ -446,7 +446,16 @@ class DomainAwareEvaluator:
 
                 all_embeddings.append(embeddings.cpu().numpy())
                 all_product_ids.extend(product_ids)
-                all_domains.extend(domains if isinstance(domains, list) else domains.tolist())
+
+                # Convert domain values - handle both string lists and integer tensors
+                if isinstance(domains, list):
+                    all_domains.extend(domains)
+                else:
+                    # Convert tensor/integer domains to strings
+                    domain_map = {0: "synthetic", 1: "real", 2: "augmented", 3: "cutout", 4: "unknown"}
+                    domain_list = domains.tolist() if hasattr(domains, 'tolist') else list(domains)
+                    all_domains.extend([domain_map.get(d, "unknown") if isinstance(d, int) else d for d in domain_list])
+
                 all_categories.extend(categories if isinstance(categories, list) else categories.tolist())
 
         embeddings = np.vstack(all_embeddings)

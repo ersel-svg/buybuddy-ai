@@ -2,16 +2,22 @@
 Checkpoint upload and metrics history utilities.
 
 Handles:
-- Uploading checkpoints to Supabase Storage
+- Uploading checkpoints to Supabase Storage (with compression)
 - Saving per-epoch metrics to training_metrics_history
 - Updating training progress in training_runs
 """
 
 import os
+import io
+import gzip
 import time
 from pathlib import Path
 from typing import Optional, Any
 from supabase import Client
+
+
+# Maximum file size for Supabase Storage (50MB)
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 
 def upload_checkpoint_to_storage(
@@ -22,7 +28,7 @@ def upload_checkpoint_to_storage(
     is_best: bool = False,
 ) -> Optional[str]:
     """
-    Upload a checkpoint file to Supabase Storage.
+    Upload a checkpoint file to Supabase Storage with compression.
 
     Args:
         client: Supabase client
@@ -35,13 +41,36 @@ def upload_checkpoint_to_storage(
         Public URL of uploaded checkpoint, or None if failed
     """
     try:
-        # Determine storage path
-        suffix = "best" if is_best else f"epoch_{epoch:03d}"
-        storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth"
-
-        # Read file
+        # Read original file
         with open(checkpoint_path, "rb") as f:
             file_data = f.read()
+
+        original_size = len(file_data)
+
+        # Compress with gzip if file is larger than threshold
+        if original_size > MAX_UPLOAD_SIZE:
+            print(f"Compressing checkpoint ({original_size / 1024 / 1024:.1f}MB)...")
+            compressed_buffer = io.BytesIO()
+            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=6) as gz:
+                gz.write(file_data)
+            file_data = compressed_buffer.getvalue()
+            compressed_size = len(file_data)
+            print(f"Compressed: {original_size / 1024 / 1024:.1f}MB -> {compressed_size / 1024 / 1024:.1f}MB ({100 * compressed_size / original_size:.0f}%)")
+
+            # Check if still too large
+            if compressed_size > MAX_UPLOAD_SIZE:
+                print(f"Warning: Compressed checkpoint ({compressed_size / 1024 / 1024:.1f}MB) still exceeds 50MB limit")
+                print("Checkpoint will be saved locally only, not uploaded to storage")
+                return None
+
+            # Use .pth.gz extension for compressed files
+            suffix = "best" if is_best else f"epoch_{epoch:03d}"
+            storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth.gz"
+            content_type = "application/gzip"
+        else:
+            suffix = "best" if is_best else f"epoch_{epoch:03d}"
+            storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth"
+            content_type = "application/octet-stream"
 
         # Upload to storage bucket "checkpoints"
         bucket = client.storage.from_("checkpoints")
@@ -56,7 +85,7 @@ def upload_checkpoint_to_storage(
         result = bucket.upload(
             path=storage_path,
             file=file_data,
-            file_options={"content-type": "application/octet-stream"}
+            file_options={"content-type": content_type}
         )
 
         # Get public URL
