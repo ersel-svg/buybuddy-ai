@@ -75,8 +75,14 @@ class DuplicateCheckResponse(BaseModel):
 
 async def send_slack_notification(scan_request: dict) -> bool:
     """Send Slack notification for new scan request."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Attempting to send Slack notification for scan request: {scan_request.get('id')}")
+    logger.info(f"Slack webhook URL configured: {bool(settings.slack_webhook_url)}")
+
     if not settings.slack_webhook_url:
-        print("Slack webhook URL not configured, skipping notification")
+        logger.warning("Slack webhook URL not configured, skipping notification")
         return False
 
     try:
@@ -170,15 +176,19 @@ async def send_slack_notification(scan_request: dict) -> bool:
         })
 
         async with httpx.AsyncClient() as client:
+            logger.info(f"Sending Slack notification to webhook...")
             response = await client.post(
                 settings.slack_webhook_url,
                 json=message,
                 timeout=10.0
             )
+            logger.info(f"Slack response status: {response.status_code}")
+            if response.status_code != 200:
+                logger.error(f"Slack error response: {response.text}")
             return response.status_code == 200
 
     except Exception as e:
-        print(f"Failed to send Slack notification: {e}")
+        logger.error(f"Failed to send Slack notification: {e}", exc_info=True)
         return False
 
 

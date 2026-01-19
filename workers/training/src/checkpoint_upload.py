@@ -51,7 +51,8 @@ def upload_checkpoint_to_storage(
         if original_size > MAX_UPLOAD_SIZE:
             print(f"Compressing checkpoint ({original_size / 1024 / 1024:.1f}MB)...")
             compressed_buffer = io.BytesIO()
-            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=6) as gz:
+            # Use maximum compression (9) for better size reduction
+            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=9) as gz:
                 gz.write(file_data)
             file_data = compressed_buffer.getvalue()
             compressed_size = len(file_data)
