@@ -139,6 +139,7 @@ class PreviewPipeline:
                             type="add_prompt",
                             session_id=session_id,
                             frame_index=0,
+                            obj_id=1,  # Required for point prompts
                             points=points_tensor,
                             point_labels=labels_tensor,
                         )
