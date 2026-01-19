@@ -121,6 +121,8 @@ class ProductPipeline:
         sample_rate: Optional[int] = None,
         max_frames: Optional[int] = None,
         gemini_model: Optional[str] = None,
+        custom_prompts: Optional[List[str]] = None,
+        points: Optional[List[dict]] = None,
     ) -> Dict[str, Any]:
         """
         Main processing method (same as notebook).
@@ -133,6 +135,8 @@ class ProductPipeline:
             sample_rate: Extract every Nth frame (1 = every frame). Default from config.
             max_frames: Maximum frames to extract. Default from config (None = all).
             gemini_model: Gemini model name to use. Default from config (gemini-2.0-flash).
+            custom_prompts: Override Gemini grounding prompts with custom list.
+            points: Point prompts for SAM3 [{x, y, label}] where x,y are normalized 0-1.
 
         Returns:
             {
@@ -186,9 +190,21 @@ class ProductPipeline:
             print("\n[4/7] Segmenting with SAM3...")
             grounding_prompts = []
             if self.video_predictor:
-                grounding_prompts = self._get_grounding_prompts(metadata)
+                # Use custom prompts if provided, otherwise extract from Gemini metadata
+                if custom_prompts:
+                    grounding_prompts = custom_prompts
+                    print(f"      Using custom prompts: {grounding_prompts}")
+                else:
+                    grounding_prompts = self._get_grounding_prompts(metadata)
+                    print(f"      Using Gemini prompts: {grounding_prompts}")
+
                 # Pass max_video_frame_idx + 1 to ensure SAM3 propagates through all needed frames
-                all_frame_outputs = self._segment_video_sam3(video_path, grounding_prompts, max_video_frame_idx + 1)
+                all_frame_outputs = self._segment_video_sam3(
+                    video_path,
+                    grounding_prompts,
+                    max_video_frame_idx + 1,
+                    points=points,
+                )
                 print(f"      Segmented {len(all_frame_outputs)} frames")
             else:
                 print("      Skipped (SAM3 not available, using raw frames)")
@@ -576,12 +592,24 @@ Return ONLY the following JSON object. No markdown, no conversational text.
         # Need at least 2 valid frames
         return valid_frames >= 2
 
-    def _segment_video_sam3(self, video_path: Path, grounding_prompts: List[str], num_frames: int) -> dict:
+    def _segment_video_sam3(
+        self,
+        video_path: Path,
+        grounding_prompts: List[str],
+        num_frames: int,
+        points: Optional[List[dict]] = None,
+    ) -> dict:
         """
         Segment video with SAM3 using efficient fallback.
 
         SINGLE session, multiple prompts via reset_session.
         Video is loaded ONCE, only prompts are changed between attempts.
+
+        Args:
+            video_path: Path to video file
+            grounding_prompts: List of text prompts to try
+            num_frames: Number of frames to propagate through
+            points: Optional point prompts [{x, y, label}] where x,y are normalized 0-1
         """
         print(f"      Starting SAM3 session...")
 
@@ -626,6 +654,25 @@ Return ONLY the following JSON object. No markdown, no conversational text.
                         text=prompt,
                     )
                 )
+
+                # Add point prompts if provided (after text prompt)
+                if points:
+                    print(f"      Adding {len(points)} point prompts...")
+                    points_list = [[p["x"], p["y"]] for p in points]
+                    labels_list = [p.get("label", 1) for p in points]
+
+                    points_tensor = torch.tensor(points_list, dtype=torch.float32)
+                    labels_tensor = torch.tensor(labels_list, dtype=torch.int32)
+
+                    self.video_predictor.handle_request(
+                        request=dict(
+                            type="add_prompt",
+                            session_id=session_id,
+                            frame_index=0,
+                            points=points_tensor,
+                            point_labels=labels_tensor,
+                        )
+                    )
 
                 # Propagate through video
                 print(f"      Propagating through {num_frames} frames...")

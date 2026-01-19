@@ -575,9 +575,38 @@ class ApiClient {
     });
   }
 
-  async reprocessProduct(productId: string): Promise<{ job: Job; cleanup: { frames_deleted: number; files_deleted: number }; message: string }> {
+  async reprocessProduct(
+    productId: string,
+    options?: {
+      custom_prompts?: string[];
+      points?: Array<{ x: number; y: number; label: number }>;
+    }
+  ): Promise<{ job: Job; cleanup: { frames_deleted: number; files_deleted: number }; message: string }> {
     return this.request(`/api/v1/products/${productId}/reprocess`, {
       method: "POST",
+      body: options || undefined,
+    });
+  }
+
+  async previewSegmentation(
+    productId: string,
+    options: {
+      text_prompts?: string[];
+      points?: Array<{ x: number; y: number; label: number }>;
+    }
+  ): Promise<{
+    mask_image: string;
+    first_frame: string;
+    mask_stats: {
+      pixel_count: number;
+      coverage_percent: number;
+      width: number;
+      height: number;
+    };
+  }> {
+    return this.request(`/api/v1/products/${productId}/preview-segmentation`, {
+      method: "POST",
+      body: options,
     });
   }
 

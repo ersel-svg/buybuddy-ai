@@ -13,6 +13,7 @@ class EndpointType(str, Enum):
     AUGMENTATION = "augmentation"
     TRAINING = "training"
     EMBEDDING = "embedding"
+    PREVIEW = "preview"  # Segmentation preview (single frame)
 
 
 class RunpodService:
@@ -27,6 +28,7 @@ class RunpodService:
             EndpointType.AUGMENTATION: settings.runpod_endpoint_augmentation,
             EndpointType.TRAINING: settings.runpod_endpoint_training,
             EndpointType.EMBEDDING: settings.runpod_endpoint_embedding,
+            EndpointType.PREVIEW: settings.runpod_endpoint_preview,
         }
 
     def _get_headers(self) -> dict[str, str]:

@@ -43,6 +43,7 @@ import {
 import type { Product, ProductStatus, ProductIdentifierCreate } from "@/types";
 import { IdentifiersEditor } from "@/components/products/identifiers-editor";
 import { CustomFieldsEditor } from "@/components/products/custom-fields-editor";
+import { SegmentationTab } from "./components/SegmentationTab";
 
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -340,6 +341,7 @@ export default function ProductDetailPage() {
                 Frames ({product.frame_count})
               </TabsTrigger>
               <TabsTrigger value="nutrition">Nutrition</TabsTrigger>
+              <TabsTrigger value="segmentation">Segmentation</TabsTrigger>
             </TabsList>
 
             {/* Metadata Tab */}
@@ -978,6 +980,11 @@ export default function ProductDetailPage() {
                   )}
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            {/* Segmentation Tab */}
+            <TabsContent value="segmentation" className="mt-4">
+              <SegmentationTab product={product} />
             </TabsContent>
           </Tabs>
         </div>

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     runpod_endpoint_augmentation: str = ""
     runpod_endpoint_training: str = ""
     runpod_endpoint_embedding: str = ""
+    runpod_endpoint_preview: str = ""  # Segmentation preview worker
 
     # External APIs
     gemini_api_key: str = ""

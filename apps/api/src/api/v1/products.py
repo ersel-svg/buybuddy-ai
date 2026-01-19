@@ -134,6 +134,33 @@ class CustomFieldsUpdate(BaseModel):
     custom_fields: dict[str, str]
 
 
+# ===========================================
+# Segmentation Preview Schemas
+# ===========================================
+
+
+class PointPrompt(BaseModel):
+    """Point prompt for SAM3 segmentation."""
+
+    x: float  # Normalized 0-1
+    y: float  # Normalized 0-1
+    label: int = 1  # 1 = positive (include), 0 = negative (exclude)
+
+
+class PreviewSegmentationRequest(BaseModel):
+    """Request for segmentation preview."""
+
+    text_prompts: Optional[List[str]] = None
+    points: Optional[List[PointPrompt]] = None
+
+
+class ReprocessRequest(BaseModel):
+    """Request for reprocessing with custom segmentation settings."""
+
+    custom_prompts: Optional[List[str]] = None
+    points: Optional[List[PointPrompt]] = None
+
+
 class ExportRequest(BaseModel):
     """Request for export with filters."""
 
@@ -841,10 +868,104 @@ async def sync_augmented_from_storage(
     return result
 
 
+# ===========================================
+# Segmentation Preview & Reprocess Endpoints
+# ===========================================
+
+
+@router.post("/{product_id}/preview-segmentation")
+async def preview_segmentation(
+    product_id: str,
+    request_body: PreviewSegmentationRequest,
+    db: SupabaseService = Depends(get_supabase),
+    runpod: RunpodService = Depends(get_runpod),
+):
+    """
+    Preview segmentation on the first frame of a product's video.
+
+    Allows users to test custom text prompts and point prompts before
+    committing to a full video reprocess. Returns a mask overlay image
+    for visual validation.
+
+    Args:
+        product_id: Product UUID
+        request_body: Text prompts and/or point prompts for SAM3
+
+    Returns:
+        mask_image: Base64 PNG with mask overlay
+        first_frame: Base64 PNG of original frame
+        mask_stats: Coverage statistics
+    """
+    # Validate input
+    if not request_body.text_prompts and not request_body.points:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of text_prompts or points is required"
+        )
+
+    # Get product
+    product = await db.get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    video_url = product.get("video_url")
+    if not video_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Product has no video URL. Cannot preview segmentation."
+        )
+
+    # Check if preview endpoint is configured
+    if not runpod.is_configured(EndpointType.PREVIEW):
+        raise HTTPException(
+            status_code=503,
+            detail="Segmentation preview service not configured"
+        )
+
+    print(f"[Products] Preview segmentation for product {product_id}")
+    print(f"[Products] Text prompts: {request_body.text_prompts}")
+    print(f"[Products] Points: {request_body.points}")
+
+    # Prepare input for preview worker
+    input_data = {
+        "video_url": video_url,
+        "text_prompts": request_body.text_prompts or [],
+        "points": [p.model_dump() for p in request_body.points] if request_body.points else [],
+    }
+
+    try:
+        # Call preview worker synchronously (it's fast, single frame)
+        result = await runpod.submit_job_sync(
+            endpoint_type=EndpointType.PREVIEW,
+            input_data=input_data,
+            timeout=120,  # 2 minutes max for single frame
+        )
+
+        # Extract output from RunPod response
+        if result.get("status") == "COMPLETED":
+            output = result.get("output", {})
+            if "error" in output:
+                raise HTTPException(status_code=500, detail=output["error"])
+            return output
+        else:
+            error = result.get("error") or "Preview failed"
+            raise HTTPException(status_code=500, detail=error)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Products] Preview segmentation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Preview segmentation failed: {str(e)}"
+        )
+
+
 @router.post("/{product_id}/reprocess")
 async def reprocess_product(
     product_id: str,
     request: Request,
+    request_body: Optional[ReprocessRequest] = None,
     db: SupabaseService = Depends(get_supabase),
     runpod: RunpodService = Depends(get_runpod),
 ):
@@ -868,7 +989,18 @@ async def reprocess_product(
             detail="Product has no video URL. Cannot reprocess."
         )
 
+    # Extract custom segmentation settings if provided
+    custom_prompts = None
+    points = None
+    if request_body:
+        custom_prompts = request_body.custom_prompts
+        points = [p.model_dump() for p in request_body.points] if request_body.points else None
+
     print(f"[Products] Reprocessing product {product_id} (barcode: {barcode})")
+    if custom_prompts:
+        print(f"[Products] Custom prompts: {custom_prompts}")
+    if points:
+        print(f"[Products] Custom points: {points}")
 
     # 1. Clean up old data (frames + storage)
     cleanup_result = await db.cleanup_product_for_reprocess(product_id)
@@ -902,15 +1034,23 @@ async def reprocess_product(
     if runpod.is_configured(EndpointType.VIDEO):
         try:
             webhook_url = get_webhook_url(request)
+            # Build input data with optional custom segmentation params
+            input_data = {
+                "video_url": video_url,
+                "barcode": barcode,
+                "video_id": video_id,
+                "product_id": product_id,
+                "job_id": job["id"],
+            }
+            # Add custom segmentation settings if provided
+            if custom_prompts:
+                input_data["custom_prompts"] = custom_prompts
+            if points:
+                input_data["points"] = points
+
             runpod_response = await runpod.submit_job(
                 endpoint_type=EndpointType.VIDEO,
-                input_data={
-                    "video_url": video_url,
-                    "barcode": barcode,
-                    "video_id": video_id,
-                    "product_id": product_id,
-                    "job_id": job["id"],
-                },
+                input_data=input_data,
                 webhook_url=webhook_url,
             )
 

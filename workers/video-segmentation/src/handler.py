@@ -9,7 +9,9 @@ Input:
     "product_id": "uuid-...",  # Our system's product UUID
     "sample_rate": 1,  # Optional: extract every Nth frame (1 = every frame)
     "max_frames": null,  # Optional: maximum frames to extract (null = all)
-    "gemini_model": "gemini-2.0-flash"  # Optional: Gemini model for metadata extraction
+    "gemini_model": "gemini-2.0-flash",  # Optional: Gemini model for metadata extraction
+    "custom_prompts": ["red can", "bottle"],  # Optional: override Gemini grounding prompts
+    "points": [{"x": 0.5, "y": 0.3, "label": 1}]  # Optional: point prompts for SAM3
 }
 
 Output (returned to RunPod, sent via webhook automatically):
@@ -103,6 +105,8 @@ def handler(job):
         sample_rate = job_input.get("sample_rate")  # Optional: extract every Nth frame
         max_frames = job_input.get("max_frames")  # Optional: max frames to extract
         gemini_model = job_input.get("gemini_model")  # Optional: Gemini model for metadata
+        custom_prompts = job_input.get("custom_prompts")  # Optional: override Gemini grounding prompts
+        points = job_input.get("points")  # Optional: point prompts for SAM3
 
         # Validate product_id is provided (required for storage)
         if not product_id:
@@ -115,6 +119,10 @@ def handler(job):
         print(f"Sample Rate: {sample_rate or 'config default'}")
         print(f"Max Frames: {max_frames or 'config default (all)'}")
         print(f"Gemini Model: {gemini_model or 'config default (gemini-2.0-flash)'}")
+        if custom_prompts:
+            print(f"Custom Prompts: {custom_prompts}")
+        if points:
+            print(f"Point Prompts: {len(points)} points")
         print(f"{'=' * 60}\n")
 
         # Get pipeline and process
@@ -127,6 +135,8 @@ def handler(job):
             sample_rate=sample_rate,
             max_frames=max_frames,
             gemini_model=gemini_model,
+            custom_prompts=custom_prompts,
+            points=points,
         )
 
         print(f"\n{'=' * 60}")
