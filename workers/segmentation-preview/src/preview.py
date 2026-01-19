@@ -111,7 +111,7 @@ class PreviewPipeline:
             print(f"[Preview] Session ID: {session_id}")
 
             try:
-                # 4. Add text prompt (first one)
+                # 4. Add text prompt OR use generic prompt for point-only mode
                 if text_prompts:
                     prompt = text_prompts[0]
                     print(f"[Preview] Adding text prompt: '{prompt}'")
@@ -123,10 +123,37 @@ class PreviewPipeline:
                             text=prompt,
                         )
                     )
+                elif points:
+                    # For point-only prompts, we need to initialize with a generic prompt first
+                    # SAM3 requires frame cache before adding point refinements
+                    print("[Preview] Initializing with generic prompt for point-based segmentation...")
+                    self.video_predictor.handle_request(
+                        request=dict(
+                            type="add_prompt",
+                            session_id=session_id,
+                            frame_index=0,
+                            text="object",  # Generic prompt to initialize tracking
+                        )
+                    )
 
-                # 5. Add point prompts
+                # 5. Different flow for text-only vs point prompts
+                propagate_result = None
+
                 if points:
-                    print(f"[Preview] Adding {len(points)} point prompts...")
+                    # For point prompts: need initial propagation to build cache, then add points
+                    print("[Preview] Running initial propagation for point refinement...")
+                    initial_propagate = self.video_predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction="forward",
+                        start_frame_idx=0,
+                        max_frame_num_to_track=1,
+                    )
+                    # Consume the generator to execute propagation and build cache
+                    for _ in initial_propagate:
+                        pass
+
+                    # Add point prompts (refinement after initial propagation)
+                    print(f"[Preview] Adding {len(points)} point prompts for refinement...")
                     # Denormalize coordinates from 0-1 to pixel coordinates
                     points_list = [[p["x"] * width, p["y"] * height] for p in points]
                     labels_list = [p.get("label", 1) for p in points]
@@ -145,35 +172,44 @@ class PreviewPipeline:
                         )
                     )
 
-                # 6. Propagate (just first frame)
-                print("[Preview] Running segmentation...")
-                propagate_result = self.video_predictor.propagate_in_video(
-                    session_id=session_id,
-                    propagation_direction="forward",
-                    start_frame_idx=0,
-                    max_frame_num_to_track=1,
-                )
+                    # Final propagation to get refined mask
+                    print("[Preview] Running final segmentation with points...")
+                    propagate_result = self.video_predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction="forward",
+                        start_frame_idx=0,
+                        max_frame_num_to_track=1,
+                    )
+                else:
+                    # For text-only: single propagation is enough
+                    print("[Preview] Running segmentation...")
+                    propagate_result = self.video_predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction="forward",
+                        start_frame_idx=0,
+                        max_frame_num_to_track=1,
+                    )
 
-                # 7. Extract mask from result
+                # 6. Extract mask from result
                 mask = None
                 if hasattr(propagate_result, "__iter__") and not isinstance(propagate_result, (dict, str)):
                     for item in propagate_result:
                         if isinstance(item, dict):
                             outputs = item.get("outputs", item)
-                            masks = outputs.get("out_binary_masks", [])
-                            if masks:
+                            masks = outputs.get("out_binary_masks")
+                            if masks is not None and hasattr(masks, 'shape') and masks.shape[0] > 0:
                                 mask = masks[0]
                                 break
                         elif isinstance(item, tuple) and len(item) > 1:
                             outputs = item[1]
                             if isinstance(outputs, dict):
-                                masks = outputs.get("out_binary_masks", [])
-                                if masks:
+                                masks = outputs.get("out_binary_masks")
+                                if masks is not None and hasattr(masks, 'shape') and masks.shape[0] > 0:
                                     mask = masks[0]
                                     break
 
                 if mask is None:
-                    raise ValueError("No mask generated - segmentation failed")
+                    raise ValueError("No mask generated - the prompt didn't match any object in the video. Try a different prompt or add point prompts.")
 
                 # Convert mask to numpy
                 if hasattr(mask, "cpu"):
