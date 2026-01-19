@@ -160,8 +160,13 @@ class ApiClient {
         }
       }
 
+      // Handle case where error.detail might be an object
+      const errorMessage = typeof error.detail === 'string'
+        ? error.detail
+        : (error.detail?.message || error.message || JSON.stringify(error.detail) || `HTTP ${response.status}`);
+
       throw new ApiError(
-        error.detail || `HTTP ${response.status}`,
+        errorMessage,
         response.status,
         error
       );
@@ -216,8 +221,13 @@ class ApiClient {
         }
       }
 
+      // Handle case where error.detail might be an object
+      const errorMessage = typeof error.detail === 'string'
+        ? error.detail
+        : (error.detail?.message || error.message || JSON.stringify(error.detail) || `HTTP ${response.status}`);
+
       throw new ApiError(
-        error.detail || `HTTP ${response.status}`,
+        errorMessage,
         response.status,
         error
       );
