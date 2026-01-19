@@ -646,7 +646,17 @@ def handler(job):
             # Upload checkpoint if best or at save interval
             if is_best or (epoch + 1) % save_interval == 0:
                 checkpoint_path = trainer.checkpoint_manager.get_last_checkpoint()
-                if checkpoint_path and checkpoint_path.exists():
+                print(f"[Epoch {epoch + 1}] Checkpoint path: {checkpoint_path}")
+
+                if not checkpoint_path:
+                    print(f"[Epoch {epoch + 1}] WARNING: No checkpoint path returned from checkpoint_manager")
+                    # List checkpoints in manager for debugging
+                    checkpoints_list = trainer.checkpoint_manager.list_checkpoints()
+                    print(f"[Epoch {epoch + 1}] Checkpoint manager has {len(checkpoints_list)} checkpoints")
+                elif not checkpoint_path.exists():
+                    print(f"[Epoch {epoch + 1}] WARNING: Checkpoint path does not exist: {checkpoint_path}")
+                else:
+                    print(f"[Epoch {epoch + 1}] Uploading checkpoint to storage...")
                     checkpoint_url = upload_checkpoint_to_storage(
                         client=handler_client,
                         checkpoint_path=str(checkpoint_path),
@@ -657,7 +667,9 @@ def handler(job):
 
                     if checkpoint_url:
                         file_size = checkpoint_path.stat().st_size
-                        save_checkpoint_record(
+                        print(f"[Epoch {epoch + 1}] Checkpoint uploaded: {checkpoint_url} ({file_size / 1024 / 1024:.1f}MB)")
+
+                        record_id = save_checkpoint_record(
                             client=handler_client,
                             training_run_id=training_job_id,
                             epoch=epoch,
@@ -668,6 +680,13 @@ def handler(job):
                             is_final=(epoch + 1 == total_epochs),
                             file_size_bytes=file_size,
                         )
+
+                        if record_id:
+                            print(f"[Epoch {epoch + 1}] Checkpoint record saved: {record_id}")
+                        else:
+                            print(f"[Epoch {epoch + 1}] WARNING: Failed to save checkpoint record to database")
+                    else:
+                        print(f"[Epoch {epoch + 1}] WARNING: Checkpoint upload failed - no URL returned")
 
         # Train
         report_progress(training_job_id, "running", 0.15, message="Starting training...")
@@ -720,6 +739,43 @@ def handler(job):
         report_progress(training_job_id, "running", 0.95, message="Uploading checkpoint...")
 
         checkpoint_info = trainer.save_final_checkpoint()
+        print(f"Final checkpoint info: {checkpoint_info}")
+
+        # Save final checkpoint record to database (fallback if per-epoch saves failed)
+        if checkpoint_info.get("uploaded") and checkpoint_info.get("url"):
+            final_client = get_supabase_client()
+            if final_client:
+                # Get best val metrics from training result
+                final_train_loss = training_result.get("final_metrics", {}).get("train_loss", 0)
+                final_val_metrics = {
+                    "loss": training_result.get("best_val_loss"),
+                    "recall@1": training_result.get("best_recall_at_1"),
+                    "recall@5": training_result.get("final_metrics", {}).get("val_recall_at_5"),
+                }
+
+                # Check if we already have this checkpoint saved
+                existing = final_client.table("training_checkpoints").select("id").eq(
+                    "training_run_id", training_job_id
+                ).eq("is_final", True).execute()
+
+                if not existing.data:
+                    print(f"Saving final checkpoint record to database...")
+                    record_id = save_checkpoint_record(
+                        client=final_client,
+                        training_run_id=training_job_id,
+                        epoch=training_result.get("best_epoch", config["epochs"]) - 1,
+                        checkpoint_url=checkpoint_info["url"],
+                        train_loss=final_train_loss,
+                        val_metrics=final_val_metrics,
+                        is_best=True,
+                        is_final=True,
+                    )
+                    if record_id:
+                        print(f"Final checkpoint record saved: {record_id}")
+                    else:
+                        print("WARNING: Failed to save final checkpoint record")
+                else:
+                    print(f"Final checkpoint already exists in database")
 
         # Prepare result
         result = {

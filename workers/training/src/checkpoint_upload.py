@@ -134,18 +134,35 @@ def upload_checkpoint_to_storage(
         except:
             pass
 
-        # Upload
-        result = bucket.upload(
-            path=storage_path,
-            file=file_data,
-            file_options={"content-type": content_type}
-        )
+        # Upload with retries
+        max_retries = 3
+        last_error = None
 
-        # Get public URL
-        public_url = bucket.get_public_url(storage_path)
+        for attempt in range(max_retries):
+            try:
+                print(f"Upload attempt {attempt + 1}/{max_retries}...")
+                result = bucket.upload(
+                    path=storage_path,
+                    file=file_data,
+                    file_options={"content-type": content_type}
+                )
 
-        print(f"Uploaded checkpoint to: {public_url}")
-        return public_url
+                # Get public URL
+                public_url = bucket.get_public_url(storage_path)
+
+                print(f"Uploaded checkpoint to: {public_url}")
+                return public_url
+
+            except Exception as upload_error:
+                last_error = upload_error
+                print(f"Upload attempt {attempt + 1} failed: {upload_error}")
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
+                    print(f"Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+
+        print(f"All upload attempts failed. Last error: {last_error}")
+        return None
 
     except Exception as e:
         print(f"Failed to upload checkpoint: {e}")
