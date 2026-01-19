@@ -4,7 +4,6 @@ import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import Link from "next/link";
-import Image from "next/image";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +40,16 @@ import {
   ExternalLink,
 } from "lucide-react";
 import type { ScanRequestStatus } from "@/types";
+
+const SUPABASE_STORAGE_URL = "https://qvyxpfcwfktxnaeavkxx.supabase.co/storage/v1/object/public/scan-request-images";
+
+// Helper to get full image URL
+const getImageUrl = (imagePathOrUrl: string): string => {
+  if (imagePathOrUrl.startsWith("http")) {
+    return imagePathOrUrl;
+  }
+  return `${SUPABASE_STORAGE_URL}/${imagePathOrUrl}`;
+};
 
 const statusConfig: Record<
   ScanRequestStatus,
@@ -319,26 +328,28 @@ export default function ScanRequestDetailPage() {
           <CardContent>
             {request.reference_images?.length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {request.reference_images.map((imageUrl, index) => (
-                  <a
-                    key={index}
-                    href={imageUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="relative aspect-square rounded-lg overflow-hidden border hover:border-indigo-500 transition-colors group"
-                  >
-                    <Image
-                      src={imageUrl}
-                      alt={`Reference image ${index + 1}`}
-                      fill
-                      className="object-cover"
-                      sizes="(max-width: 768px) 50vw, 25vw"
-                    />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                      <ExternalLink className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </div>
-                  </a>
-                ))}
+                {request.reference_images.map((imagePath, index) => {
+                  const fullUrl = getImageUrl(imagePath);
+                  return (
+                    <a
+                      key={index}
+                      href={fullUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="relative aspect-square rounded-lg overflow-hidden border hover:border-indigo-500 transition-colors group"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={fullUrl}
+                        alt={`Reference image ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                        <ExternalLink className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </div>
+                    </a>
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center py-8 text-gray-500">
