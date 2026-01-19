@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -20,7 +20,7 @@ import {
 import { ArrowLeft, Loader2, Upload, X, AlertTriangle } from "lucide-react";
 import type { ScanRequest } from "@/types";
 
-export default function NewScanRequestPage() {
+function NewScanRequestPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -383,5 +383,13 @@ export default function NewScanRequestPage() {
         </div>
       </form>
     </div>
+  );
+}
+
+export default function NewScanRequestPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-gray-400" /></div>}>
+      <NewScanRequestPageContent />
+    </Suspense>
   );
 }
