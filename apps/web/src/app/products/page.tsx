@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import Link from "next/link";
 import { apiClient, type ExportFilters } from "@/lib/api-client";
@@ -103,6 +104,8 @@ type SortDirection = "asc" | "desc";
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -115,8 +118,33 @@ export default function ProductsPage() {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
   const [newDatasetName, setNewDatasetName] = useState("");
   const [newDatasetDescription, setNewDatasetDescription] = useState("");
-  const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  // Read sorting state from URL query parameters
+  const sortColumn = useMemo(() => {
+    const col = searchParams.get("sortBy");
+    if (col && ["barcode", "brand_name", "sub_brand", "product_name", "variant_flavor", "category", "container_type", "net_quantity", "pack_type", "manufacturer_country", "status", "synthetic_count", "real_count", "augmented_count", "created_at", "updated_at"].includes(col)) {
+      return col as SortColumn;
+    }
+    return null;
+  }, [searchParams]);
+
+  const sortDirection = useMemo(() => {
+    const dir = searchParams.get("sortDir");
+    return dir === "desc" ? "desc" : "asc";
+  }, [searchParams]);
+
+  // Helper function to update URL with new sort parameters
+  const updateSortParams = useCallback((column: SortColumn | null, direction: SortDirection) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (column) {
+      params.set("sortBy", column);
+      params.set("sortDir", direction);
+    } else {
+      params.delete("sortBy");
+      params.delete("sortDir");
+    }
+    router.push(`/products?${params.toString()}`, { scroll: false });
+  }, [searchParams, router]);
 
   // Use filter state hook
   const {
@@ -594,14 +622,12 @@ export default function ProductsPage() {
     if (sortColumn === column) {
       // Toggle direction or clear
       if (sortDirection === "asc") {
-        setSortDirection("desc");
+        updateSortParams(column, "desc");
       } else {
-        setSortColumn(null);
-        setSortDirection("asc");
+        updateSortParams(null, "asc");
       }
     } else {
-      setSortColumn(column);
-      setSortDirection("asc");
+      updateSortParams(column, "asc");
     }
   };
 
@@ -1149,6 +1175,16 @@ export default function ProductsPage() {
                         >
                           Clear all filters
                         </Button>
+                      )}
+                      {search && (
+                        <div className="mt-4 pt-4 border-t">
+                          <p className="text-sm mb-2">Can&apos;t find what you&apos;re looking for?</p>
+                          <Link href={`/scan-requests/new?barcode=${encodeURIComponent(search)}`}>
+                            <Button variant="outline" size="sm">
+                              Request a scan for this product
+                            </Button>
+                          </Link>
+                        </div>
                       )}
                     </div>
                   </TableCell>

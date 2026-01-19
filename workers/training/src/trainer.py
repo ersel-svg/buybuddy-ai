@@ -465,6 +465,7 @@ class UnifiedTrainer:
         train_dataset,
         val_dataset,
         progress_callback: Optional[Callable] = None,
+        epoch_callback: Optional[Callable] = None,
     ) -> dict:
         """
         Run training loop.
@@ -473,6 +474,7 @@ class UnifiedTrainer:
             train_dataset: Training dataset
             val_dataset: Validation dataset
             progress_callback: Callback(epoch, batch, total_batches, metrics)
+            epoch_callback: Callback(epoch, train_metrics, val_metrics, epoch_time, is_best, curriculum_phase)
 
         Returns:
             Training result dictionary
@@ -685,6 +687,24 @@ class UnifiedTrainer:
                     scheduler=self.scheduler,
                     scaler=self.scaler,
                 )
+
+            # Epoch callback for metrics history and checkpoint uploads
+            if epoch_callback:
+                try:
+                    # Get current learning rate
+                    current_lr = self.optimizer.param_groups[0]["lr"]
+
+                    epoch_callback(
+                        epoch=epoch,
+                        train_metrics=train_metrics,
+                        val_metrics=val_metrics,
+                        epoch_time=epoch_time,
+                        is_best=is_best,
+                        curriculum_phase=current_phase if self.curriculum_scheduler else None,
+                        learning_rate=current_lr,
+                    )
+                except Exception as e:
+                    print(f"Warning: epoch_callback failed: {e}")
 
             # Early stopping check
             if early_stopping and early_stopping(val_metrics["loss"], epoch):

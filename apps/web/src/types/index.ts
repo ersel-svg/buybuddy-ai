@@ -1337,3 +1337,90 @@ export interface HardExample {
   correct_product_id: string;
   wrong_product_id: string;
 }
+
+// ===========================================
+// Training Metrics History Types
+// ===========================================
+
+export interface TrainingMetricsHistory {
+  id: string;
+  training_run_id: string;
+  epoch: number;
+  train_loss?: number;
+  arcface_loss?: number;
+  triplet_loss?: number;
+  domain_loss?: number;
+  val_loss?: number;
+  val_accuracy?: number;
+  val_recall_at_1?: number;
+  val_recall_at_5?: number;
+  val_recall_at_10?: number;
+  learning_rate?: number;
+  epoch_duration_seconds?: number;
+  curriculum_phase?: string;
+  created_at: string;
+}
+
+export interface TrainingProgress {
+  current_epoch: number;
+  total_epochs: number;
+  progress: number;
+  status: TrainingRunStatus;
+  latest_train_loss?: number;
+  latest_val_loss?: number;
+  best_val_loss?: number;
+  best_recall_at_1?: number;
+  message?: string;
+  metrics?: {
+    train_loss?: number;
+    val_loss?: number;
+    val_accuracy?: number;
+    val_recall_at_1?: number;
+    val_recall_at_5?: number;
+  };
+}
+
+// ===========================================
+// Scan Requests
+// ===========================================
+
+export type ScanRequestStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+export interface ScanRequest {
+  id: string;
+  barcode: string;
+  product_name?: string;
+  brand_name?: string;
+  reference_images: string[];
+  notes?: string;
+  requester_name: string;
+  requester_email: string;
+  status: ScanRequestStatus;
+  completed_at?: string;
+  completed_by_product_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScanRequestCreate {
+  barcode: string;
+  product_name?: string;
+  brand_name?: string;
+  notes?: string;
+  requester_name: string;
+  requester_email: string;
+  reference_images?: string[];
+}
+
+export interface ScanRequestsResponse {
+  items: ScanRequest[];
+  total: number;
+  page: number;
+  limit: number;
+  has_more: boolean;
+}
+
+export interface DuplicateCheckResponse {
+  has_duplicate: boolean;
+  existing_requests: ScanRequest[];
+}

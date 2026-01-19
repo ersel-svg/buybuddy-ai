@@ -763,6 +763,47 @@ async def list_checkpoints(
     return await db.get_training_checkpoints(run_id)
 
 
+@router.get("/runs/{run_id}/metrics-history")
+async def get_metrics_history(
+    run_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
+    """Get training metrics history for a run (per-epoch metrics for charts)."""
+    run = await db.get_training_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    return await db.get_training_metrics_history(run_id)
+
+
+@router.get("/runs/{run_id}/progress")
+async def get_training_progress(
+    run_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
+    """Get current training progress summary."""
+    run = await db.get_training_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    # Get latest metrics
+    metrics_history = await db.get_training_metrics_history(run_id)
+    latest_metrics = metrics_history[-1] if metrics_history else None
+
+    return {
+        "current_epoch": run.get("current_epoch", 0),
+        "total_epochs": run.get("total_epochs", 0),
+        "progress": run.get("progress", 0.0),
+        "status": run.get("status", "pending"),
+        "latest_train_loss": latest_metrics.get("train_loss") if latest_metrics else None,
+        "latest_val_loss": latest_metrics.get("val_loss") if latest_metrics else None,
+        "best_val_loss": run.get("best_val_loss"),
+        "best_recall_at_1": run.get("best_val_recall_at_1"),
+        "message": run.get("message"),
+        "metrics": run.get("metrics"),
+    }
+
+
 @router.delete("/checkpoints/{checkpoint_id}")
 async def delete_checkpoint(
     checkpoint_id: str,

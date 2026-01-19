@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     qdrant_url: str = ""
     qdrant_api_key: str = ""
 
+    # Slack Integration
+    slack_webhook_url: str = ""
+
     # Processing defaults
     target_resolution: int = 518
 

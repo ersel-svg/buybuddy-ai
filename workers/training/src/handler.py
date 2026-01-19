@@ -74,6 +74,12 @@ from trainer import UnifiedTrainer
 from dataset import ProductDataset
 from splitter import UPCStratifiedSplitter
 from evaluator import ModelEvaluator, DomainAwareEvaluator
+from checkpoint_upload import (
+    upload_checkpoint_to_storage,
+    save_metrics_history,
+    update_training_progress,
+    save_checkpoint_record,
+)
 
 # Import bb-models
 from bb_models import get_model_config, is_model_supported, list_available_models
@@ -603,6 +609,66 @@ def handler(job):
                 message=f"Epoch {epoch + 1}/{config['epochs']}, Batch {batch}/{total_batches}",
             )
 
+        # Epoch callback for metrics history and checkpoint uploads
+        total_epochs = config["epochs"]
+        save_interval = config.get("save_every_n_epochs", 1)
+
+        def epoch_callback(epoch, train_metrics, val_metrics, epoch_time, is_best, curriculum_phase, learning_rate):
+            handler_client = get_supabase_client()
+            if handler_client is None:
+                print(f"[Epoch {epoch + 1}] No Supabase client, skipping metrics save")
+                return
+
+            # Save metrics history
+            save_metrics_history(
+                client=handler_client,
+                training_run_id=training_job_id,
+                epoch=epoch,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                learning_rate=learning_rate,
+                epoch_duration=epoch_time,
+                curriculum_phase=curriculum_phase,
+            )
+
+            # Update training progress
+            update_training_progress(
+                client=handler_client,
+                training_run_id=training_job_id,
+                epoch=epoch,
+                total_epochs=total_epochs,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                is_best=is_best,
+                message=f"Epoch {epoch + 1}/{total_epochs} completed",
+            )
+
+            # Upload checkpoint if best or at save interval
+            if is_best or (epoch + 1) % save_interval == 0:
+                checkpoint_path = trainer.checkpoint_manager.get_last_checkpoint()
+                if checkpoint_path and checkpoint_path.exists():
+                    checkpoint_url = upload_checkpoint_to_storage(
+                        client=handler_client,
+                        checkpoint_path=str(checkpoint_path),
+                        training_run_id=training_job_id,
+                        epoch=epoch,
+                        is_best=is_best,
+                    )
+
+                    if checkpoint_url:
+                        file_size = checkpoint_path.stat().st_size
+                        save_checkpoint_record(
+                            client=handler_client,
+                            training_run_id=training_job_id,
+                            epoch=epoch,
+                            checkpoint_url=checkpoint_url,
+                            train_loss=train_metrics.get("loss", 0),
+                            val_metrics=val_metrics,
+                            is_best=is_best,
+                            is_final=(epoch + 1 == total_epochs),
+                            file_size_bytes=file_size,
+                        )
+
         # Train
         report_progress(training_job_id, "running", 0.15, message="Starting training...")
 
@@ -610,6 +676,7 @@ def handler(job):
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             progress_callback=progress_callback,
+            epoch_callback=epoch_callback,
         )
 
         # Evaluate on test set

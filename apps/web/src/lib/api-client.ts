@@ -67,6 +67,13 @@ import type {
   MatchingFeedback,
   FeedbackStats,
   HardExample,
+  TrainingMetricsHistory,
+  TrainingProgress,
+  // Scan Requests
+  ScanRequest,
+  ScanRequestCreate,
+  ScanRequestsResponse,
+  DuplicateCheckResponse,
 } from "@/types";
 import { getAuthHeader, clearAuth } from "./auth";
 
@@ -1321,6 +1328,21 @@ class ApiClient {
     return this.request<TrainingCheckpoint>(`/api/v1/training/checkpoints/${checkpointId}`);
   }
 
+  async deleteTrainingCheckpoint(checkpointId: string): Promise<void> {
+    return this.request<void>(`/api/v1/training/checkpoints/${checkpointId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Training Metrics History
+  async getTrainingMetricsHistory(runId: string): Promise<TrainingMetricsHistory[]> {
+    return this.request<TrainingMetricsHistory[]>(`/api/v1/training/runs/${runId}/metrics-history`);
+  }
+
+  async getTrainingProgress(runId: string): Promise<TrainingProgress> {
+    return this.request<TrainingProgress>(`/api/v1/training/runs/${runId}/progress`);
+  }
+
   // Trained Models
   async getTrainedModels(params?: {
     is_active?: boolean;
@@ -1507,6 +1529,69 @@ class ApiClient {
     limit?: number;
   }): Promise<HardExample[]> {
     return this.request<HardExample[]>("/api/v1/triplets/feedback/hard-examples", { params });
+  }
+
+  // ===========================================
+  // Scan Requests
+  // ===========================================
+
+  async getScanRequests(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    search?: string;
+  }): Promise<ScanRequestsResponse> {
+    return this.request<ScanRequestsResponse>("/api/v1/scan-requests", { params });
+  }
+
+  async getScanRequest(id: string): Promise<ScanRequest> {
+    return this.request<ScanRequest>(`/api/v1/scan-requests/${id}`);
+  }
+
+  async createScanRequest(data: ScanRequestCreate): Promise<ScanRequest> {
+    return this.request<ScanRequest>("/api/v1/scan-requests", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateScanRequest(id: string, data: { status?: string; notes?: string }): Promise<ScanRequest> {
+    return this.request<ScanRequest>(`/api/v1/scan-requests/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteScanRequest(id: string): Promise<void> {
+    await this.request(`/api/v1/scan-requests/${id}`, { method: "DELETE" });
+  }
+
+  async checkDuplicateScanRequest(barcode: string): Promise<DuplicateCheckResponse> {
+    return this.request<DuplicateCheckResponse>("/api/v1/scan-requests/check-duplicate", {
+      params: { barcode },
+    });
+  }
+
+  async uploadScanRequestImage(file: File): Promise<{ success: boolean; path: string; url: string }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/scan-requests/upload-image`, {
+      method: "POST",
+      headers: await getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Upload failed" }));
+      // Handle case where detail might be an object
+      const errorMessage = typeof error.detail === 'string'
+        ? error.detail
+        : (error.detail?.message || error.message || JSON.stringify(error.detail) || "Upload failed");
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
   }
 }
 

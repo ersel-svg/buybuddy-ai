@@ -320,14 +320,15 @@ class SupabaseService:
 
     async def get_product(self, product_id: str) -> Optional[dict[str, Any]]:
         """Get single product by ID."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("products")
             .select("*")
             .eq("id", product_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_product(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create new product."""
@@ -1026,19 +1027,19 @@ class SupabaseService:
         include_frame_counts: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Get dataset with filtered products and frame counts."""
-        # Get dataset
+        # Get dataset - Note: Using limit(1) instead of single() due to supabase-py bug
         dataset_response = (
             self.client.table("datasets")
             .select("*")
             .eq("id", dataset_id)
-            .single()
+            .limit(1)
             .execute()
         )
 
         if not dataset_response.data:
             return None
 
-        dataset = dataset_response.data
+        dataset = dataset_response.data[0]
 
         # Helper to parse comma-separated values
         def parse_csv(value: Optional[str]) -> list[str]:
@@ -1246,12 +1247,12 @@ class SupabaseService:
 
     async def get_dataset_filter_options(self, dataset_id: str) -> Optional[dict[str, Any]]:
         """Get available filter options for products in a dataset."""
-        # Check if dataset exists
+        # Check if dataset exists - Note: Using limit(1) instead of single() due to supabase-py bug
         dataset_response = (
             self.client.table("datasets")
             .select("id")
             .eq("id", dataset_id)
-            .single()
+            .limit(1)
             .execute()
         )
 
@@ -1579,10 +1580,11 @@ class SupabaseService:
 
     async def get_job(self, job_id: str) -> Optional[dict[str, Any]]:
         """Get single job."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
-            self.client.table("jobs").select("*").eq("id", job_id).single().execute()
+            self.client.table("jobs").select("*").eq("id", job_id).limit(1).execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def get_job_by_runpod_id(self, runpod_job_id: str) -> Optional[dict[str, Any]]:
         """Get job by Runpod job ID (for webhook lookups)."""
@@ -2100,14 +2102,15 @@ class SupabaseService:
 
     async def get_cutout(self, cutout_id: str) -> Optional[dict[str, Any]]:
         """Get single cutout by ID."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("cutout_images")
             .select("*")
             .eq("id", cutout_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def get_cutout_by_external_id(self, external_id: int) -> Optional[dict[str, Any]]:
         """Get cutout by BuyBuddy external ID."""
@@ -2259,14 +2262,15 @@ class SupabaseService:
 
     async def get_embedding_model(self, model_id: str) -> Optional[dict[str, Any]]:
         """Get single embedding model."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("embedding_models")
             .select("*")
             .eq("id", model_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def get_active_embedding_model(self) -> Optional[dict[str, Any]]:
         """Get the active matching model."""
@@ -2347,14 +2351,15 @@ class SupabaseService:
 
     async def get_embedding_job(self, job_id: str) -> Optional[dict[str, Any]]:
         """Get single embedding job."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("embedding_jobs")
             .select("*")
             .eq("id", job_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_embedding_job(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create embedding job."""
@@ -2394,14 +2399,15 @@ class SupabaseService:
 
     async def get_embedding_export(self, export_id: str) -> Optional[dict[str, Any]]:
         """Get single export."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("embedding_exports")
             .select("*")
             .eq("id", export_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_embedding_export(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create export record."""
@@ -2445,14 +2451,15 @@ class SupabaseService:
 
     async def get_embedding_collection(self, collection_id: str) -> Optional[dict[str, Any]]:
         """Get single embedding collection by ID."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("embedding_collections")
             .select("*")
             .eq("id", collection_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def get_embedding_collection_by_name(self, name: str) -> Optional[dict[str, Any]]:
         """Get embedding collection by name."""
@@ -2997,14 +3004,15 @@ class SupabaseService:
 
     async def get_training_run(self, run_id: str) -> Optional[dict[str, Any]]:
         """Get single training run."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug with bytes parsing
         response = (
             self.client.table("training_runs")
             .select("*")
             .eq("id", run_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_training_run(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create training run."""
@@ -3055,14 +3063,15 @@ class SupabaseService:
 
     async def get_training_checkpoint(self, checkpoint_id: str) -> Optional[dict[str, Any]]:
         """Get single checkpoint."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("training_checkpoints")
             .select("*")
             .eq("id", checkpoint_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_training_checkpoint(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create training checkpoint."""
@@ -3092,6 +3101,48 @@ class SupabaseService:
         self.client.table("training_checkpoints").delete().eq("id", checkpoint_id).execute()
         return True
 
+    # ===========================================
+    # Training Metrics History
+    # ===========================================
+
+    async def get_training_metrics_history(
+        self,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        """Get training metrics history for a run (per-epoch metrics for charts)."""
+        response = (
+            self.client.table("training_metrics_history")
+            .select("*")
+            .eq("training_run_id", run_id)
+            .order("epoch", desc=False)
+            .execute()
+        )
+        return response.data
+
+    async def create_training_metrics_history(
+        self,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a training metrics history entry."""
+        response = (
+            self.client.table("training_metrics_history")
+            .insert(data)
+            .execute()
+        )
+        return response.data[0]
+
+    async def upsert_training_metrics_history(
+        self,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Upsert a training metrics history entry (update if exists)."""
+        response = (
+            self.client.table("training_metrics_history")
+            .upsert(data, on_conflict="training_run_id,epoch")
+            .execute()
+        )
+        return response.data[0]
+
     # =========================================
     # Trained Models
     # =========================================
@@ -3115,14 +3166,15 @@ class SupabaseService:
 
     async def get_trained_model(self, model_id: str) -> Optional[dict[str, Any]]:
         """Get single trained model."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("trained_models")
             .select("*, training_run:training_runs(*), checkpoint:training_checkpoints(*)")
             .eq("id", model_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_trained_model(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create trained model."""
@@ -3190,14 +3242,15 @@ class SupabaseService:
 
     async def get_training_config(self, config_id: str) -> Optional[dict[str, Any]]:
         """Get single training config."""
+        # Note: Using limit(1) instead of single() due to supabase-py bug
         response = (
             self.client.table("training_configs")
             .select("*")
             .eq("id", config_id)
-            .single()
+            .limit(1)
             .execute()
         )
-        return response.data
+        return response.data[0] if response.data else None
 
     async def create_training_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create training config."""

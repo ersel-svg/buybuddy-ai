@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from config import settings
 
 # Import routers
-from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts
+from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts, scan_requests
 
 # Import services for dashboard
 from services.supabase import supabase_service
@@ -138,6 +138,12 @@ app.include_router(
     triplets.router,
     prefix=f"{settings.api_prefix}/triplets",
     tags=["Triplet Mining"],
+)
+
+app.include_router(
+    scan_requests.router,
+    prefix=f"{settings.api_prefix}/scan-requests",
+    tags=["Scan Requests"],
 )
 
 

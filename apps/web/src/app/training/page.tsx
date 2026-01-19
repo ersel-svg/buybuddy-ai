@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +71,7 @@ import {
   Settings,
   Scale,
   X,
+  ExternalLink,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import type {
@@ -364,7 +366,16 @@ export default function TrainingPage() {
       toast.error("Please provide a name for the training run");
       return;
     }
-    createRunMutation.mutate(formData);
+    if (formData.data_source === "dataset" && !formData.dataset_id) {
+      toast.error("Please select a dataset");
+      return;
+    }
+    // Clean up empty dataset_id to avoid backend validation issues
+    const payload = {
+      ...formData,
+      dataset_id: formData.dataset_id || undefined,
+    };
+    createRunMutation.mutate(payload);
   };
 
   // Update config based on model selection
@@ -1136,10 +1147,19 @@ export default function TrainingPage() {
                               variant="ghost"
                               size="sm"
                               onClick={() => setSelectedRun(run)}
-                              title="View details"
+                              title="Quick view"
                             >
                               <Eye className="h-4 w-4" />
                             </Button>
+                            <Link href={`/training/${run.id}`}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title="Open detail page"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                              </Button>
+                            </Link>
                             {run.status !== "running" && run.status !== "preparing" && (
                               <Button
                                 variant="ghost"

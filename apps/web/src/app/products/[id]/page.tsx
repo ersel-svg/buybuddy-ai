@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +47,7 @@ import { CustomFieldsEditor } from "@/components/products/custom-fields-editor";
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const queryClient = useQueryClient();
 
   const [isEditing, setIsEditing] = useState(
@@ -133,9 +133,7 @@ export default function ProductDetailPage() {
         <p className="text-gray-500 mb-4">
           The product you&apos;re looking for doesn&apos;t exist.
         </p>
-        <Link href="/products">
-          <Button>Back to Products</Button>
-        </Link>
+        <Button onClick={() => router.back()}>Back to Products</Button>
       </div>
     );
   }
@@ -195,11 +193,9 @@ export default function ProductDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Link href="/products">
-            <Button variant="ghost" size="icon">
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-          </Link>
+          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
           <div>
             <h1 className="text-2xl font-bold">
               {product.brand_name || "Unknown Brand"}{" "}

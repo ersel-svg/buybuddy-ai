@@ -18,6 +18,7 @@ import {
   ChevronRight,
   ImageIcon,
   Triangle,
+  ScanLine,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -52,6 +53,11 @@ const navigationGroups = [
         name: "Products",
         href: "/products",
         icon: Package,
+      },
+      {
+        name: "Scan Requests",
+        href: "/scan-requests",
+        icon: ScanLine,
       },
       {
         name: "Cutouts",

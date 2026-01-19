@@ -329,8 +329,10 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
                     Frame Selection
                     <TooltipProvider>
                       <Tooltip>
-                        <TooltipTrigger onClick={(e) => e.stopPropagation()}>
-                          <Info className="h-3 w-3 text-muted-foreground" />
+                        <TooltipTrigger asChild onClick={(e) => e.stopPropagation()}>
+                          <span className="inline-flex">
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </span>
                         </TooltipTrigger>
                         <TooltipContent side="right" className="max-w-xs">
                           <p className="text-xs">Products have 360° rotation videos with multiple frames. Choose how many frames to extract embeddings from. More frames = better multi-angle matching but higher storage/computation cost.</p>
