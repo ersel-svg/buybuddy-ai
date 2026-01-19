@@ -94,6 +94,12 @@ export default function EmbeddingsPage() {
     queryFn: () => apiClient.getEmbeddingModels(),
   });
 
+  // Fetch trained models for dropdown
+  const { data: trainedModels } = useQuery({
+    queryKey: ["trained-models"],
+    queryFn: () => apiClient.getTrainedModels(),
+  });
+
   // Fetch active model
   const { data: activeModel } = useQuery({
     queryKey: ["active-embedding-model"],
@@ -346,7 +352,7 @@ export default function EmbeddingsPage() {
 
         {/* Matching Extraction Tab */}
         <TabsContent value="matching">
-          <MatchingExtractionTab activeModel={activeModel ?? null} models={models} />
+          <MatchingExtractionTab activeModel={activeModel ?? null} models={models} trainedModels={trainedModels} />
         </TabsContent>
 
         {/* Training Extraction Tab */}

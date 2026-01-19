@@ -15,6 +15,7 @@ from config import settings
 
 # Import routers
 from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts, scan_requests
+from api.v1.od import router as od_router
 
 # Import services for dashboard
 from services.supabase import supabase_service
@@ -144,6 +145,13 @@ app.include_router(
     scan_requests.router,
     prefix=f"{settings.api_prefix}/scan-requests",
     tags=["Scan Requests"],
+)
+
+# Object Detection module
+app.include_router(
+    od_router,
+    prefix=f"{settings.api_prefix}/od",
+    tags=["Object Detection"],
 )
 
 

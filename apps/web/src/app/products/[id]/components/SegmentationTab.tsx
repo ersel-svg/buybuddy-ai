@@ -126,7 +126,8 @@ export function SegmentationTab({ product }: SegmentationTabProps) {
 
   const canPreview = textPrompts.length > 0 || points.length > 0;
   const canReprocess = previewMask !== null;
-  const isProcessing = product.status === "processing";
+  // Don't block on processing status - user may want to manually segment
+  const isProcessing = false; // Was: product.status === "processing"
 
   if (!product.video_url) {
     return (

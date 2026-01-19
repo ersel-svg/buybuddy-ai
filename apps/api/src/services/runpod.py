@@ -1,5 +1,6 @@
 """Runpod API Service for job orchestration."""
 
+import asyncio
 import httpx
 from typing import Optional, Any
 from enum import Enum
@@ -103,6 +104,66 @@ class RunpodService:
             )
             response.raise_for_status()
             return response.json()
+
+    async def submit_and_wait(
+        self,
+        endpoint_type: EndpointType,
+        input_data: dict[str, Any],
+        timeout: int = 300,
+        poll_interval: float = 2.0,
+    ) -> dict[str, Any]:
+        """
+        Submit a job and poll until completion (async polling mode).
+
+        More reliable than runsync for long-running jobs as it avoids
+        RunPod's server-side timeout limitations.
+
+        Args:
+            endpoint_type: Type of worker endpoint
+            input_data: Input data for the job
+            timeout: Maximum wait time in seconds (default 5 minutes)
+            poll_interval: Seconds between status checks (default 2s)
+
+        Returns:
+            Job result including output
+
+        Raises:
+            TimeoutError: If job doesn't complete within timeout
+            RuntimeError: If job fails
+        """
+        # Submit the job
+        submit_response = await self.submit_job(endpoint_type, input_data)
+        job_id = submit_response.get("id")
+
+        if not job_id:
+            raise RuntimeError(f"Failed to submit job: {submit_response}")
+
+        print(f"[RunPod] Job submitted: {job_id}")
+
+        # Poll for completion
+        start_time = asyncio.get_event_loop().time()
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(f"Job {job_id} timed out after {timeout}s")
+
+            status_response = await self.get_job_status(endpoint_type, job_id)
+            status = status_response.get("status")
+
+            print(f"[RunPod] Job {job_id} status: {status} ({elapsed:.1f}s)")
+
+            if status == "COMPLETED":
+                return status_response
+
+            if status == "FAILED":
+                error = status_response.get("error", "Unknown error")
+                raise RuntimeError(f"Job failed: {error}")
+
+            if status == "CANCELLED":
+                raise RuntimeError("Job was cancelled")
+
+            # Wait before next poll
+            await asyncio.sleep(poll_interval)
 
     async def get_job_status(
         self,

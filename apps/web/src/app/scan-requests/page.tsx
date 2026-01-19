@@ -8,6 +8,7 @@ import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -49,6 +50,7 @@ import {
   Clock,
   XCircle,
   PlayCircle,
+  Trash2,
 } from "lucide-react";
 import type { ScanRequest, ScanRequestStatus } from "@/types";
 
@@ -85,6 +87,8 @@ export default function ScanRequestsPage() {
   const [page, setPage] = useState(1);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ScanRequest | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
 
   const limit = 20;
 
@@ -126,6 +130,22 @@ export default function ScanRequestsPage() {
     },
   });
 
+  // Bulk delete mutation
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map((id) => apiClient.deleteScanRequest(id)));
+    },
+    onSuccess: () => {
+      toast.success(`${selectedIds.size} request(s) deleted`);
+      queryClient.invalidateQueries({ queryKey: ["scan-requests"] });
+      setSelectedIds(new Set());
+      setBulkDeleteDialogOpen(false);
+    },
+    onError: () => {
+      toast.error("Failed to delete some requests");
+    },
+  });
+
   const handleCancel = (request: ScanRequest) => {
     setSelectedRequest(request);
     setCancelDialogOpen(true);
@@ -134,6 +154,28 @@ export default function ScanRequestsPage() {
   const handleStatusChange = (request: ScanRequest, newStatus: string) => {
     updateStatusMutation.mutate({ id: request.id, status: newStatus });
   };
+
+  const toggleSelect = (id: string) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (!data?.items) return;
+    if (selectedIds.size === data.items.length && data.items.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(data.items.map((r) => r.id)));
+    }
+  };
+
+  const allSelected =
+    (data?.items?.length ?? 0) > 0 && selectedIds.size === (data?.items?.length ?? 0);
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
@@ -197,11 +239,44 @@ export default function ScanRequestsPage() {
         </Select>
       </div>
 
+      {/* Bulk Action Bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center justify-between bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3">
+          <span className="text-sm text-indigo-700 font-medium">
+            {selectedIds.size} request{selectedIds.size > 1 ? "s" : ""} selected
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear Selection
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setBulkDeleteDialogOpen(true)}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete Selected
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="border rounded-lg">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  checked={allSelected}
+                  onCheckedChange={toggleSelectAll}
+                  disabled={!data?.items?.length}
+                />
+              </TableHead>
               <TableHead>Barcode</TableHead>
               <TableHead>Product</TableHead>
               <TableHead>Brand</TableHead>
@@ -214,13 +289,13 @@ export default function ScanRequestsPage() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8">
+                <TableCell colSpan={8} className="text-center py-8">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto text-gray-400" />
                 </TableCell>
               </TableRow>
             ) : !data?.items?.length ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8">
+                <TableCell colSpan={8} className="text-center py-8">
                   <Package className="h-12 w-12 mx-auto text-gray-300 mb-2" />
                   <p className="text-gray-500">No scan requests found</p>
                   <Link href="/scan-requests/new">
@@ -234,9 +309,15 @@ export default function ScanRequestsPage() {
               data.items.map((request) => (
                 <TableRow
                   key={request.id}
-                  className="cursor-pointer hover:bg-gray-50"
+                  className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(request.id) ? "bg-indigo-50" : ""}`}
                   onClick={() => window.location.href = `/scan-requests/${request.id}`}
                 >
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selectedIds.has(request.id)}
+                      onCheckedChange={() => toggleSelect(request.id)}
+                    />
+                  </TableCell>
                   <TableCell className="font-mono">{request.barcode}</TableCell>
                   <TableCell>{request.product_name || "-"}</TableCell>
                   <TableCell>{request.brand_name || "-"}</TableCell>
@@ -357,6 +438,33 @@ export default function ScanRequestsPage() {
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 "Cancel Request"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Delete Dialog */}
+      <AlertDialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Multiple Requests</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete{" "}
+              <span className="font-semibold">{selectedIds.size}</span> scan request
+              {selectedIds.size > 1 ? "s" : ""}? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Requests</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              onClick={() => bulkDeleteMutation.mutate(Array.from(selectedIds))}
+            >
+              {bulkDeleteMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                `Delete ${selectedIds.size} Request${selectedIds.size > 1 ? "s" : ""}`
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

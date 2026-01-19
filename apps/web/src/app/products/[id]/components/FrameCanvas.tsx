@@ -149,7 +149,6 @@ export function FrameCanvas({
             src={`data:image/png;base64,${maskOverlay}`}
             alt="Segmentation mask"
             className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-            style={{ mixBlendMode: "multiply", opacity: 0.6 }}
           />
         )}
 

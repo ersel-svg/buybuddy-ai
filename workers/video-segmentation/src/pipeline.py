@@ -655,8 +655,22 @@ Return ONLY the following JSON object. No markdown, no conversational text.
                     )
                 )
 
-                # Add point prompts if provided (after text prompt)
+                # Different flow for text-only vs text+points
                 if points:
+                    # POINT PROMPTS: Need two-stage propagation
+                    # Stage 1: Initial propagation to build cache
+                    print(f"      Running initial propagation for point refinement...")
+                    initial_propagate = self.video_predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction="forward",
+                        start_frame_idx=0,
+                        max_frame_num_to_track=1,  # Just first frame to build cache
+                    )
+                    # Consume generator to execute
+                    for _ in initial_propagate:
+                        pass
+
+                    # Stage 2: Add point prompts (refinement)
                     print(f"      Adding {len(points)} point prompts...")
                     points_list = [[p["x"], p["y"]] for p in points]
                     labels_list = [p.get("label", 1) for p in points]
@@ -675,7 +689,7 @@ Return ONLY the following JSON object. No markdown, no conversational text.
                         )
                     )
 
-                # Propagate through video
+                # Propagate through video (works for both text-only and text+points)
                 print(f"      Propagating through {num_frames} frames...")
                 propagate_result = self.video_predictor.propagate_in_video(
                     session_id=session_id,

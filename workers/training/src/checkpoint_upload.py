@@ -28,8 +28,10 @@ def _get_torch():
     return _torch
 
 
-# Maximum file size for Supabase Storage (50MB)
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+# Maximum file size for Supabase Storage (200MB)
+# Supabase Pro allows up to 5GB per file, but we set a reasonable limit
+# DINOv2-base in FP16 is ~167MB, compressed ~155MB
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024
 
 
 def upload_checkpoint_to_storage(
@@ -100,16 +102,18 @@ def upload_checkpoint_to_storage(
 
         # Compress with gzip if larger than threshold
         if original_size > MAX_UPLOAD_SIZE:
-            print(f"Compressing checkpoint...")
+            print(f"Compressing checkpoint (level 1 for speed)...")
             compressed_buffer = io.BytesIO()
-            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=9) as gz:
+            # Use compression level 1 for speed (level 9 is too slow for large files)
+            with gzip.GzipFile(fileobj=compressed_buffer, mode='wb', compresslevel=1) as gz:
                 gz.write(file_data)
             file_data = compressed_buffer.getvalue()
             compressed_size = len(file_data)
             print(f"Compressed: {original_size / 1024 / 1024:.1f}MB -> {compressed_size / 1024 / 1024:.1f}MB")
 
             if compressed_size > MAX_UPLOAD_SIZE:
-                print(f"Warning: Checkpoint ({compressed_size / 1024 / 1024:.1f}MB) still exceeds 50MB limit")
+                limit_mb = MAX_UPLOAD_SIZE / 1024 / 1024
+                print(f"Warning: Checkpoint ({compressed_size / 1024 / 1024:.1f}MB) still exceeds {limit_mb:.0f}MB limit")
                 print("Checkpoint saved locally only, not uploaded to storage")
                 return None
 

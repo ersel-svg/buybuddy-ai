@@ -934,23 +934,30 @@ async def preview_segmentation(
     }
 
     try:
-        # Call preview worker synchronously (it's fast, single frame)
-        result = await runpod.submit_job_sync(
+        # Use async polling instead of runsync for reliability
+        # Cold start can take 3-5 mins (model download + GPU load)
+        result = await runpod.submit_and_wait(
             endpoint_type=EndpointType.PREVIEW,
             input_data=input_data,
-            timeout=120,  # 2 minutes max for single frame
+            timeout=300,  # 5 minutes for cold start scenarios
+            poll_interval=3.0,  # Check every 3 seconds
         )
 
         # Extract output from RunPod response
-        if result.get("status") == "COMPLETED":
-            output = result.get("output", {})
-            if "error" in output:
-                raise HTTPException(status_code=500, detail=output["error"])
-            return output
-        else:
-            error = result.get("error") or "Preview failed"
-            raise HTTPException(status_code=500, detail=error)
+        output = result.get("output", {})
+        if "error" in output:
+            raise HTTPException(status_code=500, detail=output["error"])
+        return output
 
+    except TimeoutError as e:
+        print(f"[Products] Preview segmentation timeout: {e}")
+        raise HTTPException(
+            status_code=504,
+            detail="Preview timed out. The worker might be cold starting. Please try again."
+        )
+    except RuntimeError as e:
+        print(f"[Products] Preview segmentation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

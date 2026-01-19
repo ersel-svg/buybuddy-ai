@@ -16,7 +16,9 @@ import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -55,21 +57,41 @@ import type {
   ProductSource,
   FrameSelection,
   CollectionMode,
+  TrainedModel,
 } from "@/types";
 
 interface MatchingExtractionTabProps {
   activeModel: EmbeddingModel | null;
   models?: EmbeddingModel[];
+  trainedModels?: TrainedModel[];
 }
 
-export function MatchingExtractionTab({ activeModel, models }: MatchingExtractionTabProps) {
+export function MatchingExtractionTab({ activeModel, models, trainedModels }: MatchingExtractionTabProps) {
   const queryClient = useQueryClient();
 
   // Selected model (defaults to active model)
   const [selectedModelId, setSelectedModelId] = useState<string>(activeModel?.id || "");
 
-  // Get the selected model object
-  const selectedModel = models?.find(m => m.id === selectedModelId) || activeModel;
+  // Check if a trained model is selected
+  const isTrainedModelSelected = selectedModelId.startsWith("trained:");
+  const trainedModelId = isTrainedModelSelected ? selectedModelId.replace("trained:", "") : null;
+
+  // Get the selected model object (base model or create a pseudo-model for trained)
+  const selectedTrainedModel = trainedModelId ? trainedModels?.find(m => m.id === trainedModelId) : null;
+  const selectedBaseModel = !isTrainedModelSelected ? models?.find(m => m.id === selectedModelId) : null;
+
+  // For compatibility, create a unified model object
+  const selectedModel = selectedBaseModel || (selectedTrainedModel ? {
+    id: selectedTrainedModel.id,
+    name: selectedTrainedModel.name,
+    model_type: "custom" as const, // Trained models are custom fine-tuned
+    embedding_dim: 512, // Default for trained models
+    model_family: "custom" as const,
+    qdrant_vector_count: 0,
+    is_matching_active: false,
+    created_at: selectedTrainedModel.created_at,
+    updated_at: selectedTrainedModel.updated_at || selectedTrainedModel.created_at,
+  } satisfies EmbeddingModel : activeModel);
 
   // Product source config
   const [productSource, setProductSource] = useState<ProductSource>("all");
@@ -210,31 +232,61 @@ export function MatchingExtractionTab({ activeModel, models }: MatchingExtractio
               value={selectedModelId}
               onValueChange={setSelectedModelId}
             >
-              <SelectTrigger className="w-[350px]">
+              <SelectTrigger className="w-[400px]">
                 <SelectValue placeholder="Select a model" />
               </SelectTrigger>
               <SelectContent>
-                {models?.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>
-                    <div className="flex items-center gap-2">
-                      <span>{model.name}</span>
-                      <Badge variant="outline" className="text-xs">
-                        {model.embedding_dim}d
-                      </Badge>
-                      {model.is_matching_active && (
-                        <Badge variant="default" className="text-xs bg-green-600">
-                          Active
+                {/* Base Models */}
+                <SelectGroup>
+                  <SelectLabel>Base Models</SelectLabel>
+                  {models?.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      <div className="flex items-center gap-2">
+                        <span>{model.name}</span>
+                        <Badge variant="outline" className="text-xs">
+                          {model.embedding_dim}d
                         </Badge>
-                      )}
-                    </div>
-                  </SelectItem>
-                ))}
+                        {model.is_matching_active && (
+                          <Badge variant="default" className="text-xs bg-green-600">
+                            Active
+                          </Badge>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+                {/* Trained Models */}
+                {trainedModels && trainedModels.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>Trained Models</SelectLabel>
+                    {trainedModels.map((model) => (
+                      <SelectItem key={`trained:${model.id}`} value={`trained:${model.id}`}>
+                        <div className="flex items-center gap-2">
+                          <span>{model.name}</span>
+                          <Badge variant="secondary" className="text-xs">
+                            Fine-tuned
+                          </Badge>
+                          {model.test_metrics?.recall_at_1 && (
+                            <Badge variant="outline" className="text-xs">
+                              R@1: {(model.test_metrics.recall_at_1 * 100).toFixed(0)}%
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
               </SelectContent>
             </Select>
             {selectedModel && (
               <p className="text-xs text-muted-foreground">
                 Model family: {selectedModel.model_family || selectedModel.model_type?.split("-")[0]}
                 {" • "}Dimension: {selectedModel.embedding_dim}d
+              </p>
+            )}
+            {selectedModelId.startsWith("trained:") && (
+              <p className="text-xs text-muted-foreground">
+                Fine-tuned model - checkpoint will be loaded from storage
               </p>
             )}
           </div>

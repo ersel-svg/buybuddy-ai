@@ -348,17 +348,17 @@ async def update_scan_request(request_id: str, update: ScanRequestUpdate) -> Sca
 
 @router.delete("/{request_id}")
 async def delete_scan_request(request_id: str) -> dict:
-    """Delete (cancel) a scan request."""
+    """Permanently delete a scan request."""
     try:
-        # Soft delete by setting status to cancelled
-        result = supabase_service.client.table("scan_requests").update({
-            "status": "cancelled"
-        }).eq("id", request_id).execute()
+        # Hard delete - permanently remove from database
+        result = supabase_service.client.table("scan_requests").delete().eq(
+            "id", request_id
+        ).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Scan request not found")
 
-        return {"success": True, "message": "Scan request cancelled"}
+        return {"success": True, "message": "Scan request deleted"}
 
     except HTTPException:
         raise

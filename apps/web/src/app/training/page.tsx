@@ -64,6 +64,11 @@ import {
   Zap,
   Plus,
   ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Trash2,
   Eye,
   StopCircle,
@@ -72,7 +77,18 @@ import {
   Scale,
   X,
   ExternalLink,
+  Search,
+  ArrowUpDown,
+  MoreHorizontal,
+  AlertTriangle,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import type {
   TrainingRun,
@@ -169,6 +185,18 @@ export default function TrainingPage() {
     runName: string;
     linkedModels: Array<{ id: string; name: string }>;
   }>({ open: false, runId: "", runName: "", linkedModels: [] });
+
+  // Smart table state for training runs
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" }>({
+    key: "created_at",
+    direction: "desc",
+  });
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
 
   // Form state for new training run
   const [formData, setFormData] = useState({
@@ -299,15 +327,27 @@ export default function TrainingPage() {
     },
   });
 
-  // Activate trained model mutation
-  const activateModelMutation = useMutation({
-    mutationFn: (id: string) => apiClient.activateTrainedModel(id),
-    onSuccess: () => {
-      toast.success("Model activated");
+  // Bulk delete training runs mutation
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map(id => apiClient.deleteTrainingRun(id, true))
+      );
+      const failed = results.filter(r => r.status === "rejected").length;
+      if (failed > 0) {
+        throw new Error(`${failed} of ${ids.length} deletions failed`);
+      }
+      return results;
+    },
+    onSuccess: (_, ids) => {
+      toast.success(`${ids.length} training run(s) deleted`);
+      setSelectedRunIds(new Set());
+      setBulkDeleteDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["training-runs"] });
       queryClient.invalidateQueries({ queryKey: ["trained-models"] });
     },
-    onError: () => {
-      toast.error("Failed to activate model");
+    onError: (error: Error) => {
+      toast.error(error.message);
     },
   });
 
@@ -406,6 +446,84 @@ export default function TrainingPage() {
 
   const runs = runsData?.items || [];
   const runningCount = runs.filter(r => r.status === "running" || r.status === "preparing").length;
+
+  // Filter runs based on search and status
+  const filteredRuns = runs.filter((run: TrainingRun) => {
+    const matchesSearch = searchQuery === "" ||
+      run.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      run.base_model_type.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === "all" || run.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  // Sort runs
+  const sortedRuns = [...filteredRuns].sort((a: TrainingRun, b: TrainingRun) => {
+    let aValue: string | number | Date = "";
+    let bValue: string | number | Date = "";
+
+    switch (sortConfig.key) {
+      case "name":
+        aValue = a.name.toLowerCase();
+        bValue = b.name.toLowerCase();
+        break;
+      case "status":
+        aValue = a.status;
+        bValue = b.status;
+        break;
+      case "created_at":
+        aValue = new Date(a.created_at);
+        bValue = new Date(b.created_at);
+        break;
+      case "progress":
+        aValue = a.current_epoch / a.total_epochs;
+        bValue = b.current_epoch / b.total_epochs;
+        break;
+      case "recall":
+        aValue = a.best_val_recall_at_1 || 0;
+        bValue = b.best_val_recall_at_1 || 0;
+        break;
+      default:
+        return 0;
+    }
+
+    if (aValue < bValue) return sortConfig.direction === "asc" ? -1 : 1;
+    if (aValue > bValue) return sortConfig.direction === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  // Paginate runs
+  const totalPages = Math.ceil(sortedRuns.length / pageSize);
+  const paginatedRuns = sortedRuns.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  // Handle sort toggle
+  const handleSort = (key: string) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  // Handle select all on current page
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const selectableIds = paginatedRuns
+        .filter((run: TrainingRun) => run.status !== "running" && run.status !== "preparing")
+        .map((run: TrainingRun) => run.id);
+      setSelectedRunIds(new Set([...selectedRunIds, ...selectableIds]));
+    } else {
+      const currentPageIds = new Set(paginatedRuns.map((run: TrainingRun) => run.id));
+      setSelectedRunIds(new Set([...selectedRunIds].filter(id => !currentPageIds.has(id))));
+    }
+  };
+
+  // Check if all selectable items on current page are selected
+  const selectableOnPage = paginatedRuns.filter((run: TrainingRun) => run.status !== "running" && run.status !== "preparing");
+  const allSelectedOnPage = selectableOnPage.length > 0 &&
+    selectableOnPage.every((run: TrainingRun) => selectedRunIds.has(run.id));
+  const someSelectedOnPage = selectableOnPage.some((run: TrainingRun) => selectedRunIds.has(run.id));
 
   return (
     <div className="space-y-6">
@@ -993,7 +1111,7 @@ export default function TrainingPage() {
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Tip: You can find confused pairs from previous model evaluations in the "Hard Cases" section
+                      Tip: You can find confused pairs from previous model evaluations in the &quot;Hard Cases&quot; section
                     </p>
                   </div>
                 </CollapsibleContent>
@@ -1026,19 +1144,99 @@ export default function TrainingPage() {
         {/* Training Runs Tab */}
         <TabsContent value="runs" className="mt-6">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle>Training Runs</CardTitle>
-                <CardDescription>Monitor and manage training jobs</CardDescription>
+            <CardHeader className="pb-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle>Training Runs</CardTitle>
+                  <CardDescription>Monitor and manage training jobs</CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ["training-runs"] })}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => queryClient.invalidateQueries({ queryKey: ["training-runs"] })}
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
+
+              {/* Filters and Search */}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center mt-4">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search runs..."
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    className="pl-9"
+                  />
+                </div>
+                <Select
+                  value={statusFilter}
+                  onValueChange={(v) => {
+                    setStatusFilter(v);
+                    setCurrentPage(1);
+                  }}
+                >
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="All Statuses" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="running">Running</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="failed">Failed</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={pageSize.toString()}
+                  onValueChange={(v) => {
+                    setPageSize(Number(v));
+                    setCurrentPage(1);
+                  }}
+                >
+                  <SelectTrigger className="w-[100px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5">5 / page</SelectItem>
+                    <SelectItem value="10">10 / page</SelectItem>
+                    <SelectItem value="20">20 / page</SelectItem>
+                    <SelectItem value="50">50 / page</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Bulk Actions Bar */}
+              {selectedRunIds.size > 0 && (
+                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg mt-4">
+                  <span className="text-sm font-medium">
+                    {selectedRunIds.size} selected
+                  </span>
+                  <Separator orientation="vertical" className="h-4" />
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setBulkDeleteDialogOpen(true)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelectedRunIds(new Set())}
+                  >
+                    Clear Selection
+                  </Button>
+                </div>
+              )}
             </CardHeader>
+
             <CardContent>
               {isLoadingRuns ? (
                 <div className="flex items-center justify-center py-8">
@@ -1050,166 +1248,315 @@ export default function TrainingPage() {
                   <p>No training runs yet</p>
                   <p className="text-sm mt-1">Click &quot;New Training Run&quot; to get started</p>
                 </div>
+              ) : filteredRuns.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Search className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                  <p>No matching runs found</p>
+                  <p className="text-sm mt-1">Try adjusting your search or filters</p>
+                </div>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Model</TableHead>
-                      <TableHead>Target</TableHead>
-                      <TableHead>Classes</TableHead>
-                      <TableHead>Progress</TableHead>
-                      <TableHead>Best Metrics</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {runs.map((run: TrainingRun) => (
-                      <TableRow key={run.id}>
-                        <TableCell>
-                          <div>
-                            <p className="font-medium">{run.name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {new Date(run.created_at).toLocaleDateString()}
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{run.base_model_type}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary" className="text-xs">
-                            {run.label_config?.label_field === "product_id" ? "Product" :
-                             run.label_config?.label_field === "category" ? "Category" :
-                             run.label_config?.label_field === "brand_name" ? "Brand" :
-                             "Product"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="text-sm">
-                            <p>{run.num_classes}</p>
-                            <p className="text-muted-foreground text-xs">
-                              {run.train_product_count}T / {run.val_product_count}V / {run.test_product_count}Te
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="w-24">
-                            <Progress
-                              value={(run.current_epoch / run.total_epochs) * 100}
-                              className="h-2"
+                <>
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-12">
+                            <Checkbox
+                              checked={allSelectedOnPage}
+                              onCheckedChange={handleSelectAll}
+                              aria-label="Select all"
+                              className={someSelectedOnPage && !allSelectedOnPage ? "opacity-50" : ""}
                             />
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {run.current_epoch}/{run.total_epochs} epochs
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {run.best_val_recall_at_1 ? (
-                            <div className="text-sm">
-                              <p>R@1: {(run.best_val_recall_at_1 * 100).toFixed(1)}%</p>
-                              <p className="text-muted-foreground text-xs">
-                                @ epoch {run.best_epoch}
-                              </p>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={statusConfig[run.status]?.color}>
-                            <span className="mr-1">{statusConfig[run.status]?.icon}</span>
-                            {statusConfig[run.status]?.label}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
-                            {(run.status === "running" || run.status === "preparing") && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => cancelRunMutation.mutate(run.id)}
-                                title="Cancel training"
-                              >
-                                <StopCircle className="h-4 w-4" />
-                              </Button>
-                            )}
-                            {(run.status === "failed" || run.status === "cancelled") && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  if (confirm("Resume training from the latest checkpoint?")) {
-                                    resumeRunMutation.mutate(run.id);
-                                  }
-                                }}
-                                disabled={resumeRunMutation.isPending}
-                                title="Resume training"
-                              >
-                                {resumeRunMutation.isPending ? (
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Play className="h-4 w-4" />
-                                )}
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setSelectedRun(run)}
-                              title="Quick view"
+                          </TableHead>
+                          <TableHead>
+                            <button
+                              className="flex items-center gap-1 hover:text-foreground transition-colors"
+                              onClick={() => handleSort("name")}
                             >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                            <Link href={`/training/${run.id}`}>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                title="Open detail page"
-                              >
-                                <ExternalLink className="h-4 w-4" />
-                              </Button>
-                            </Link>
-                            {run.status !== "running" && run.status !== "preparing" && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={async () => {
-                                  if (!confirm("Delete this training run?")) return;
-                                  try {
-                                    await apiClient.deleteTrainingRun(run.id, false);
-                                    toast.success("Training run deleted");
-                                    queryClient.invalidateQueries({ queryKey: ["training-runs"] });
-                                  } catch (error: unknown) {
-                                    const err = error as { status?: number; body?: { detail?: { linked_models?: Array<{ id: string; name: string }> } } };
-                                    if (err.status === 409 && err.body?.detail?.linked_models) {
-                                      setForceDeleteDialog({
-                                        open: true,
-                                        runId: run.id,
-                                        runName: run.name,
-                                        linkedModels: err.body.detail.linked_models,
-                                      });
+                              Name
+                              <ArrowUpDown className="h-4 w-4" />
+                              {sortConfig.key === "name" && (
+                                sortConfig.direction === "asc" ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+                              )}
+                            </button>
+                          </TableHead>
+                          <TableHead>Model</TableHead>
+                          <TableHead>Target</TableHead>
+                          <TableHead>
+                            <button
+                              className="flex items-center gap-1 hover:text-foreground transition-colors"
+                              onClick={() => handleSort("progress")}
+                            >
+                              Progress
+                              <ArrowUpDown className="h-4 w-4" />
+                            </button>
+                          </TableHead>
+                          <TableHead>
+                            <button
+                              className="flex items-center gap-1 hover:text-foreground transition-colors"
+                              onClick={() => handleSort("recall")}
+                            >
+                              Best R@1
+                              <ArrowUpDown className="h-4 w-4" />
+                            </button>
+                          </TableHead>
+                          <TableHead>
+                            <button
+                              className="flex items-center gap-1 hover:text-foreground transition-colors"
+                              onClick={() => handleSort("status")}
+                            >
+                              Status
+                              <ArrowUpDown className="h-4 w-4" />
+                            </button>
+                          </TableHead>
+                          <TableHead className="w-12"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {paginatedRuns.map((run: TrainingRun) => {
+                          const isSelectable = run.status !== "running" && run.status !== "preparing";
+                          const isSelected = selectedRunIds.has(run.id);
+                          return (
+                            <TableRow
+                              key={run.id}
+                              className={isSelected ? "bg-muted/50" : ""}
+                            >
+                              <TableCell>
+                                <Checkbox
+                                  checked={isSelected}
+                                  onCheckedChange={(checked) => {
+                                    const newSet = new Set(selectedRunIds);
+                                    if (checked) {
+                                      newSet.add(run.id);
                                     } else {
-                                      toast.error("Failed to delete training run");
+                                      newSet.delete(run.id);
                                     }
-                                  }
-                                }}
-                                title="Delete training run"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                                    setSelectedRunIds(newSet);
+                                  }}
+                                  disabled={!isSelectable}
+                                  aria-label={`Select ${run.name}`}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <div>
+                                  <p className="font-medium">{run.name}</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {new Date(run.created_at).toLocaleDateString()}
+                                  </p>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{run.base_model_type}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="secondary" className="text-xs">
+                                  {run.label_config?.label_field === "product_id" ? "Product" :
+                                   run.label_config?.label_field === "category" ? "Category" :
+                                   run.label_config?.label_field === "brand_name" ? "Brand" :
+                                   "Product"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="w-24">
+                                  <Progress
+                                    value={(run.current_epoch / run.total_epochs) * 100}
+                                    className="h-2"
+                                  />
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {run.current_epoch}/{run.total_epochs}
+                                  </p>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                {run.best_val_recall_at_1 ? (
+                                  <div className="text-sm">
+                                    <p className="font-medium">{(run.best_val_recall_at_1 * 100).toFixed(1)}%</p>
+                                    <p className="text-muted-foreground text-xs">
+                                      epoch {run.best_epoch}
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={statusConfig[run.status]?.color}>
+                                  <span className="mr-1">{statusConfig[run.status]?.icon}</span>
+                                  {statusConfig[run.status]?.label}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onClick={() => setSelectedRun(run)}>
+                                      <Eye className="h-4 w-4 mr-2" />
+                                      Quick View
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem asChild>
+                                      <Link href={`/training/${run.id}`}>
+                                        <ExternalLink className="h-4 w-4 mr-2" />
+                                        Open Details
+                                      </Link>
+                                    </DropdownMenuItem>
+                                    {(run.status === "running" || run.status === "preparing") && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                          onClick={() => cancelRunMutation.mutate(run.id)}
+                                          className="text-orange-600"
+                                        >
+                                          <StopCircle className="h-4 w-4 mr-2" />
+                                          Cancel Training
+                                        </DropdownMenuItem>
+                                      </>
+                                    )}
+                                    {(run.status === "failed" || run.status === "cancelled") && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                          onClick={() => resumeRunMutation.mutate(run.id)}
+                                          disabled={resumeRunMutation.isPending}
+                                        >
+                                          <Play className="h-4 w-4 mr-2" />
+                                          Resume Training
+                                        </DropdownMenuItem>
+                                      </>
+                                    )}
+                                    {isSelectable && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                          onClick={async () => {
+                                            try {
+                                              await apiClient.deleteTrainingRun(run.id, false);
+                                              toast.success("Training run deleted");
+                                              queryClient.invalidateQueries({ queryKey: ["training-runs"] });
+                                            } catch (error: unknown) {
+                                              const err = error as { status?: number; body?: { detail?: { linked_models?: Array<{ id: string; name: string }> } } };
+                                              if (err.status === 409 && err.body?.detail?.linked_models) {
+                                                setForceDeleteDialog({
+                                                  open: true,
+                                                  runId: run.id,
+                                                  runName: run.name,
+                                                  linkedModels: err.body.detail.linked_models,
+                                                });
+                                              } else {
+                                                toast.error("Failed to delete training run");
+                                              }
+                                            }
+                                          }}
+                                          className="text-destructive"
+                                        >
+                                          <Trash2 className="h-4 w-4 mr-2" />
+                                          Delete
+                                        </DropdownMenuItem>
+                                      </>
+                                    )}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {/* Pagination */}
+                  <div className="flex items-center justify-between mt-4">
+                    <p className="text-sm text-muted-foreground">
+                      Showing {((currentPage - 1) * pageSize) + 1} to {Math.min(currentPage * pageSize, sortedRuns.length)} of {sortedRuns.length} runs
+                      {filteredRuns.length !== runs.length && ` (filtered from ${runs.length})`}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(1)}
+                        disabled={currentPage === 1}
+                      >
+                        <ChevronsLeft className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </Button>
+                      <span className="text-sm px-2">
+                        Page {currentPage} of {totalPages || 1}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage >= totalPages}
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(totalPages)}
+                        disabled={currentPage >= totalPages}
+                      >
+                        <ChevronsRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Bulk Delete Confirmation Dialog */}
+        <Dialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+                Delete {selectedRunIds.size} Training Run{selectedRunIds.size > 1 ? "s" : ""}?
+              </DialogTitle>
+              <DialogDescription>
+                This will permanently delete the selected training runs and their associated checkpoints.
+                This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setBulkDeleteDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => bulkDeleteMutation.mutate(Array.from(selectedRunIds))}
+                disabled={bulkDeleteMutation.isPending}
+              >
+                {bulkDeleteMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete {selectedRunIds.size} Run{selectedRunIds.size > 1 ? "s" : ""}
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Trained Models Tab */}
         <TabsContent value="models" className="mt-6">
@@ -1255,7 +1602,6 @@ export default function TrainingPage() {
                       <TableHead>Training Run</TableHead>
                       <TableHead>Test Metrics</TableHead>
                       <TableHead>Cross-Domain</TableHead>
-                      <TableHead>Status</TableHead>
                       <TableHead></TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1312,26 +1658,7 @@ export default function TrainingPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {model.is_active ? (
-                            <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
-                              <Star className="h-3 w-3 mr-1" />
-                              Active
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline">Inactive</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
                           <div className="flex gap-1">
-                            {!model.is_active && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => activateModelMutation.mutate(model.id)}
-                              >
-                                Activate
-                              </Button>
-                            )}
                             {!model.test_evaluated && (
                               <Button
                                 variant="ghost"

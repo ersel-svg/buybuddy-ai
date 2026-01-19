@@ -1826,19 +1826,47 @@ async def start_matching_extraction(
     - new: Only products without existing embeddings
     """
     # Get model (specified or active)
-    if request.model_id:
+    checkpoint_url = None
+    is_trained_model = False
+
+    if request.model_id and request.model_id.startswith("trained:"):
+        # Trained model selected - get from trained_models table
+        trained_model_id = request.model_id.replace("trained:", "")
+        trained_model = await db.get_trained_model(trained_model_id)
+        if not trained_model:
+            raise HTTPException(status_code=404, detail="Trained model not found")
+
+        # Get the checkpoint URL
+        checkpoint = await db.get_training_checkpoint(trained_model["checkpoint_id"])
+        if not checkpoint or not checkpoint.get("checkpoint_url"):
+            raise HTTPException(status_code=400, detail="Trained model has no checkpoint URL")
+
+        checkpoint_url = checkpoint["checkpoint_url"]
+        is_trained_model = True
+
+        # Get the base model from the training run for model_type
+        training_run = await db.get_training_run(trained_model["training_run_id"])
+        model_type = training_run.get("base_model_type", "dinov2-base") if training_run else "dinov2-base"
+        model_name = trained_model["name"].lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = 512  # Fine-tuned models typically use 512
+        model_id = trained_model_id
+
+    elif request.model_id:
         model = await db.get_embedding_model(request.model_id)
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
+        model_id = model["id"]
+        model_type = model.get("model_type", "dinov2-base")
+        model_name = model.get("name", model_type).lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = model.get("embedding_dim", 768)
     else:
         model = await db.get_active_embedding_model()
         if not model:
             raise HTTPException(status_code=404, detail="No active model found")
-
-    model_id = model["id"]
-    model_type = model.get("model_type", "dinov2-base")
-    model_name = model.get("name", model_type).lower().replace(" ", "_").replace("-", "_")
-    embedding_dim = model.get("embedding_dim", 768)
+        model_id = model["id"]
+        model_type = model.get("model_type", "dinov2-base")
+        model_name = model.get("name", model_type).lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = model.get("embedding_dim", 768)
 
     # Check services are configured
     if not runpod_service.is_configured(EndpointType.EMBEDDING):
@@ -1969,7 +1997,8 @@ async def start_matching_extraction(
 
     # Process images and save embeddings
     processed_count, failed_count = await _process_embedding_batch(
-        db, job_id, model_id, model_type, images_to_process, batch_size=50
+        db, job_id, model_id, model_type, images_to_process, batch_size=50,
+        checkpoint_url=checkpoint_url,
     )
 
     # Create collection metadata records
@@ -2406,9 +2435,13 @@ async def _process_embedding_batch(
     model_type: str,
     images: list[dict],
     batch_size: int = 50,
+    checkpoint_url: Optional[str] = None,
 ) -> tuple[int, int]:
     """
     Process images in batches, extract embeddings, and save to Qdrant.
+
+    Args:
+        checkpoint_url: Optional URL to fine-tuned model checkpoint for trained models.
 
     Returns (processed_count, failed_count).
     """
@@ -2427,6 +2460,10 @@ async def _process_embedding_batch(
             "model_type": model_type,
             "batch_size": min(16, len(batch)),
         }
+
+        # Add checkpoint URL for fine-tuned models
+        if checkpoint_url:
+            worker_input["checkpoint_url"] = checkpoint_url
 
         try:
             result = await runpod_service.submit_job_sync(

@@ -19,6 +19,11 @@ import {
   ImageIcon,
   Triangle,
   ScanLine,
+  // Object Detection icons
+  Image as ImageIconOD,
+  PenTool,
+  Cpu,
+  FolderOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -103,6 +108,36 @@ const navigationGroups = [
         name: "Scan Requests",
         href: "/scan-requests",
         icon: ScanLine,
+      },
+    ],
+  },
+  {
+    title: "Object Detection",
+    items: [
+      {
+        name: "Images",
+        href: "/od/images",
+        icon: ImageIconOD,
+      },
+      {
+        name: "Datasets",
+        href: "/od/datasets",
+        icon: FolderOpen,
+      },
+      {
+        name: "Annotate",
+        href: "/od/annotate",
+        icon: PenTool,
+      },
+      {
+        name: "Training",
+        href: "/od/training",
+        icon: Brain,
+      },
+      {
+        name: "Models",
+        href: "/od/models",
+        icon: Cpu,
       },
     ],
   },

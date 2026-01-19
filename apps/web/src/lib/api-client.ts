@@ -1612,6 +1612,282 @@ class ApiClient {
     });
   }
 
+  // ===========================================
+  // Object Detection Module
+  // ===========================================
+
+  async getODHealth(): Promise<{ status: string; module: string; version: string }> {
+    return this.request("/api/v1/od/health");
+  }
+
+  async getODStats(): Promise<{
+    total_images: number;
+    total_datasets: number;
+    total_annotations: number;
+    total_classes: number;
+    total_models: number;
+    images_by_status: Record<string, number>;
+    recent_datasets: Array<{ id: string; name: string; image_count: number; created_at: string }>;
+  }> {
+    return this.request("/api/v1/od/stats");
+  }
+
+  // OD Images
+  async getODImages(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    source?: string;
+    folder?: string;
+    search?: string;
+  }): Promise<{
+    images: Array<{
+      id: string;
+      filename: string;
+      image_url: string;
+      thumbnail_url?: string;
+      width: number;
+      height: number;
+      status: string;
+      source: string;
+      folder?: string;
+      created_at: string;
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    return this.request("/api/v1/od/images", { params });
+  }
+
+  async getODImage(id: string): Promise<{
+    id: string;
+    filename: string;
+    image_url: string;
+    width: number;
+    height: number;
+    status: string;
+    source: string;
+    folder?: string;
+    tags?: string[];
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/od/images/${id}`);
+  }
+
+  async uploadODImage(file: File, folder?: string): Promise<{
+    id: string;
+    filename: string;
+    image_url: string;
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (folder) formData.append("folder", folder);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/od/images`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Upload failed");
+    }
+
+    return response.json();
+  }
+
+  async uploadODImagesBulk(files: File[]): Promise<Array<{ id: string; filename: string; image_url: string }>> {
+    const formData = new FormData();
+    files.forEach((file) => formData.append("files", file));
+
+    const response = await fetch(`${this.baseUrl}/api/v1/od/images/bulk`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Upload failed");
+    }
+
+    return response.json();
+  }
+
+  async updateODImage(id: string, data: { folder?: string; tags?: string[]; status?: string }): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/images/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteODImage(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/images/${id}`, { method: "DELETE" });
+  }
+
+  async deleteODImagesBulk(imageIds: string[]): Promise<{ deleted: number; errors: string[] }> {
+    return this.request("/api/v1/od/images/bulk", { method: "DELETE", body: imageIds });
+  }
+
+  // OD Classes
+  async getODClasses(params?: {
+    category?: string;
+    is_active?: boolean;
+  }): Promise<Array<{
+    id: string;
+    name: string;
+    display_name?: string;
+    color: string;
+    category?: string;
+    annotation_count: number;
+    is_system: boolean;
+  }>> {
+    return this.request("/api/v1/od/classes", { params });
+  }
+
+  async createODClass(data: {
+    name: string;
+    display_name?: string;
+    color?: string;
+    category?: string;
+  }): Promise<{ id: string; name: string; color: string }> {
+    return this.request("/api/v1/od/classes", { method: "POST", body: data });
+  }
+
+  async updateODClass(id: string, data: {
+    name?: string;
+    display_name?: string;
+    color?: string;
+    category?: string;
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/classes/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteODClass(id: string, force?: boolean): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/classes/${id}`, { method: "DELETE", params: force ? { force: "true" } : undefined });
+  }
+
+  async mergeODClasses(sourceClassIds: string[], targetClassId: string): Promise<{ merged_count: number; annotations_moved: number }> {
+    return this.request("/api/v1/od/classes/merge", { method: "POST", body: { source_class_ids: sourceClassIds, target_class_id: targetClassId } });
+  }
+
+  // OD Datasets
+  async getODDatasets(): Promise<Array<{
+    id: string;
+    name: string;
+    description?: string;
+    annotation_type: string;
+    image_count: number;
+    annotated_image_count: number;
+    annotation_count: number;
+    created_at: string;
+  }>> {
+    return this.request("/api/v1/od/datasets");
+  }
+
+  async getODDataset(id: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    image_count: number;
+    annotation_count: number;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/od/datasets/${id}`);
+  }
+
+  async getODDatasetImages(datasetId: string, params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+  }): Promise<{
+    images: Array<{
+      id: string;
+      image_id: string;
+      status: string;
+      annotation_count: number;
+      image: { id: string; filename: string; image_url: string; width: number; height: number };
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images`, { params });
+  }
+
+  async createODDataset(data: { name: string; description?: string; annotation_type?: string }): Promise<{ id: string; name: string }> {
+    return this.request("/api/v1/od/datasets", { method: "POST", body: data });
+  }
+
+  async updateODDataset(id: string, data: { name?: string; description?: string }): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/datasets/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteODDataset(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/datasets/${id}`, { method: "DELETE" });
+  }
+
+  async addImagesToODDataset(datasetId: string, imageIds: string[]): Promise<{ added: number; skipped: number }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images`, { method: "POST", body: { image_ids: imageIds } });
+  }
+
+  async removeImageFromODDataset(datasetId: string, imageId: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/${imageId}`, { method: "DELETE" });
+  }
+
+  async getODDatasetStats(datasetId: string): Promise<{
+    dataset: { id: string; name: string };
+    images_by_status: Record<string, number>;
+    total_annotations: number;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/stats`);
+  }
+
+  // OD Annotations
+  async getODAnnotations(datasetId: string, imageId: string): Promise<Array<{
+    id: string;
+    class_id: string;
+    class_name: string;
+    class_color: string;
+    bbox: { x: number; y: number; width: number; height: number };
+    is_ai_generated: boolean;
+    confidence?: number;
+  }>> {
+    return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}`);
+  }
+
+  async createODAnnotation(datasetId: string, imageId: string, data: {
+    class_id: string;
+    bbox: { x: number; y: number; width: number; height: number };
+    is_ai_generated?: boolean;
+    confidence?: number;
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}`, { method: "POST", body: data });
+  }
+
+  async createODAnnotationsBulk(datasetId: string, imageId: string, annotations: Array<{
+    class_id: string;
+    bbox: { x: number; y: number; width: number; height: number };
+    is_ai_generated?: boolean;
+    confidence?: number;
+  }>): Promise<{ created: number; annotation_ids: string[] }> {
+    return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}/bulk`, { method: "POST", body: { annotations } });
+  }
+
+  async updateODAnnotation(annotationId: string, data: {
+    class_id?: string;
+    bbox?: { x: number; y: number; width: number; height: number };
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/annotations/${annotationId}`, { method: "PATCH", body: data });
+  }
+
+  async deleteODAnnotation(annotationId: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/annotations/${annotationId}`, { method: "DELETE" });
+  }
+
+  async deleteODAnnotationsBulk(datasetId: string, imageId: string, annotationIds?: string[]): Promise<{ deleted: number }> {
+    return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}/bulk`, { method: "DELETE", body: annotationIds });
+  }
+
   async uploadScanRequestImage(file: File): Promise<{ success: boolean; path: string; url: string }> {
     const formData = new FormData();
     formData.append("file", file);
