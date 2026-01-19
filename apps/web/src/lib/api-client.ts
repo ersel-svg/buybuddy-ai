@@ -1317,9 +1317,10 @@ class ApiClient {
     });
   }
 
-  async deleteTrainingRun(id: string): Promise<void> {
+  async deleteTrainingRun(id: string, force: boolean = false): Promise<void> {
     return this.request<void>(`/api/v1/training/runs/${id}`, {
       method: "DELETE",
+      params: force ? { force: "true" } : undefined,
     });
   }
 

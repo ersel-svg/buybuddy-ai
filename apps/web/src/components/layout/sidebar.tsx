@@ -42,16 +42,6 @@ const navigationGroups = [
     ],
   },
   {
-    title: "Operational",
-    items: [
-      {
-        name: "Scan Requests",
-        href: "/scan-requests",
-        icon: ScanLine,
-      },
-    ],
-  },
-  {
     title: "Real-Synthetic Matching",
     items: [
       {
@@ -103,6 +93,16 @@ const navigationGroups = [
         name: "Augmentation",
         href: "/augmentation",
         icon: Sparkles,
+      },
+    ],
+  },
+  {
+    title: "Operational",
+    items: [
+      {
+        name: "Scan Requests",
+        href: "/scan-requests",
+        icon: ScanLine,
       },
     ],
   },

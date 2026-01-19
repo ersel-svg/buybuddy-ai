@@ -162,6 +162,14 @@ export default function TrainingPage() {
   // Selected trained model for details view
   const [selectedModel, setSelectedModel] = useState<TrainedModel | null>(null);
 
+  // Force delete state
+  const [forceDeleteDialog, setForceDeleteDialog] = useState<{
+    open: boolean;
+    runId: string;
+    runName: string;
+    linkedModels: Array<{ id: string; name: string }>;
+  }>({ open: false, runId: "", runName: "", linkedModels: [] });
+
   // Form state for new training run
   const [formData, setFormData] = useState({
     name: "",
@@ -266,10 +274,13 @@ export default function TrainingPage() {
 
   // Delete training run mutation
   const deleteRunMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteTrainingRun(id),
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) =>
+      apiClient.deleteTrainingRun(id, force),
     onSuccess: () => {
       toast.success("Training run deleted");
+      setForceDeleteDialog({ open: false, runId: "", runName: "", linkedModels: [] });
       queryClient.invalidateQueries({ queryKey: ["training-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["trained-models"] });
     },
     onError: () => {
       toast.error("Failed to delete training run");
@@ -1164,9 +1175,24 @@ export default function TrainingPage() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => {
-                                  if (confirm("Delete this training run?")) {
-                                    deleteRunMutation.mutate(run.id);
+                                onClick={async () => {
+                                  if (!confirm("Delete this training run?")) return;
+                                  try {
+                                    await apiClient.deleteTrainingRun(run.id, false);
+                                    toast.success("Training run deleted");
+                                    queryClient.invalidateQueries({ queryKey: ["training-runs"] });
+                                  } catch (error: unknown) {
+                                    const err = error as { status?: number; body?: { detail?: { linked_models?: Array<{ id: string; name: string }> } } };
+                                    if (err.status === 409 && err.body?.detail?.linked_models) {
+                                      setForceDeleteDialog({
+                                        open: true,
+                                        runId: run.id,
+                                        runName: run.name,
+                                        linkedModels: err.body.detail.linked_models,
+                                      });
+                                    } else {
+                                      toast.error("Failed to delete training run");
+                                    }
                                   }
                                 }}
                                 title="Delete training run"
@@ -1472,6 +1498,53 @@ export default function TrainingPage() {
           onClose={() => setSelectedModel(null)}
         />
       )}
+
+      {/* Force Delete Confirmation Dialog */}
+      <Dialog
+        open={forceDeleteDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setForceDeleteDialog({ open: false, runId: "", runName: "", linkedModels: [] });
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Training Run?</DialogTitle>
+            <DialogDescription>
+              <span className="font-semibold">{forceDeleteDialog.runName}</span> has registered models that will also be deleted:
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            {forceDeleteDialog.linkedModels.map((model) => (
+              <div key={model.id} className="flex items-center gap-2 p-2 bg-muted rounded-md">
+                <Brain className="h-4 w-4 text-primary" />
+                <span>{model.name}</span>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setForceDeleteDialog({ open: false, runId: "", runName: "", linkedModels: [] })}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteRunMutation.mutate({ id: forceDeleteDialog.runId, force: true })}
+              disabled={deleteRunMutation.isPending}
+            >
+              {deleteRunMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete All"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

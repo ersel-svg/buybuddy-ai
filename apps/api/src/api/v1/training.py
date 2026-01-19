@@ -686,9 +686,14 @@ async def resume_training_run(
 @router.delete("/runs/{run_id}")
 async def delete_training_run(
     run_id: str,
+    force: bool = False,
     db: SupabaseService = Depends(get_supabase),
 ):
-    """Delete a training run and its checkpoints."""
+    """
+    Delete a training run and its checkpoints.
+
+    If the run has registered trained_models, deletion will be blocked unless force=true.
+    """
     run = await db.get_training_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
@@ -699,7 +704,17 @@ async def delete_training_run(
             detail="Cannot delete a running job. Cancel it first.",
         )
 
-    await db.delete_training_run(run_id)
+    result = await db.delete_training_run(run_id, force=force)
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": result.get("error"),
+                "linked_models": result.get("linked_models", []),
+            },
+        )
+
     return {"deleted": True}
 
 

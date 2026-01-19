@@ -3035,9 +3035,42 @@ class SupabaseService:
         )
         return response.data[0] if response.data else None
 
-    async def delete_training_run(self, run_id: str) -> bool:
-        """Delete training run with all checkpoints and storage files."""
-        # First, get all checkpoints to delete storage files
+    async def delete_training_run(
+        self, run_id: str, force: bool = False
+    ) -> dict[str, Any]:
+        """
+        Delete training run with all checkpoints and storage files.
+
+        Args:
+            run_id: Training run ID
+            force: If True, also delete linked trained_models. If False, block if models exist.
+
+        Returns:
+            {"success": True} or {"success": False, "error": str, "linked_models": [...]}
+        """
+        # Check for linked trained_models (no cascade delete on this table)
+        linked_models_response = (
+            self.client.table("trained_models")
+            .select("id, name")
+            .eq("training_run_id", run_id)
+            .execute()
+        )
+        linked_models = linked_models_response.data
+
+        if linked_models and not force:
+            return {
+                "success": False,
+                "error": "Training run has registered models. Use force=true to delete them as well.",
+                "linked_models": linked_models,
+            }
+
+        # If force and has linked models, delete them first
+        if linked_models and force:
+            for model in linked_models:
+                self.client.table("trained_models").delete().eq("id", model["id"]).execute()
+                print(f"Deleted linked trained_model: {model['name']}")
+
+        # Get all checkpoints to delete storage files
         checkpoints = await self.get_training_checkpoints(run_id)
 
         # Delete checkpoint files from storage
@@ -3065,7 +3098,7 @@ class SupabaseService:
 
         # Delete from database (cascades to checkpoints and metrics_history)
         self.client.table("training_runs").delete().eq("id", run_id).execute()
-        return True
+        return {"success": True}
 
     # =========================================
     # Training Checkpoints
