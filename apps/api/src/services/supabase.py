@@ -3036,7 +3036,34 @@ class SupabaseService:
         return response.data[0] if response.data else None
 
     async def delete_training_run(self, run_id: str) -> bool:
-        """Delete training run (cascades to checkpoints)."""
+        """Delete training run with all checkpoints and storage files."""
+        # First, get all checkpoints to delete storage files
+        checkpoints = await self.get_training_checkpoints(run_id)
+
+        # Delete checkpoint files from storage
+        for checkpoint in checkpoints:
+            if checkpoint.get("checkpoint_url"):
+                try:
+                    url = checkpoint["checkpoint_url"]
+                    if "/checkpoints/" in url:
+                        storage_path = url.split("/checkpoints/")[-1]
+                        self.client.storage.from_("checkpoints").remove([storage_path])
+                        print(f"Deleted checkpoint from storage: {storage_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to delete checkpoint file: {e}")
+
+        # Delete the entire training folder from storage (catches any leftover files)
+        try:
+            folder_path = f"training/{run_id}"
+            files = self.client.storage.from_("checkpoints").list(folder_path)
+            if files:
+                file_paths = [f"{folder_path}/{f['name']}" for f in files]
+                self.client.storage.from_("checkpoints").remove(file_paths)
+                print(f"Deleted {len(file_paths)} files from storage folder")
+        except Exception as e:
+            print(f"Warning: Failed to delete storage folder: {e}")
+
+        # Delete from database (cascades to checkpoints and metrics_history)
         self.client.table("training_runs").delete().eq("id", run_id).execute()
         return True
 
