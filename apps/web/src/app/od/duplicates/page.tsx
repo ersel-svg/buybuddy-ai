@@ -233,7 +233,7 @@ export default function ODDuplicatesPage() {
                         className="relative flex-shrink-0 w-20 h-20 rounded-md overflow-hidden bg-muted"
                       >
                         <Image
-                          src={image.thumbnail_url || image.image_url}
+                          src={image.image_url}
                           alt={image.filename}
                           fill
                           className="object-cover"
