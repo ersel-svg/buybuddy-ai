@@ -422,3 +422,5 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           sbom: false
+          build-args: |
+            HF_TOKEN=${{ secrets.HF_TOKEN }}

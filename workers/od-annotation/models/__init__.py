@@ -58,13 +58,6 @@ def get_model(model_name: str, cache: dict[str, Any]) -> Any:
             hf_token=config.hf_token,
         )
 
-    elif model_name == "owlv2":
-        from .owlv2 import OWLv2Model
-        model = OWLv2Model(
-            device=config.device,
-            cache_dir=config.hf_cache_dir,
-        )
-
     elif model_name == "custom":
         from .custom_model import CustomModel
         # Custom model needs model_path from job input

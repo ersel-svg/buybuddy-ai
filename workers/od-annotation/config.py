@@ -142,12 +142,6 @@ SUPPORTED_MODELS = {
         "tasks": ["detect", "segment"],
         "requires_prompt": True,  # Uses text prompts (like Grounding DINO)
     },
-    "owlv2": {
-        "name": "OWL-ViT v2",
-        "description": "Open-vocabulary object detection",
-        "tasks": ["detect"],
-        "requires_prompt": True,
-    },
     "custom": {
         "name": "Custom Model",
         "description": "User-trained YOLO/DETR models",

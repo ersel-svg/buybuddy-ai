@@ -29,7 +29,7 @@ class SAM2Model(BaseSegmentationModel):
 
     def __init__(
         self,
-        model_id: str = "facebook/sam-vit-base",
+        model_id: str = "facebook/sam-vit-huge",
         device: str = "cuda",
         **kwargs,  # Accept extra args for compatibility
     ):
