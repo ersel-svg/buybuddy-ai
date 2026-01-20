@@ -44,14 +44,14 @@ RUN pip install torch==2.2.0 torchvision==0.17.0 --index-url https://download.py
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Grounding DINO from source
-RUN pip install git+https://github.com/IDEA-Research/GroundingDINO.git
+# Use --no-build-isolation to use existing torch instead of trying to install it again
+RUN git clone https://github.com/IDEA-Research/GroundingDINO.git /tmp/GroundingDINO && \
+    cd /tmp/GroundingDINO && \
+    pip install --no-build-isolation -e . && \
+    rm -rf /tmp/GroundingDINO/.git
 
-# Install SAM 2 from source
-RUN pip install git+https://github.com/facebookresearch/sam2.git
-
-# Install SAM 3 from source (supports text prompts)
-# Note: SAM3 model is downloaded at runtime via HuggingFace (requires HF_TOKEN)
-RUN pip install git+https://github.com/anthropics/sam3.git || echo "SAM3 install skipped (may need HF auth)"
+# Install SAM 2 from source (no-build-isolation to use existing torch)
+RUN pip install --no-build-isolation git+https://github.com/facebookresearch/sam2.git
 
 # Download model weights during build for faster cold starts
 RUN mkdir -p /app/weights

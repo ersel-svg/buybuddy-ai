@@ -1,6 +1,18 @@
 "use client";
 
-import { useState, use, useMemo } from "react";
+import { useState, use, useMemo, useEffect } from "react";
+
+// Custom debounce hook for search inputs
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -163,7 +175,8 @@ export default function ODDatasetDetailPage({
 
   // Images tab state
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedSearch = useDebounce(searchInput, 300);
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
 
@@ -211,6 +224,8 @@ export default function ODDatasetDetailPage({
   const { data: dataset, isLoading: datasetLoading } = useQuery({
     queryKey: ["od-dataset", datasetId],
     queryFn: () => apiClient.getODDataset(datasetId),
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Fetch dataset images
@@ -226,6 +241,8 @@ export default function ODDatasetDetailPage({
         limit: PAGE_SIZE,
         status: filterStatus !== "all" ? filterStatus : undefined,
       }),
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Fetch filter options for Add Images sheet
@@ -233,6 +250,8 @@ export default function ODDatasetDetailPage({
     queryKey: ["od-image-filter-options"],
     queryFn: () => apiClient.getODImageFilterOptions(),
     enabled: isAddImagesSheetOpen,
+    staleTime: 60000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Build filter sections for Add Images sheet
@@ -319,6 +338,8 @@ export default function ODDatasetDetailPage({
         ...addApiFilters,
       }),
     enabled: isAddImagesSheetOpen,
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Add images mutation (by IDs)
@@ -423,6 +444,8 @@ export default function ODDatasetDetailPage({
         is_active: true,
       }),
     enabled: activeTab === "classes",
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Fetch potential duplicates
@@ -745,7 +768,7 @@ export default function ODDatasetDetailPage({
 
   // Filter images by search (client-side)
   const filteredImages = imagesData?.images.filter((img) =>
-    img.image.filename.toLowerCase().includes(search.toLowerCase())
+    img.image.filename.toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
   if (datasetLoading) {
@@ -938,8 +961,8 @@ export default function ODDatasetDetailPage({
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search by filename..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="pl-10"
                 />
               </div>
@@ -1011,7 +1034,8 @@ export default function ODDatasetDetailPage({
                     alt={item.image.filename}
                     fill
                     className="object-cover"
-                    unoptimized
+                    sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw"
+                    loading="lazy"
                   />
                   {/* Selection checkbox */}
                   <div className={`absolute top-2 left-2 transition-opacity ${selectedImages.has(item.image_id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
@@ -1653,7 +1677,8 @@ export default function ODDatasetDetailPage({
                           alt={image.filename}
                           fill
                           className="object-cover"
-                          unoptimized
+                          sizes="(max-width: 640px) 25vw, (max-width: 1024px) 16vw, 14vw"
+                          loading="lazy"
                         />
                         {isInDataset ? (
                           <div className="absolute inset-0 bg-green-600/30 flex items-center justify-center">

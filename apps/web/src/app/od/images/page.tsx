@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
@@ -74,6 +74,18 @@ import { ImportModal } from "@/components/od/import-modal";
 
 const PAGE_SIZE = 48;
 
+// Custom hook for debounced value
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 interface ODImage {
   id: string;
   filename: string;
@@ -90,7 +102,8 @@ interface ODImage {
 export default function ODImagesPage() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedSearch = useDebounce(searchInput, 300); // 300ms debounce
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
 
@@ -123,18 +136,24 @@ export default function ODImagesPage() {
   const { data: stats } = useQuery({
     queryKey: ["od-stats"],
     queryFn: () => apiClient.getODStats(),
+    staleTime: 30000, // 30 seconds
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Fetch datasets for "Add to Dataset" dialog
   const { data: datasets } = useQuery({
     queryKey: ["od-datasets"],
     queryFn: () => apiClient.getODDatasets(),
+    staleTime: 60000, // 1 minute
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Fetch filter options with counts
   const { data: filterOptions } = useQuery({
     queryKey: ["od-image-filter-options"],
     queryFn: () => apiClient.getODImageFilterOptions(),
+    staleTime: 5 * 60 * 1000, // 5 minutes - filter options change rarely
+    gcTime: 10 * 60 * 1000, // 10 minutes
   });
 
   // Build filter sections from API data
@@ -234,14 +253,16 @@ export default function ODImagesPage() {
     isLoading,
     isFetching,
   } = useQuery({
-    queryKey: ["od-images", page, search, apiFilters],
+    queryKey: ["od-images", page, debouncedSearch, apiFilters],
     queryFn: () =>
       apiClient.getODImages({
         page,
         limit: PAGE_SIZE,
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         ...apiFilters,
       }),
+    staleTime: 30000, // 30 seconds
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Upload mutation
@@ -309,7 +330,7 @@ export default function ODImagesPage() {
   const deleteByFiltersMutation = useMutation({
     mutationFn: async () => {
       return apiClient.deleteODImagesByFilters({
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         ...apiFilters,
       });
     },
@@ -329,7 +350,7 @@ export default function ODImagesPage() {
   const addToDatasetByFiltersMutation = useMutation({
     mutationFn: async ({ datasetId }: { datasetId: string }) => {
       return apiClient.addFilteredImagesToODDataset(datasetId, {
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         ...apiFilters,
       });
     },
@@ -636,9 +657,9 @@ export default function ODImagesPage() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search by filename..."
-                  value={search}
+                  value={searchInput}
                   onChange={(e) => {
-                    setSearch(e.target.value);
+                    setSearchInput(e.target.value);
                     setPage(1);
                   }}
                   className="pl-10"
@@ -710,7 +731,7 @@ export default function ODImagesPage() {
               <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium">No images found</h3>
               <p className="text-muted-foreground mt-1">
-                {search || activeFilterCount > 0
+                {debouncedSearch || activeFilterCount > 0
                   ? "Try adjusting your filters"
                   : "Upload images or import from URL, COCO, YOLO formats"}
               </p>
@@ -740,7 +761,8 @@ export default function ODImagesPage() {
                     alt={image.filename}
                     fill
                     className="object-cover"
-                    unoptimized
+                    sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw"
+                    loading="lazy"
                   />
                   {/* Selection checkbox */}
                   <div className={`absolute top-2 left-2 transition-opacity ${selectedImages.has(image.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
@@ -820,7 +842,8 @@ export default function ODImagesPage() {
                       alt={image.filename}
                       fill
                       className="object-cover"
-                      unoptimized
+                      sizes="64px"
+                      loading="lazy"
                     />
                   </div>
                   <div className="flex-1 min-w-0">
