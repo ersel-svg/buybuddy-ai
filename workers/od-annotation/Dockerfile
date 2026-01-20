@@ -3,7 +3,8 @@
 # Models: Grounding DINO, Florence-2, SAM (HF), SAM3
 # NOTE: SAM3 weights downloaded at runtime (requires HF_TOKEN env var)
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# Use PyTorch base image (same as video-segmentation) for proper torchvision.ops support
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -12,13 +13,12 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # HF Token for SAM3 model download (set at runtime, not build time)
 ENV HF_TOKEN=""
 
+WORKDIR /app
+
 # ============================================
 # Stage 1: System Dependencies
 # ============================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3.11-dev \
-    python3-pip \
     git \
     wget \
     ffmpeg \
@@ -31,21 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
-    python -m pip install --upgrade pip setuptools wheel
-
-WORKDIR /app
-
 # ============================================
 # Stage 2: Python Dependencies
 # ============================================
 COPY requirements.txt .
 
-# Install PyTorch (CUDA 12.4) + requirements
-RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
-    pip install --no-cache-dir -r requirements.txt
+# Install requirements (PyTorch already in base image)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================
 # Stage 3: ML Libraries
