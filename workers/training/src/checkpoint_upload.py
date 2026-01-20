@@ -12,6 +12,7 @@ import io
 import gzip
 import time
 import tempfile
+import httpx
 from pathlib import Path
 from typing import Optional, Any
 from supabase import Client
@@ -32,6 +33,9 @@ def _get_torch():
 # Supabase Pro with custom limit: 250MB
 # DINOv2-base in FP16 is ~167MB
 MAX_UPLOAD_SIZE = 250 * 1024 * 1024  # 250MB limit (configured in Supabase dashboard)
+
+# Upload timeout in seconds (5 minutes for large files)
+UPLOAD_TIMEOUT = 300
 
 
 def upload_checkpoint_to_storage(
@@ -111,44 +115,81 @@ def upload_checkpoint_to_storage(
 
         storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth"
         content_type = "application/octet-stream"
+        bucket_name = "checkpoints"
 
-        # Upload to storage bucket "checkpoints"
-        bucket = client.storage.from_("checkpoints")
+        # Get Supabase URL and key from client
+        supabase_url = client.supabase_url.rstrip('/')
+        supabase_key = client.supabase_key
 
-        # Try to remove existing file (ignore errors)
-        try:
-            bucket.remove([storage_path])
-        except:
-            pass
+        print(f"[DEBUG] Storage path: {storage_path}")
+        print(f"[DEBUG] Supabase URL: {supabase_url}")
+        print(f"[DEBUG] File size: {len(file_data) / 1024 / 1024:.1f}MB")
 
-        # Upload with retries
+        # Build upload URL - Supabase Storage REST API
+        upload_url = f"{supabase_url}/storage/v1/object/{bucket_name}/{storage_path}"
+        print(f"[DEBUG] Upload URL: {upload_url}")
+
+        headers = {
+            "Authorization": f"Bearer {supabase_key}",
+            "Content-Type": content_type,
+            "x-upsert": "true",  # Overwrite if exists
+        }
+
+        # Upload with retries and timeout
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
             try:
-                print(f"Upload attempt {attempt + 1}/{max_retries}...")
-                result = bucket.upload(
-                    path=storage_path,
-                    file=file_data,
-                    file_options={"content-type": content_type}
-                )
+                print(f"[UPLOAD] Attempt {attempt + 1}/{max_retries} - Starting upload...")
+                print(f"[UPLOAD] Timeout set to {UPLOAD_TIMEOUT}s")
 
-                # Get public URL
-                public_url = bucket.get_public_url(storage_path)
+                start_time = time.time()
 
-                print(f"Uploaded checkpoint to: {public_url}")
-                return public_url
+                # Use httpx with explicit timeout
+                with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT, connect=30.0)) as http_client:
+                    response = http_client.post(
+                        upload_url,
+                        content=file_data,
+                        headers=headers,
+                    )
 
-            except Exception as upload_error:
-                last_error = upload_error
-                print(f"Upload attempt {attempt + 1} failed: {upload_error}")
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
-                    print(f"Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
+                elapsed = time.time() - start_time
+                print(f"[UPLOAD] Request completed in {elapsed:.1f}s")
+                print(f"[UPLOAD] Response status: {response.status_code}")
 
-        print(f"All upload attempts failed. Last error: {last_error}")
+                if response.status_code in (200, 201):
+                    # Success - build public URL
+                    public_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{storage_path}"
+                    print(f"[UPLOAD] SUCCESS! Checkpoint uploaded to: {public_url}")
+                    return public_url
+                else:
+                    # Server returned an error
+                    error_body = response.text[:500]
+                    print(f"[UPLOAD] Server error: {response.status_code}")
+                    print(f"[UPLOAD] Response body: {error_body}")
+                    last_error = f"HTTP {response.status_code}: {error_body}"
+
+            except httpx.TimeoutException as e:
+                elapsed = time.time() - start_time
+                print(f"[UPLOAD] TIMEOUT after {elapsed:.1f}s: {e}")
+                last_error = f"Timeout after {elapsed:.1f}s"
+
+            except httpx.RequestError as e:
+                print(f"[UPLOAD] Network error: {type(e).__name__}: {e}")
+                last_error = f"Network error: {e}"
+
+            except Exception as e:
+                print(f"[UPLOAD] Unexpected error: {type(e).__name__}: {e}")
+                last_error = f"Unexpected: {e}"
+
+            # Retry logic
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 5  # 5s, 10s, 15s
+                print(f"[UPLOAD] Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+
+        print(f"[UPLOAD] FAILED - All {max_retries} attempts failed. Last error: {last_error}")
         return None
 
     except Exception as e:
