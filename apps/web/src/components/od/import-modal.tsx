@@ -323,7 +323,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
       setRfImportMessage("Starting download...");
 
       // Poll for status
-      return new Promise((resolve, reject) => {
+      return new Promise<{ result?: { images_imported?: number; annotations_imported?: number; errors?: string[] } }>((resolve, reject) => {
         const pollInterval = setInterval(async () => {
           try {
             const status = await apiClient.getRoboflowImportStatus(response.job_id);
@@ -333,7 +333,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
 
             if (status.status === "completed") {
               clearInterval(pollInterval);
-              resolve(status);
+              resolve(status as { result?: { images_imported?: number; annotations_imported?: number; errors?: string[] } });
             } else if (status.status === "failed") {
               clearInterval(pollInterval);
               reject(new Error(status.error || "Import failed"));
@@ -345,7 +345,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
         }, 2000); // Poll every 2 seconds
       });
     },
-    onSuccess: (data: { result?: { images_imported?: number; annotations_imported?: number; errors?: string[] } }) => {
+    onSuccess: (data) => {
       const result = data.result || {};
       toast.success(`Imported ${result.images_imported || 0} images with ${result.annotations_imported || 0} annotations`);
       if (result.errors && result.errors.length > 0) {
