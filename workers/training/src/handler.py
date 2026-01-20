@@ -162,11 +162,21 @@ def report_progress(
         return
 
     try:
+        current_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         payload = {
             "status": status,
             "progress": progress,
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updated_at": current_time,
         }
+
+        # Set started_at when training begins
+        if status == "running" and progress == 0.0:
+            payload["started_at"] = current_time
+
+        # Set completed_at when training finishes
+        if status in ("completed", "failed", "cancelled"):
+            payload["completed_at"] = current_time
+
         if metrics:
             payload["metrics"] = metrics
         if message:
@@ -174,9 +184,18 @@ def report_progress(
         if checkpoint_url:
             payload["checkpoint_url"] = checkpoint_url
 
-        client.table("training_runs").update(payload).eq("id", job_id).execute()
+        print(f"[Progress] Updating DB: status={status}, progress={progress:.1%}")
+        result = client.table("training_runs").update(payload).eq("id", job_id).execute()
+
+        if not result.data:
+            print(f"[Progress] WARNING: No rows updated for job_id={job_id}")
+        else:
+            print(f"[Progress] DB updated successfully")
+
     except Exception as e:
-        print(f"Failed to report progress: {e}")
+        print(f"[Progress] ERROR: Failed to report progress: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def handle_evaluation(job_input: dict) -> dict:
