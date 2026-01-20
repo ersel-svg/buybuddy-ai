@@ -246,6 +246,11 @@ def handler(job: dict) -> dict[str, Any]:
     try:
         job_input = job.get("input", {})
 
+        # Override config hf_token if provided in job input (for SAM3 access)
+        if job_input.get("hf_token"):
+            config.hf_token = job_input["hf_token"]
+            logger.debug("Using hf_token from job input")
+
         # Validate input
         is_valid, error_msg = validate_input(job_input)
         if not is_valid:

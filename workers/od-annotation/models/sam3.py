@@ -74,6 +74,19 @@ class SAM3Model(BaseSegmentationModel):
             logger.error(f"SAM3 import error: {e}")
             raise RuntimeError("SAM3 not available. Make sure sam3 package is installed.")
         except Exception as e:
+            error_msg = str(e)
+            # Check for gated model access error
+            if "401" in error_msg or "gated" in error_msg.lower() or "restricted" in error_msg.lower():
+                logger.error(
+                    "SAM3 access denied. This is a gated model. To use SAM3:\n"
+                    "  1. Accept the license at: https://huggingface.co/facebook/sam3\n"
+                    "  2. Set HF_TOKEN environment variable with your HuggingFace token\n"
+                    "  3. Rebuild the Docker image"
+                )
+                raise RuntimeError(
+                    "SAM3 access denied. Accept license at https://huggingface.co/facebook/sam3 "
+                    "and set HF_TOKEN environment variable."
+                )
             logger.error(f"SAM3 load error: {e}")
             raise
 

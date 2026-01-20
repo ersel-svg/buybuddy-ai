@@ -82,6 +82,7 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
         "text_threshold": request.text_threshold,
         "use_nms": request.use_nms,
         "nms_threshold": request.nms_threshold,
+        "hf_token": settings.hf_token,  # For SAM3 model access
     }
 
     start_time = time.time()
@@ -192,6 +193,7 @@ async def segment_interactive(request: AISegmentRequest) -> AISegmentResponse:
         "image_url": image_url,
         "prompt_type": request.prompt_type,
         "label": request.label,
+        "hf_token": settings.hf_token,  # For SAM3 model access
     }
 
     if request.point:
@@ -336,6 +338,7 @@ async def batch_annotate(
         "box_threshold": request.box_threshold,
         "text_threshold": request.text_threshold,
         "job_id": job_id,
+        "hf_token": settings.hf_token,  # For SAM3 model access
     }
 
     # TODO: Add webhook URL for production

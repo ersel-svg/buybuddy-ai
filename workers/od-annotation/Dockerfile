@@ -1,6 +1,7 @@
 # OD Annotation Worker - SOTA AI Auto-Annotation
 # All models pre-downloaded for fast cold starts (~10-20s)
 # Models: Grounding DINO, Florence-2, SAM (HF), SAM3
+# NOTE: SAM3 weights downloaded at runtime (requires HF_TOKEN env var)
 
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
@@ -8,9 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# HF Token for SAM3 model download
-ARG HF_TOKEN
-ENV HF_TOKEN=${HF_TOKEN}
+# HF Token for SAM3 model download (set at runtime, not build time)
+ENV HF_TOKEN=""
 
 # ============================================
 # Stage 1: System Dependencies
@@ -53,16 +53,11 @@ RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/c
 # Grounding DINO (pip package - pre-built, no CUDA compile)
 RUN pip install groundingdino-py
 
-# SAM3 (from official repo)
-RUN pip install sam3 || \
-    pip install git+https://github.com/facebookresearch/sam3.git || \
-    echo "SAM3 install skipped"
+# SAM3 dependencies (MUST be installed before SAM3)
+RUN pip install --no-cache-dir einops decord timm iopath hydra-core omegaconf pycocotools
 
-# SAM3 requires CLIP tokenizer BPE vocabulary file
-RUN mkdir -p /usr/local/lib/python3.11/dist-packages/assets && \
-    wget -q -O /usr/local/lib/python3.11/dist-packages/assets/bpe_simple_vocab_16e6.txt.gz \
-        https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz && \
-    echo "=== SAM3 BPE vocabulary downloaded ==="
+# SAM3 (from official repo - PINNED to same commit as video-segmentation worker)
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git@7b89b8fc3fa0ae8d09d9b17a284b5299e238b1b0
 
 # ============================================
 # Stage 4: Model Weights

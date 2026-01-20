@@ -4,6 +4,9 @@ Pre-download HuggingFace models during Docker build.
 This eliminates cold start model downloads and speeds up worker startup.
 
 Uses snapshot_download for memory-efficient downloads (no model loading).
+
+NOTE: SAM3 is NOT pre-downloaded here. SAM3 downloads its own weights at runtime
+(same behavior as video-segmentation worker). It requires HF_TOKEN at runtime.
 """
 
 import os
@@ -87,6 +90,8 @@ def main():
     print(f"HF_HOME: {os.environ.get('HF_HOME')}")
     print(f"HF_HUB_CACHE: {os.environ.get('HF_HUB_CACHE')}")
     print(f"Python: {sys.version}")
+    print()
+    print("NOTE: SAM3 weights are downloaded at runtime (requires HF_TOKEN)")
     print()
     sys.stdout.flush()
 

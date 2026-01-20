@@ -422,5 +422,4 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           sbom: false
-          build-args: |
-            HF_TOKEN=${{ secrets.HF_TOKEN }}
+          # NOTE: HF_TOKEN is set at runtime via RunPod env vars (for SAM3)
