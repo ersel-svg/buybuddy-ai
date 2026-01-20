@@ -62,7 +62,6 @@ RUN git clone --depth 1 https://github.com/IDEA-Research/GroundingDINO.git /tmp/
 # ============================================
 ENV HF_HOME=/app/huggingface_cache
 ENV TRANSFORMERS_CACHE=/app/huggingface_cache
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
 RUN mkdir -p /app/weights /app/huggingface_cache
 
