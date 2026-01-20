@@ -58,6 +58,12 @@ RUN pip install sam3 || \
     pip install git+https://github.com/facebookresearch/sam3.git || \
     echo "SAM3 install skipped"
 
+# SAM3 requires CLIP tokenizer BPE vocabulary file
+RUN mkdir -p /usr/local/lib/python3.11/dist-packages/assets && \
+    wget -q -O /usr/local/lib/python3.11/dist-packages/assets/bpe_simple_vocab_16e6.txt.gz \
+        https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz && \
+    echo "=== SAM3 BPE vocabulary downloaded ==="
+
 # ============================================
 # Stage 4: Model Weights
 # ============================================
