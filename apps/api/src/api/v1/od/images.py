@@ -5,11 +5,14 @@ Endpoints for managing OD images (upload, list, CRUD).
 Includes advanced import features (URL, annotated datasets, duplicate detection).
 """
 
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Query, Depends
 from pydantic import BaseModel
 from uuid import uuid4
 import json
+
+logger = logging.getLogger(__name__)
 
 from services.supabase import supabase_service, SupabaseService
 
@@ -139,8 +142,35 @@ async def list_images(
 
 @router.get("/filters/options")
 async def get_filter_options():
-    """Get filter options with counts for FilterDrawer component."""
-    # Get all images for counting
+    """Get filter options with counts for FilterDrawer component.
+
+    Uses SQL aggregation via RPC for optimal performance with large datasets.
+    """
+    try:
+        # Use optimized SQL aggregation via RPC function
+        result = supabase_service.client.rpc("get_od_image_filter_options").execute()
+
+        if result.data:
+            return result.data
+
+        # Fallback to empty structure if RPC returns nothing
+        return {
+            "status": [],
+            "source": [],
+            "folder": [],
+            "merchant": [],
+            "store": [],
+            "merchants": [],
+            "stores": [],
+        }
+    except Exception as e:
+        # If RPC fails (e.g., function doesn't exist yet), fall back to Python aggregation
+        logger.warning(f"RPC get_od_image_filter_options failed, using fallback: {e}")
+        return await _get_filter_options_fallback()
+
+
+async def _get_filter_options_fallback():
+    """Fallback filter options using Python aggregation (slower, for backwards compatibility)."""
     all_images = supabase_service.client.table("od_images").select(
         "status, source, folder, merchant_id, merchant_name, store_id, store_name"
     ).execute()
@@ -232,7 +262,6 @@ async def get_filter_options():
         "folder": folder_options,
         "merchant": merchant_options,
         "store": store_options,
-        # Also return raw data for backwards compatibility
         "merchants": [{"id": m["id"], "name": m["name"]} for m in merchant_counts.values()],
         "stores": [{"id": s["id"], "name": s["name"]} for s in store_data.values()],
     }

@@ -52,11 +52,7 @@ interface DuplicateGroup {
     id: string;
     filename: string;
     image_url: string;
-    thumbnail_url?: string;
-    width: number;
-    height: number;
-    phash?: string;
-    created_at: string;
+    similarity?: number;
   }>;
   max_similarity: number;
 }
@@ -88,7 +84,7 @@ export default function ODDuplicatesPage() {
       keepId: string;
       deleteIds: string[];
     }) => {
-      return apiClient.resolveODImageDuplicates(keepId, deleteIds, []);
+      return apiClient.resolveODImageDuplicates(keepId, deleteIds);
     },
     onSuccess: (data) => {
       toast.success(`Deleted ${data.deleted} duplicate images`);
@@ -316,12 +312,11 @@ export default function ODDuplicatesPage() {
                   </div>
                   <div className="p-2 bg-background">
                     <p className="text-xs font-medium truncate">{image.filename}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {image.width}x{image.height}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(image.created_at).toLocaleDateString()}
-                    </p>
+                    {image.similarity !== undefined && (
+                      <p className="text-xs text-muted-foreground">
+                        {image.similarity.toFixed(0)}% similar
+                      </p>
+                    )}
                   </div>
                   {index === 0 && (
                     <Badge

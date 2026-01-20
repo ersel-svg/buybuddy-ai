@@ -17,6 +17,10 @@ const nextConfig: NextConfig = {
         hostname: "buybuddy.co",
       },
       {
+        protocol: "https",
+        hostname: "*.amazonaws.com",
+      },
+      {
         protocol: "http",
         hostname: "localhost",
       },

@@ -18,11 +18,16 @@ import zipfile
 import tempfile
 import httpx
 import hashlib
+import time
+import logging
+import asyncio
 from pathlib import Path
 from typing import Optional, Literal
 from dataclasses import dataclass, field
 from uuid import uuid4
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # Optional: imagehash for perceptual hashing (not required for basic functionality)
 try:
@@ -33,6 +38,147 @@ except ImportError:
     IMAGEHASH_AVAILABLE = False
 
 from services.supabase import supabase_service
+
+
+# ===========================================
+# Storage Upload Helper with Retry
+# ===========================================
+
+def upload_to_storage_with_retry(
+    filename: str,
+    content: bytes,
+    content_type: str,
+    max_retries: int = 3,
+    base_delay: float = 2.0,
+) -> bool:
+    """
+    Upload a file to Supabase Storage with retry logic.
+
+    Uses exponential backoff: 2s, 4s, 8s between retries.
+
+    Args:
+        filename: Target filename in storage
+        content: File content bytes
+        content_type: MIME type
+        max_retries: Maximum number of retry attempts
+        base_delay: Base delay in seconds (doubles each retry)
+
+    Returns:
+        True if upload succeeded
+
+    Raises:
+        Exception: If all retries fail
+    """
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            supabase_service.client.storage.from_("od-images").upload(
+                filename,
+                content,
+                {"content-type": content_type}
+            )
+            return True
+
+        except Exception as e:
+            last_error = e
+            error_msg = str(e).lower()
+
+            # Check if it's a timeout or network error (retriable)
+            if any(term in error_msg for term in ["timeout", "timed out", "connection", "network", "socket"]):
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Storage upload attempt {attempt + 1}/{max_retries} failed for {filename}: {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    time.sleep(delay)
+                    continue
+            else:
+                # Non-retriable error (e.g., file too large, permission denied)
+                raise
+
+    # All retries exhausted
+    raise last_error or Exception(f"Upload failed after {max_retries} attempts")
+
+
+async def upload_single_image(
+    semaphore: asyncio.Semaphore,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    max_retries: int = 3,
+) -> tuple[bool, str, Optional[str]]:
+    """
+    Upload a single image with semaphore-controlled concurrency.
+
+    Returns:
+        Tuple of (success, filename, error_message)
+    """
+    async with semaphore:
+        try:
+            # Run sync upload in thread pool to not block event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: upload_to_storage_with_retry(filename, content, content_type, max_retries)
+            )
+            return (True, filename, None)
+        except Exception as e:
+            return (False, filename, str(e))
+
+
+async def parallel_upload_images(
+    images: list[tuple[str, bytes, str]],  # List of (filename, content, content_type)
+    max_concurrent: int = 5,
+    progress_callback: Optional[callable] = None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """
+    Upload multiple images in parallel with controlled concurrency.
+
+    This is a SOTA approach for bulk uploads:
+    - Uses asyncio.Semaphore for concurrency control
+    - Parallel uploads (5 concurrent by default)
+    - Individual retry per image
+    - Progress tracking
+    - Graceful error handling (continues on individual failures)
+
+    Args:
+        images: List of (filename, content, content_type) tuples
+        max_concurrent: Maximum concurrent uploads (default 5)
+        progress_callback: Optional callback(completed, total) for progress
+
+    Returns:
+        Tuple of (successful_filenames, failed_list[(filename, error)])
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    successful = []
+    failed = []
+    total = len(images)
+    completed = 0
+
+    # Create upload tasks
+    tasks = [
+        upload_single_image(semaphore, filename, content, content_type)
+        for filename, content, content_type in images
+    ]
+
+    # Process results as they complete
+    for coro in asyncio.as_completed(tasks):
+        success, filename, error = await coro
+        completed += 1
+
+        if success:
+            successful.append(filename)
+        else:
+            failed.append((filename, error))
+
+        # Progress callback
+        if progress_callback and completed % 10 == 0:
+            progress_callback(completed, total)
+
+    logger.info(f"Parallel upload complete: {len(successful)} succeeded, {len(failed)} failed")
+    return successful, failed
 
 
 # ===========================================
@@ -569,11 +715,12 @@ async def import_from_urls(
                     ext = "jpg"
                 unique_filename = f"{uuid4()}.{ext}"
 
-                # Upload to storage
-                supabase_service.client.storage.from_("od-images").upload(
+                # Upload to storage with retry
+                upload_to_storage_with_retry(
                     unique_filename,
                     content,
-                    {"content-type": content_type}
+                    content_type,
+                    max_retries=3,
                 )
 
                 image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
@@ -900,30 +1047,52 @@ async def import_annotated_dataset(
                 return result
 
             # ============================================
-            # PHASE 2: Upload all images to storage
+            # PHASE 2: Upload all images to storage (PARALLEL)
             # ============================================
-            image_records = []  # List of (unique_filename, image_url, imported_img, file_hash)
+            # Prepare upload items: (filename, content, content_type)
+            upload_items = []
+            upload_metadata = []  # Keep track of (imported_img, file_hash, file_size)
 
             for imported_img, image_content, image_file_path, file_hash in prepared_images:
                 ext = Path(image_file_path).suffix.lower().lstrip(".")
                 unique_filename = f"{uuid4()}.{ext}"
+                content_type = f"image/{ext}"
 
-                try:
-                    supabase_service.client.storage.from_("od-images").upload(
-                        unique_filename,
-                        image_content,
-                        {"content-type": f"image/{ext}"}
-                    )
-                    uploaded_files.append(unique_filename)
-                except Exception as e:
-                    # Rollback all uploads
-                    await rollback()
-                    result.success = False
-                    result.errors.append(f"Storage upload failed: {str(e)}")
-                    return result
+                upload_items.append((unique_filename, image_content, content_type))
+                upload_metadata.append((unique_filename, imported_img, file_hash, len(image_content)))
 
-                image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
-                image_records.append((unique_filename, image_url, imported_img, file_hash, len(image_content)))
+            # Parallel upload with 5 concurrent connections
+            logger.info(f"Starting parallel upload of {len(upload_items)} images (5 concurrent)")
+            successful_files, failed_uploads = await parallel_upload_images(
+                upload_items,
+                max_concurrent=5,
+            )
+
+            # Track uploaded files for potential rollback
+            uploaded_files.extend(successful_files)
+
+            # Log failures but continue with successful uploads
+            if failed_uploads:
+                for filename, error in failed_uploads:
+                    result.errors.append(f"Upload failed for {filename}: {error}")
+                logger.warning(f"{len(failed_uploads)} images failed to upload")
+
+            # If ALL uploads failed, rollback and return error
+            if not successful_files:
+                await rollback()
+                result.success = False
+                result.errors.append("All image uploads failed")
+                return result
+
+            # Build image_records from successful uploads only
+            successful_set = set(successful_files)
+            image_records = []
+            for unique_filename, imported_img, file_hash, file_size in upload_metadata:
+                if unique_filename in successful_set:
+                    image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
+                    image_records.append((unique_filename, image_url, imported_img, file_hash, file_size))
+
+            logger.info(f"Uploaded {len(image_records)} images to storage ({len(failed_uploads)} failed)")
 
             # ============================================
             # PHASE 3: Batch insert images to database
@@ -1295,36 +1464,57 @@ async def import_annotated_dataset_from_file(
             logger.info(f"Prepared {len(prepared_images)} images for import")
 
             # ============================================
-            # PHASE 2: Upload all images to storage
+            # PHASE 2: Upload all images to storage (PARALLEL)
             # ============================================
-            image_records = []  # List of (unique_filename, image_url, imported_img, file_hash)
+            # Prepare upload items: (filename, content, content_type)
+            upload_items = []
+            upload_metadata = []  # Keep track of (imported_img, file_hash, file_size)
 
-            for idx, (imported_img, image_content, image_file_path, file_hash) in enumerate(prepared_images):
+            for imported_img, image_content, image_file_path, file_hash in prepared_images:
                 ext = Path(image_file_path).suffix.lower().lstrip(".")
                 unique_filename = f"{uuid4()}.{ext}"
+                content_type = f"image/{ext}"
 
-                try:
-                    supabase_service.client.storage.from_("od-images").upload(
-                        unique_filename,
-                        image_content,
-                        {"content-type": f"image/{ext}"}
-                    )
-                    uploaded_files.append(unique_filename)
+                upload_items.append((unique_filename, image_content, content_type))
+                upload_metadata.append((unique_filename, imported_img, file_hash, len(image_content)))
 
-                    if (idx + 1) % 100 == 0:
-                        logger.info(f"Uploaded {idx + 1}/{len(prepared_images)} images to storage")
+            # Progress callback for logging
+            def log_progress(completed: int, total: int):
+                logger.info(f"Uploaded {completed}/{total} images to storage")
 
-                except Exception as e:
-                    # Rollback all uploads
-                    await rollback()
-                    result.success = False
-                    result.errors.append(f"Storage upload failed for {imported_img.filename}: {str(e)}")
-                    return result
+            # Parallel upload with 5 concurrent connections
+            logger.info(f"Starting parallel upload of {len(upload_items)} images (5 concurrent)")
+            successful_files, failed_uploads = await parallel_upload_images(
+                upload_items,
+                max_concurrent=5,
+                progress_callback=log_progress,
+            )
 
-                image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
-                image_records.append((unique_filename, image_url, imported_img, file_hash, len(image_content)))
+            # Track uploaded files for potential rollback
+            uploaded_files.extend(successful_files)
 
-            logger.info(f"Uploaded all {len(image_records)} images to storage")
+            # Log failures but continue with successful uploads
+            if failed_uploads:
+                for filename, error in failed_uploads:
+                    result.errors.append(f"Upload failed for {filename}: {error}")
+                logger.warning(f"{len(failed_uploads)} images failed to upload")
+
+            # If ALL uploads failed, rollback and return error
+            if not successful_files:
+                await rollback()
+                result.success = False
+                result.errors.append("All image uploads failed")
+                return result
+
+            # Build image_records from successful uploads only
+            successful_set = set(successful_files)
+            image_records = []
+            for unique_filename, imported_img, file_hash, file_size in upload_metadata:
+                if unique_filename in successful_set:
+                    image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
+                    image_records.append((unique_filename, image_url, imported_img, file_hash, file_size))
+
+            logger.info(f"Uploaded {len(image_records)} images to storage ({len(failed_uploads)} failed)")
 
             # ============================================
             # PHASE 3: Batch insert images to database
