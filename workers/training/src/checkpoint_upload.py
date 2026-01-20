@@ -34,8 +34,10 @@ def _get_torch():
 # DINOv2-base in FP16 is ~167MB
 MAX_UPLOAD_SIZE = 250 * 1024 * 1024  # 250MB limit (configured in Supabase dashboard)
 
-# Upload timeout in seconds (5 minutes for large files)
-UPLOAD_TIMEOUT = 300
+# Upload timeout in seconds
+# RunPod -> Supabase can be slow (~150 KB/s = 18 min for 168MB)
+# Set to 30 minutes to be safe
+UPLOAD_TIMEOUT = 1800
 
 
 def upload_checkpoint_to_storage(
