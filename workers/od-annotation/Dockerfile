@@ -52,19 +52,20 @@ RUN pip install --no-cache-dir einops decord timm iopath hydra-core omegaconf py
 RUN pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git@7b89b8fc3fa0ae8d09d9b17a284b5299e238b1b0
 
 # ============================================
-# Stage 4: Model Weights
+# Stage 4: Model Weights (HuggingFace cache)
 # ============================================
+# All models load from HuggingFace at runtime or are pre-cached here
+# - Grounding DINO: IDEA-Research/grounding-dino-base
+# - Florence-2: microsoft/Florence-2-large (pre-downloaded)
+# - SAM2: facebook/sam-vit-huge (pre-downloaded)
+# - SAM3: downloads at runtime (requires HF_TOKEN)
+
 ENV HF_HOME=/app/huggingface_cache
 ENV TRANSFORMERS_CACHE=/app/huggingface_cache
 
-RUN mkdir -p /app/weights /app/huggingface_cache
+RUN mkdir -p /app/huggingface_cache
 
-# Grounding DINO weights (~700MB)
-RUN echo "=== Downloading Grounding DINO weights ===" && \
-    wget --progress=bar:force -O /app/weights/groundingdino_swint_ogc.pth \
-        https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
-
-# HuggingFace models (Florence-2 ~3GB, SAM-HF ~2.5GB)
+# Pre-download HuggingFace models for faster cold starts
 COPY scripts/download_hf_models.py /tmp/download_hf_models.py
 RUN echo "=== Downloading HuggingFace models ===" && \
     python /tmp/download_hf_models.py && \
@@ -74,7 +75,5 @@ RUN echo "=== Downloading HuggingFace models ===" && \
 # Stage 5: Application Code
 # ============================================
 COPY . .
-
-ENV GROUNDING_DINO_WEIGHTS=/app/weights/groundingdino_swint_ogc.pth
 
 CMD ["python", "-u", "handler.py"]

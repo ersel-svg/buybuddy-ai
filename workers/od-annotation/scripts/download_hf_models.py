@@ -19,6 +19,37 @@ os.environ['TRANSFORMERS_CACHE'] = '/app/huggingface_cache'
 os.environ['HF_HUB_CACHE'] = '/app/huggingface_cache'
 
 
+def download_grounding_dino():
+    """Download Grounding DINO model (~900MB) - files only, no loading."""
+    print("=" * 50)
+    print("Downloading Grounding DINO...")
+    print("=" * 50)
+    sys.stdout.flush()
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        model_name = "IDEA-Research/grounding-dino-base"
+
+        print(f"Downloading: {model_name}")
+        sys.stdout.flush()
+
+        snapshot_download(
+            repo_id=model_name,
+            cache_dir="/app/huggingface_cache",
+            local_dir_use_symlinks=False,
+        )
+
+        print("Grounding DINO downloaded successfully!")
+        sys.stdout.flush()
+        return True
+    except Exception as e:
+        print(f"ERROR downloading Grounding DINO: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        return False
+
+
 def download_florence2():
     """Download Florence-2 Large model (~3GB) - files only, no loading."""
     print("=" * 50)
@@ -108,6 +139,10 @@ def main():
     success = True
 
     # Download models (files only, no memory loading)
+    if not download_grounding_dino():
+        success = False
+    print()
+
     if not download_florence2():
         success = False
     print()

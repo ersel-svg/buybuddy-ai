@@ -93,21 +93,17 @@ class Config:
     )
 
     def get_enabled_models(self) -> list[str]:
-        """Get list of enabled models based on environment."""
-        models = []
+        """Get list of enabled models based on environment.
 
-        if os.path.exists(self.grounding_dino_weights):
-            models.append("grounding_dino")
+        All models are loaded from HuggingFace, so they're always available.
+        SAM3 requires HF_TOKEN for gated model access.
+        """
+        # Base models - always available via HuggingFace
+        models = ["grounding_dino", "florence2", "sam2"]
 
-        if os.path.exists(self.sam2_weights):
-            models.append("sam2")
-
-        # SAM3 requires HF token
+        # SAM3 requires HF token for gated model access
         if self.hf_token:
             models.append("sam3")
-
-        # Florence-2 is always available (downloaded from HF)
-        models.append("florence2")
 
         return models
 
