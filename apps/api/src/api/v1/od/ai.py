@@ -80,6 +80,8 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
         "text_prompt": request.text_prompt,
         "box_threshold": request.box_threshold,
         "text_threshold": request.text_threshold,
+        "use_nms": request.use_nms,
+        "nms_threshold": request.nms_threshold,
     }
 
     start_time = time.time()

@@ -2459,6 +2459,8 @@ class ApiClient {
     text_prompt: string;
     box_threshold?: number;
     text_threshold?: number;
+    use_nms?: boolean;
+    nms_threshold?: number;
   }): Promise<{
     predictions: Array<{
       bbox: { x: number; y: number; width: number; height: number };
@@ -2468,6 +2470,7 @@ class ApiClient {
     }>;
     model: string;
     processing_time_ms?: number;
+    nms_applied?: boolean;
   }> {
     return this.request("/api/v1/od/ai/predict", {
       method: "POST",

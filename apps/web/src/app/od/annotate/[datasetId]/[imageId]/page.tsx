@@ -236,7 +236,12 @@ export default function ODAnnotationEditorPage({
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { class_id: string; bbox: { x: number; y: number; width: number; height: number } }) => {
+    mutationFn: async (data: {
+      class_id: string;
+      bbox: { x: number; y: number; width: number; height: number };
+      is_ai_generated?: boolean;
+      confidence?: number;
+    }) => {
       return apiClient.createODAnnotation(datasetId, imageId, data);
     },
     onSuccess: (newAnnotation) => {
@@ -371,27 +376,32 @@ export default function ODAnnotationEditorPage({
     setAiPredictions(predictions);
   }, []);
 
-  const handleAcceptAIPrediction = useCallback(async (prediction: AIPrediction) => {
-    // Find or create class for the label
-    const className = prediction.label.toLowerCase().trim();
-    const existingClass = classes?.find(
-      (c) => c.name.toLowerCase() === className || c.display_name?.toLowerCase() === className
-    );
-
+  const handleAcceptAIPrediction = useCallback(async (prediction: AIPrediction, targetClassId?: string) => {
     let classId: string;
 
-    if (existingClass) {
-      classId = existingClass.id;
+    if (targetClassId) {
+      // Use the provided target class
+      classId = targetClassId;
     } else {
-      try {
-        const newClass = await createClassMutation.mutateAsync({
-          name: className,
-          color: generateRandomColor(),
-        });
-        classId = newClass.id;
-      } catch {
-        toast.error("Failed to create class");
-        return;
+      // Find or create class for the label (legacy behavior)
+      const className = prediction.label.toLowerCase().trim();
+      const existingClass = classes?.find(
+        (c) => c.name.toLowerCase() === className || c.display_name?.toLowerCase() === className
+      );
+
+      if (existingClass) {
+        classId = existingClass.id;
+      } else {
+        try {
+          const newClass = await createClassMutation.mutateAsync({
+            name: className,
+            color: generateRandomColor(),
+          });
+          classId = newClass.id;
+        } catch {
+          toast.error("Failed to create class");
+          return;
+        }
       }
     }
 
@@ -400,6 +410,8 @@ export default function ODAnnotationEditorPage({
       const newAnnotation = await createMutation.mutateAsync({
         class_id: classId,
         bbox: prediction.bbox,
+        is_ai_generated: true,
+        confidence: prediction.confidence,
       });
 
       const updatedAnnotations = [...annotations, newAnnotation];
@@ -408,11 +420,59 @@ export default function ODAnnotationEditorPage({
 
       // Remove from predictions
       setAiPredictions((prev) => prev.filter((p) => p !== prediction));
-      toast.success(`Added: ${prediction.label}`);
+
+      const targetClass = classes?.find(c => c.id === classId);
+      toast.success(`Added: ${targetClass?.display_name || targetClass?.name || prediction.label}`);
     } catch {
       toast.error("Failed to create annotation");
     }
   }, [classes, createClassMutation, createMutation, annotations, pushHistory]);
+
+  const handleAcceptSelectedPredictions = useCallback(async (indices: number[], targetClassId: string) => {
+    const selectedPredictions = indices.map(i => aiPredictions[i]).filter(Boolean);
+
+    if (selectedPredictions.length === 0) {
+      toast.error("No predictions selected");
+      return;
+    }
+
+    const targetClass = classes?.find(c => c.id === targetClassId);
+    if (!targetClass) {
+      toast.error("Invalid class selected");
+      return;
+    }
+
+    let successCount = 0;
+    const newAnnotations: typeof annotations = [];
+
+    for (const prediction of selectedPredictions) {
+      try {
+        const newAnnotation = await createMutation.mutateAsync({
+          class_id: targetClassId,
+          bbox: prediction.bbox,
+          is_ai_generated: true,
+          confidence: prediction.confidence,
+        });
+        newAnnotations.push(newAnnotation);
+        successCount++;
+      } catch {
+        // Continue with others if one fails
+      }
+    }
+
+    if (newAnnotations.length > 0) {
+      const updatedAnnotations = [...annotations, ...newAnnotations];
+      setAnnotations(updatedAnnotations);
+      pushHistory(updatedAnnotations, `Accept ${successCount} AI predictions as ${targetClass.display_name || targetClass.name}`);
+    }
+
+    // Remove accepted predictions
+    setAiPredictions((prev) => prev.filter((_, i) => !indices.includes(i)));
+
+    if (successCount > 0) {
+      toast.success(`Added ${successCount} annotations as "${targetClass.display_name || targetClass.name}"`);
+    }
+  }, [aiPredictions, classes, createMutation, annotations, pushHistory]);
 
   const handleRejectAIPrediction = useCallback((index: number) => {
     setAiPredictions((prev) => prev.filter((_, i) => i !== index));
@@ -1184,18 +1244,27 @@ export default function ODAnnotationEditorPage({
     const toDelete = annotations.filter((a) => selectedIds.has(a.id));
     const remaining = annotations.filter((a) => !selectedIds.has(a.id));
 
-    for (const ann of toDelete) {
-      if (!ann.id.startsWith("temp-")) {
-        await deleteMutation.mutateAsync(ann.id);
+    // Filter out temp annotations (not saved to DB yet)
+    const dbAnnotationIds = toDelete
+      .filter((ann) => !ann.id.startsWith("temp-"))
+      .map((ann) => ann.id);
+
+    // Use bulk delete for efficiency (single API call instead of N calls)
+    if (dbAnnotationIds.length > 0) {
+      try {
+        await apiClient.deleteODAnnotationsBulk(datasetId, imageId, dbAnnotationIds);
+        queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+      } catch (error) {
+        toast.error("Failed to delete annotations");
+        return;
       }
     }
 
     setAnnotations(remaining);
-    // Push state AFTER delete to history
     pushHistory(remaining, `Delete ${toDelete.length} annotation(s)`);
     setSelectedIds(new Set());
     toast.success(`Deleted ${toDelete.length} annotation(s)`);
-  }, [annotations, selectedIds, pushHistory, deleteMutation]);
+  }, [annotations, selectedIds, pushHistory, datasetId, imageId, queryClient]);
 
   // ============================================
   // SELECT ALL
@@ -1506,7 +1575,7 @@ export default function ODAnnotationEditorPage({
     if (!showAnnotations) return;
 
     // Draw existing annotations
-    annotations.forEach((ann) => {
+    annotations.forEach((ann, idx) => {
       const isSelected = selectedIds.has(ann.id);
       const isHovered = ann.id === hoveredId;
 
@@ -1514,6 +1583,15 @@ export default function ODAnnotationEditorPage({
       const y = offset.y + ann.bbox.y * imgHeight * scale;
       const width = ann.bbox.width * imgWidth * scale;
       const height = ann.bbox.height * imgHeight * scale;
+
+      // Debug first annotation for comparison
+      if (idx === 0 && aiPredictions.length > 0) {
+        console.log("[Canvas] First regular annotation draw (for comparison):", {
+          rawBbox: ann.bbox,
+          computed: { x, y, width, height },
+          className: ann.class_name,
+        });
+      }
 
       ctx.fillStyle = ann.class_color + (isHovered ? "40" : "20");
       ctx.fillRect(x, y, width, height);
@@ -1613,12 +1691,30 @@ export default function ODAnnotationEditorPage({
     }
 
     // Draw AI predictions (dashed border, purple color)
-    aiPredictions.forEach((pred) => {
+    if (aiPredictions.length > 0) {
+      console.log("[Canvas] Drawing AI predictions:", {
+        count: aiPredictions.length,
+        imgWidth,
+        imgHeight,
+        scale,
+        offset,
+      });
+    }
+    aiPredictions.forEach((pred, idx) => {
       const color = "#A855F7"; // Purple for AI predictions
       const x = offset.x + pred.bbox.x * imgWidth * scale;
       const y = offset.y + pred.bbox.y * imgHeight * scale;
       const width = pred.bbox.width * imgWidth * scale;
       const height = pred.bbox.height * imgHeight * scale;
+
+      // Debug first prediction
+      if (idx === 0) {
+        console.log("[Canvas] First AI prediction draw:", {
+          rawBbox: pred.bbox,
+          computed: { x, y, width, height },
+          label: pred.label,
+        });
+      }
 
       // Dashed border
       ctx.strokeStyle = color;
@@ -2229,9 +2325,11 @@ export default function ODAnnotationEditorPage({
           <AIPanel
             imageId={imageId}
             datasetId={datasetId}
+            classes={classes || []}
             predictions={aiPredictions}
             onPredictionsReceived={handleAIPredictionsReceived}
             onAcceptPrediction={handleAcceptAIPrediction}
+            onAcceptSelectedPredictions={handleAcceptSelectedPredictions}
             onRejectPrediction={handleRejectAIPrediction}
             onAcceptAll={handleAcceptAllAIPredictions}
             onRejectAll={handleRejectAllAIPredictions}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -29,18 +31,32 @@ import {
   X,
   Wand2,
   Info,
+  SquareCheck,
+  Square,
 } from "lucide-react";
 import type { AIPrediction } from "@/types/od";
+
+// Minimal class type - only fields actually used by this component
+type MinimalClass = {
+  id: string;
+  name: string;
+  display_name?: string;
+  color: string;
+};
 
 interface AIPanelProps {
   imageId: string;
   datasetId: string;
+  classes: MinimalClass[];
   onPredictionsReceived: (predictions: AIPrediction[]) => void;
-  onAcceptPrediction: (prediction: AIPrediction) => void;
+  onAcceptPrediction: (prediction: AIPrediction, targetClassId?: string) => void;
+  onAcceptSelectedPredictions: (indices: number[], targetClassId: string) => void;
   onRejectPrediction: (index: number) => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
   predictions: AIPrediction[];
+  selectedPredictionIndices?: Set<number>;
+  onPredictionSelectionChange?: (indices: Set<number>) => void;
   isLoading?: boolean;
 }
 
@@ -68,12 +84,16 @@ const AI_MODELS = [
 export function AIPanel({
   imageId,
   datasetId,
+  classes,
   onPredictionsReceived,
   onAcceptPrediction,
+  onAcceptSelectedPredictions,
   onRejectPrediction,
   onAcceptAll,
   onRejectAll,
   predictions,
+  selectedPredictionIndices: externalSelectedIndices,
+  onPredictionSelectionChange,
   isLoading: externalLoading,
 }: AIPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
@@ -81,6 +101,33 @@ export function AIPanel({
   const [textPrompt, setTextPrompt] = useState("");
   const [boxThreshold, setBoxThreshold] = useState(0.3);
   const [textThreshold, setTextThreshold] = useState(0.25);
+  const [useNms, setUseNms] = useState(true); // NMS enabled by default
+  const [nmsThreshold, setNmsThreshold] = useState(0.5);
+
+  // Selection state (internal if not controlled externally)
+  const [internalSelectedIndices, setInternalSelectedIndices] = useState<Set<number>>(new Set());
+  const selectedIndices = externalSelectedIndices ?? internalSelectedIndices;
+  const setSelectedIndices = onPredictionSelectionChange ?? setInternalSelectedIndices;
+
+  // Target class for assignment
+  const [targetClassId, setTargetClassId] = useState<string>("");
+
+  // Reset selection when predictions change
+  useEffect(() => {
+    if (predictions.length > 0) {
+      // Auto-select all predictions initially
+      setSelectedIndices(new Set(predictions.map((_, i) => i)));
+    } else {
+      setSelectedIndices(new Set());
+    }
+  }, [predictions.length]);
+
+  // Auto-select first class if available and no class selected
+  useEffect(() => {
+    if (classes.length > 0 && !targetClassId) {
+      setTargetClassId(classes[0].id);
+    }
+  }, [classes, targetClassId]);
 
   const predictMutation = useMutation({
     mutationFn: async () => {
@@ -94,9 +141,17 @@ export function AIPanel({
         text_prompt: textPrompt.trim(),
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
+        use_nms: useNms,
+        nms_threshold: nmsThreshold,
       });
     },
     onSuccess: (data) => {
+      // Debug: Log raw predictions from API
+      console.log("[AI Panel] Raw predictions from API:", JSON.stringify(data.predictions, null, 2));
+      data.predictions.forEach((pred, i) => {
+        console.log(`[AI Panel] Prediction ${i}: bbox=${JSON.stringify(pred.bbox)}, label=${pred.label}, confidence=${pred.confidence}`);
+      });
+
       if (data.predictions.length === 0) {
         toast.info("No objects found for the given prompt");
       } else {
@@ -126,7 +181,47 @@ export function AIPanel({
     }
   };
 
+  const handleToggleSelection = (index: number) => {
+    const newSelected = new Set(selectedIndices);
+    if (newSelected.has(index)) {
+      newSelected.delete(index);
+    } else {
+      newSelected.add(index);
+    }
+    setSelectedIndices(newSelected);
+  };
+
+  const handleSelectAll = () => {
+    if (selectedIndices.size === predictions.length) {
+      // Deselect all
+      setSelectedIndices(new Set());
+    } else {
+      // Select all
+      setSelectedIndices(new Set(predictions.map((_, i) => i)));
+    }
+  };
+
+  const handleAcceptSelected = () => {
+    if (selectedIndices.size === 0) {
+      toast.error("No predictions selected");
+      return;
+    }
+    if (!targetClassId) {
+      toast.error("Please select a class");
+      return;
+    }
+
+    const indices = Array.from(selectedIndices);
+    onAcceptSelectedPredictions(indices, targetClassId);
+
+    // Clear selection after accepting
+    setSelectedIndices(new Set());
+  };
+
   const selectedModelInfo = AI_MODELS.find((m) => m.id === selectedModel);
+  const selectedCount = selectedIndices.size;
+  const allSelected = predictions.length > 0 && selectedCount === predictions.length;
+  const targetClass = classes.find(c => c.id === targetClassId);
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -215,6 +310,43 @@ export function AIPanel({
             />
           </div>
 
+          {/* NMS Settings */}
+          <div className="space-y-2 pt-1 border-t border-border/50">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="nms-toggle"
+                  checked={useNms}
+                  onCheckedChange={setUseNms}
+                  disabled={isLoading}
+                />
+                <Label htmlFor="nms-toggle" className="text-xs cursor-pointer">
+                  NMS Filter
+                </Label>
+              </div>
+              {useNms && (
+                <span className="text-xs font-mono text-muted-foreground">
+                  IoU: {nmsThreshold.toFixed(2)}
+                </span>
+              )}
+            </div>
+            {useNms && (
+              <div className="space-y-1">
+                <Slider
+                  value={[nmsThreshold]}
+                  onValueChange={([v]) => setNmsThreshold(v)}
+                  min={0.1}
+                  max={0.9}
+                  step={0.05}
+                  disabled={isLoading}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Lower = more aggressive filtering
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Detect button */}
           <Button
             onClick={handleDetect}
@@ -238,67 +370,115 @@ export function AIPanel({
           {/* Predictions list */}
           {predictions.length > 0 && (
             <div className="space-y-2 pt-2 border-t">
+              {/* Header with select all */}
               <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
-                  AI Predictions ({predictions.length})
-                </p>
-                <div className="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs px-2"
-                    onClick={onAcceptAll}
-                  >
-                    <Check className="h-3 w-3 mr-1" />
-                    All
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 text-xs px-2"
-                    onClick={onRejectAll}
-                  >
-                    <X className="h-3 w-3 mr-1" />
-                    Clear
-                  </Button>
-                </div>
+                <button
+                  onClick={handleSelectAll}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {allSelected ? (
+                    <SquareCheck className="h-4 w-4 text-primary" />
+                  ) : (
+                    <Square className="h-4 w-4" />
+                  )}
+                  <span>
+                    {selectedCount > 0
+                      ? `${selectedCount}/${predictions.length} selected`
+                      : `Select All (${predictions.length})`
+                    }
+                  </span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs px-2 text-red-600 hover:text-red-700 hover:bg-red-100"
+                  onClick={onRejectAll}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Clear
+                </Button>
               </div>
 
+              {/* Class assignment dropdown */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Assign to class
+                </Label>
+                <Select value={targetClassId} onValueChange={setTargetClassId}>
+                  <SelectTrigger className="h-8 text-sm">
+                    <SelectValue placeholder="Select a class..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {classes.map((cls) => (
+                      <SelectItem key={cls.id} value={cls.id}>
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-sm border"
+                            style={{ backgroundColor: cls.color }}
+                          />
+                          <span>{cls.display_name || cls.name}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Predictions list with checkboxes */}
               <div className="space-y-1 max-h-40 overflow-y-auto">
-                {predictions.map((pred, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-muted/50 border border-dashed border-primary/30"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {pred.label}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {(pred.confidence * 100).toFixed(0)}% confidence
-                      </p>
-                    </div>
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-green-600 hover:text-green-700 hover:bg-green-100"
-                        onClick={() => onAcceptPrediction(pred)}
-                      >
-                        <Check className="h-3.5 w-3.5" />
-                      </Button>
+                {predictions.map((pred, index) => {
+                  const isSelected = selectedIndices.has(index);
+                  return (
+                    <div
+                      key={index}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-md border border-dashed transition-colors cursor-pointer ${
+                        isSelected
+                          ? "bg-primary/10 border-primary/50"
+                          : "bg-muted/50 border-muted-foreground/30 hover:bg-muted"
+                      }`}
+                      onClick={() => handleToggleSelection(index)}
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => handleToggleSelection(index)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-4 w-4"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {pred.label}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {(pred.confidence * 100).toFixed(0)}% confidence
+                        </p>
+                      </div>
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 text-red-600 hover:text-red-700 hover:bg-red-100"
-                        onClick={() => onRejectPrediction(index)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRejectPrediction(index);
+                        }}
                       >
                         <X className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
+              {/* Accept selected button */}
+              <Button
+                onClick={handleAcceptSelected}
+                disabled={selectedCount === 0 || !targetClassId}
+                className="w-full h-8"
+                size="sm"
+                variant="default"
+              >
+                <Check className="h-4 w-4 mr-2" />
+                Accept {selectedCount} as {targetClass?.display_name || targetClass?.name || "..."}
+              </Button>
             </div>
           )}
 

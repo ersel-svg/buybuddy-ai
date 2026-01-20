@@ -422,6 +422,16 @@ class AIPredictRequest(BaseModel):
     )
     box_threshold: float = Field(default=0.3, ge=0, le=1)
     text_threshold: float = Field(default=0.25, ge=0, le=1)
+    use_nms: bool = Field(
+        default=False,
+        description="Apply Non-Maximum Suppression to filter overlapping boxes"
+    )
+    nms_threshold: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description="NMS IoU threshold (lower = more aggressive filtering)"
+    )
 
 
 class AISegmentRequest(BaseModel):

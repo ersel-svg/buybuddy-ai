@@ -90,27 +90,39 @@ def handle_detect(job_input: dict) -> dict[str, Any]:
     text_prompt = job_input.get("text_prompt", "")
     box_threshold = job_input.get("box_threshold", config.default_box_threshold)
     text_threshold = job_input.get("text_threshold", config.default_text_threshold)
+    use_nms = job_input.get("use_nms", False)
+    nms_threshold = job_input.get("nms_threshold", 0.5)
 
-    logger.info(f"Detection request: model={model_name}, prompt='{text_prompt}'")
+    logger.info(f"Detection request: model={model_name}, prompt='{text_prompt}', nms={use_nms}")
 
     # Get model (cached)
     model = get_model(model_name, MODEL_CACHE)
 
-    # Run inference
-    predictions = model.predict(
-        image_url=image_url,
-        text_prompt=text_prompt,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
-    )
-
-    logger.info(f"Detection complete: {len(predictions)} objects found")
+    # Run inference (with or without NMS)
+    if use_nms and hasattr(model, "predict_with_nms"):
+        predictions = model.predict_with_nms(
+            image_url=image_url,
+            text_prompt=text_prompt,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            nms_threshold=nms_threshold,
+        )
+        logger.info(f"Detection with NMS complete: {len(predictions)} objects (nms_threshold={nms_threshold})")
+    else:
+        predictions = model.predict(
+            image_url=image_url,
+            text_prompt=text_prompt,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        logger.info(f"Detection complete: {len(predictions)} objects found")
 
     return {
         "status": "success",
         "predictions": predictions,
         "model": model_name,
         "prompt": text_prompt,
+        "nms_applied": use_nms,
     }
 
 
