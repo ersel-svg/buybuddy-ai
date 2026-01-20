@@ -1493,7 +1493,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                         <div key={i} className="aspect-square rounded-md overflow-hidden bg-muted">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
-                            src={img.thumbnail_url || img.image_url}
+                            src={img.image_url}
                             alt={`Preview ${i + 1}`}
                             className="w-full h-full object-cover"
                           />
