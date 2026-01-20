@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/lib/api-client";
 import {
   Card,
   CardContent,
@@ -9,6 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Image as ImageIcon,
   FolderOpen,
@@ -17,30 +21,59 @@ import {
   Upload,
   Plus,
   ArrowRight,
+  Tags,
+  Brain,
+  RefreshCw,
+  Loader2,
+  CheckCircle,
+  Clock,
+  AlertCircle,
 } from "lucide-react";
 
 export default function ODDashboardPage() {
+  // Fetch stats
+  const { data: stats, isLoading, isFetching, refetch } = useQuery({
+    queryKey: ["od-stats"],
+    queryFn: () => apiClient.getODStats(),
+  });
+
+  // Fetch recent datasets
+  const { data: datasets } = useQuery({
+    queryKey: ["od-datasets"],
+    queryFn: () => apiClient.getODDatasets(),
+  });
+
+  const recentDatasets = datasets?.slice(0, 3) ?? [];
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold">Object Detection</h1>
-        <p className="text-muted-foreground">
-          Annotate images, train detection models, and deploy
-        </p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold">Object Detection</h1>
+          <p className="text-muted-foreground">
+            Annotate images, train detection models, and deploy
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Total Images</CardTitle>
             <ImageIcon className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats?.total_images?.toLocaleString() ?? 0}
+            </div>
             <p className="text-xs text-muted-foreground">
-              Uploaded images
+              In library
             </p>
           </CardContent>
         </Card>
@@ -51,7 +84,9 @@ export default function ODDashboardPage() {
             <FolderOpen className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats?.total_datasets ?? 0}
+            </div>
             <p className="text-xs text-muted-foreground">
               Active datasets
             </p>
@@ -64,9 +99,26 @@ export default function ODDashboardPage() {
             <PenTool className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats?.total_annotations?.toLocaleString() ?? 0}
+            </div>
             <p className="text-xs text-muted-foreground">
-              Total bounding boxes
+              Bounding boxes
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Classes</CardTitle>
+            <Tags className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats?.total_classes ?? 0}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Detection classes
             </p>
           </CardContent>
         </Card>
@@ -77,7 +129,9 @@ export default function ODDashboardPage() {
             <Cpu className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">0</div>
+            <div className="text-2xl font-bold">
+              {isLoading ? <Loader2 className="h-6 w-6 animate-spin" /> : stats?.total_models ?? 0}
+            </div>
             <p className="text-xs text-muted-foreground">
               Trained models
             </p>
@@ -85,33 +139,142 @@ export default function ODDashboardPage() {
         </Card>
       </div>
 
-      {/* Quick Actions */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Quick Actions</CardTitle>
-          <CardDescription>Get started with common tasks</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-3">
-          <Button asChild>
-            <Link href="/od/images">
-              <Upload className="h-4 w-4 mr-2" />
-              Upload Images
-            </Link>
-          </Button>
-          <Button variant="outline" asChild>
-            <Link href="/od/datasets">
-              <Plus className="h-4 w-4 mr-2" />
-              Create Dataset
-            </Link>
-          </Button>
-          <Button variant="outline" asChild>
-            <Link href="/od/annotate">
-              <PenTool className="h-4 w-4 mr-2" />
-              Start Annotating
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
+      {/* Image Status Overview */}
+      {stats?.images_by_status && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Image Status Overview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-full bg-orange-100">
+                  <AlertCircle className="h-4 w-4 text-orange-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{stats.images_by_status.pending ?? 0}</p>
+                  <p className="text-xs text-muted-foreground">Pending</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-full bg-blue-100">
+                  <Clock className="h-4 w-4 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{stats.images_by_status.annotating ?? 0}</p>
+                  <p className="text-xs text-muted-foreground">Annotating</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-full bg-green-100">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{stats.images_by_status.completed ?? 0}</p>
+                  <p className="text-xs text-muted-foreground">Completed</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-full bg-gray-100">
+                  <AlertCircle className="h-4 w-4 text-gray-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{stats.images_by_status.skipped ?? 0}</p>
+                  <p className="text-xs text-muted-foreground">Skipped</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Quick Actions */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Quick Actions</CardTitle>
+            <CardDescription>Get started with common tasks</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-3">
+            <Button asChild>
+              <Link href="/od/images">
+                <Upload className="h-4 w-4 mr-2" />
+                Upload Images
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/od/datasets">
+                <Plus className="h-4 w-4 mr-2" />
+                Create Dataset
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/od/annotate">
+                <PenTool className="h-4 w-4 mr-2" />
+                Start Annotating
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/od/training">
+                <Brain className="h-4 w-4 mr-2" />
+                Train Model
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Recent Datasets */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Recent Datasets</CardTitle>
+              <CardDescription>Your latest annotation projects</CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/od/datasets">
+                View All
+                <ArrowRight className="h-4 w-4 ml-1" />
+              </Link>
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {recentDatasets.length === 0 ? (
+              <div className="text-center py-6 text-muted-foreground">
+                <FolderOpen className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No datasets yet</p>
+                <Button variant="link" size="sm" asChild>
+                  <Link href="/od/datasets">Create your first dataset</Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {recentDatasets.map((dataset) => {
+                  const progress = dataset.image_count > 0
+                    ? Math.round((dataset.annotated_image_count / dataset.image_count) * 100)
+                    : 0;
+                  return (
+                    <Link
+                      key={dataset.id}
+                      href={`/od/datasets/${dataset.id}`}
+                      className="block p-3 rounded-lg border hover:border-primary transition-colors"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-medium">{dataset.name}</span>
+                        <Badge variant="secondary">{progress}%</Badge>
+                      </div>
+                      <Progress value={progress} className="h-1.5 mb-2" />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>{dataset.image_count} images</span>
+                        <span>{dataset.annotation_count} annotations</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Getting Started */}
       <Card>
@@ -122,8 +285,10 @@ export default function ODDashboardPage() {
         <CardContent>
           <div className="space-y-4">
             <div className="flex items-start gap-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
-                1
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
+                (stats?.total_images ?? 0) > 0 ? "bg-green-600 text-white" : "bg-primary text-primary-foreground"
+              }`}>
+                {(stats?.total_images ?? 0) > 0 ? <CheckCircle className="h-4 w-4" /> : "1"}
               </div>
               <div className="flex-1">
                 <h4 className="font-medium">Upload Images</h4>
@@ -139,8 +304,10 @@ export default function ODDashboardPage() {
             </div>
 
             <div className="flex items-start gap-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground text-sm font-medium">
-                2
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
+                (stats?.total_datasets ?? 0) > 0 ? "bg-green-600 text-white" : "bg-muted text-muted-foreground"
+              }`}>
+                {(stats?.total_datasets ?? 0) > 0 ? <CheckCircle className="h-4 w-4" /> : "2"}
               </div>
               <div className="flex-1">
                 <h4 className="font-medium">Create Dataset</h4>
@@ -156,8 +323,10 @@ export default function ODDashboardPage() {
             </div>
 
             <div className="flex items-start gap-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground text-sm font-medium">
-                3
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
+                (stats?.total_annotations ?? 0) > 0 ? "bg-green-600 text-white" : "bg-muted text-muted-foreground"
+              }`}>
+                {(stats?.total_annotations ?? 0) > 0 ? <CheckCircle className="h-4 w-4" /> : "3"}
               </div>
               <div className="flex-1">
                 <h4 className="font-medium">Annotate</h4>
@@ -173,8 +342,10 @@ export default function ODDashboardPage() {
             </div>
 
             <div className="flex items-start gap-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground text-sm font-medium">
-                4
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
+                (stats?.total_models ?? 0) > 0 ? "bg-green-600 text-white" : "bg-muted text-muted-foreground"
+              }`}>
+                {(stats?.total_models ?? 0) > 0 ? <CheckCircle className="h-4 w-4" /> : "4"}
               </div>
               <div className="flex-1">
                 <h4 className="font-medium">Train Model</h4>

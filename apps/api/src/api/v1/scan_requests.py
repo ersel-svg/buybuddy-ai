@@ -348,9 +348,43 @@ async def update_scan_request(request_id: str, update: ScanRequestUpdate) -> Sca
 
 @router.delete("/{request_id}")
 async def delete_scan_request(request_id: str) -> dict:
-    """Permanently delete a scan request."""
+    """Permanently delete a scan request and its associated files."""
     try:
-        # Hard delete - permanently remove from database
+        # First, get the scan request to retrieve image paths
+        get_result = supabase_service.client.table("scan_requests").select("*").eq(
+            "id", request_id
+        ).single().execute()
+
+        if not get_result.data:
+            raise HTTPException(status_code=404, detail="Scan request not found")
+
+        scan_request = get_result.data
+        reference_images = scan_request.get("reference_images") or []
+
+        # Delete associated images from Supabase Storage
+        if reference_images:
+            try:
+                # Extract storage paths from URLs or use paths directly
+                storage_paths = []
+                for img in reference_images:
+                    if isinstance(img, str):
+                        # If it's a full URL, extract the path
+                        if "scan-request-images/" in img:
+                            # Extract path after bucket name
+                            path = img.split("scan-request-images/")[-1]
+                            storage_paths.append(path)
+                        else:
+                            # It's already a relative path
+                            storage_paths.append(img)
+
+                if storage_paths:
+                    supabase_service.client.storage.from_("scan-request-images").remove(storage_paths)
+            except Exception as storage_error:
+                # Log but don't fail if storage deletion fails
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to delete storage files: {storage_error}")
+
+        # Delete the database record
         result = supabase_service.client.table("scan_requests").delete().eq(
             "id", request_id
         ).execute()
@@ -358,7 +392,7 @@ async def delete_scan_request(request_id: str) -> dict:
         if not result.data:
             raise HTTPException(status_code=404, detail="Scan request not found")
 
-        return {"success": True, "message": "Scan request deleted"}
+        return {"success": True, "message": "Scan request and associated files deleted"}
 
     except HTTPException:
         raise

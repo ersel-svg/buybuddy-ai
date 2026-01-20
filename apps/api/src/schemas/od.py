@@ -71,6 +71,7 @@ class ODClassBase(BaseModel):
 
 
 class ODClassCreate(ODClassBase):
+    dataset_id: Optional[str] = None  # Required for dataset-specific classes, None for templates
     aliases: Optional[list[str]] = None
 
 
@@ -85,6 +86,7 @@ class ODClassUpdate(BaseModel):
 
 class ODClassResponse(ODClassBase):
     id: str
+    dataset_id: Optional[str] = None  # None means template class
     aliases: Optional[list[str]] = None
     annotation_count: int = 0
     is_active: bool = True
@@ -301,3 +303,229 @@ class ODTrainedModelResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ===========================================
+# Import Schemas
+# ===========================================
+
+class ImportURLsRequest(BaseModel):
+    urls: list[str] = Field(..., min_length=1, max_length=100)
+    folder: Optional[str] = None
+    skip_duplicates: bool = True
+    dataset_id: Optional[str] = None  # Optional: add to dataset directly
+
+
+class ImportPreviewResponse(BaseModel):
+    format_detected: str
+    total_images: int
+    total_annotations: int
+    classes_found: list[str]
+    sample_images: list[dict]
+    errors: list[str] = []
+
+
+class ClassMappingItem(BaseModel):
+    source_name: str
+    target_class_id: Optional[str] = None
+    create_new: bool = False
+    skip: bool = False
+    color: Optional[str] = None
+
+
+class ImportAnnotatedRequest(BaseModel):
+    dataset_id: str
+    class_mapping: list[ClassMappingItem]
+    skip_duplicates: bool = True
+    merge_annotations: bool = False
+
+
+class ImportResultResponse(BaseModel):
+    success: bool
+    images_imported: int = 0
+    annotations_imported: int = 0
+    images_skipped: int = 0
+    duplicates_found: int = 0
+    errors: list[str] = []
+
+
+class DuplicateCheckRequest(BaseModel):
+    file_hash: Optional[str] = None
+    phash: Optional[str] = None
+
+
+class DuplicateImageInfo(BaseModel):
+    id: str
+    filename: str
+    image_url: str
+    similarity: float
+
+
+class DuplicateCheckResponse(BaseModel):
+    is_duplicate: bool
+    similar_images: list[DuplicateImageInfo] = []
+
+
+class DuplicateGroup(BaseModel):
+    images: list[dict]
+    max_similarity: float
+
+
+class DuplicateGroupsResponse(BaseModel):
+    groups: list[DuplicateGroup]
+    total_groups: int
+
+
+class BulkOperationRequest(BaseModel):
+    image_ids: list[str]
+
+
+class BulkTagRequest(BaseModel):
+    image_ids: list[str]
+    tags: list[str]
+    operation: str = "add"  # "add", "remove", "replace"
+
+
+class BulkMoveRequest(BaseModel):
+    image_ids: list[str]
+    folder: Optional[str] = None
+
+
+class BulkOperationResponse(BaseModel):
+    success: bool
+    affected_count: int
+    errors: list[str] = []
+
+
+# ===========================================
+# AI Annotation Schemas (Phase 6)
+# ===========================================
+
+class AIModelType(str):
+    """Supported AI models for annotation."""
+    GROUNDING_DINO = "grounding_dino"
+    SAM3 = "sam3"
+    SAM2 = "sam2"
+    FLORENCE2 = "florence2"
+
+
+class AIPredictRequest(BaseModel):
+    """Request for single image AI prediction."""
+    image_id: str
+    model: str = Field(
+        default="grounding_dino",
+        description="AI model to use: grounding_dino, sam3, florence2"
+    )
+    text_prompt: str = Field(
+        ...,
+        description="Text prompt for detection (e.g., 'shelf . product . price tag')"
+    )
+    box_threshold: float = Field(default=0.3, ge=0, le=1)
+    text_threshold: float = Field(default=0.25, ge=0, le=1)
+
+
+class AISegmentRequest(BaseModel):
+    """Request for interactive SAM segmentation."""
+    image_id: str
+    model: str = Field(
+        default="sam2",
+        description="Segmentation model: sam2 or sam3"
+    )
+    prompt_type: str = Field(
+        ...,
+        description="Prompt type: 'point' or 'box'"
+    )
+    point: Optional[tuple[float, float]] = Field(
+        None,
+        description="Point coordinates (x, y) normalized 0-1"
+    )
+    box: Optional[list[float]] = Field(
+        None,
+        description="Box coordinates [x, y, width, height] normalized 0-1"
+    )
+    label: int = Field(
+        default=1,
+        description="Point label: 1=foreground, 0=background"
+    )
+    text_prompt: Optional[str] = Field(
+        None,
+        description="Optional text prompt for SAM3"
+    )
+
+
+class AIBatchAnnotateRequest(BaseModel):
+    """Request for bulk AI annotation job."""
+    dataset_id: str
+    image_ids: Optional[list[str]] = Field(
+        None,
+        description="Specific images to annotate. None = all unannotated"
+    )
+    model: str = Field(
+        default="grounding_dino",
+        description="AI model to use"
+    )
+    text_prompt: str = Field(
+        ...,
+        description="Detection prompt"
+    )
+    box_threshold: float = Field(default=0.3, ge=0, le=1)
+    text_threshold: float = Field(default=0.25, ge=0, le=1)
+    auto_accept: bool = Field(
+        default=False,
+        description="If true, save as confirmed annotations"
+    )
+    class_mapping: Optional[dict[str, str]] = Field(
+        None,
+        description="Map detected labels to class IDs: {'detected_label': 'class_id'}"
+    )
+
+
+class AIPrediction(BaseModel):
+    """Single AI prediction result."""
+    bbox: BBox
+    label: str
+    confidence: float = Field(ge=0, le=1)
+    mask: Optional[str] = Field(None, description="Base64 encoded mask PNG")
+
+
+class AIPredictResponse(BaseModel):
+    """Response for single image prediction."""
+    predictions: list[AIPrediction]
+    model: str
+    processing_time_ms: Optional[int] = None
+
+
+class AISegmentResponse(BaseModel):
+    """Response for interactive segmentation."""
+    bbox: BBox
+    confidence: float = Field(ge=0, le=1)
+    mask: Optional[str] = Field(None, description="Base64 encoded mask PNG")
+    processing_time_ms: Optional[int] = None
+
+
+class AIBatchJobResponse(BaseModel):
+    """Response for batch annotation job creation."""
+    job_id: str
+    status: str
+    total_images: int
+    message: str
+
+
+class AIJobStatusResponse(BaseModel):
+    """Response for batch job status."""
+    job_id: str
+    status: str
+    progress: int = 0
+    total_images: int = 0
+    predictions_generated: int = 0
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class AIWebhookPayload(BaseModel):
+    """Webhook payload from RunPod."""
+    id: str  # RunPod job ID
+    status: str
+    output: Optional[dict] = None
+    error: Optional[str] = None

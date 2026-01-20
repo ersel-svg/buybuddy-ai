@@ -1636,10 +1636,19 @@ class ApiClient {
   async getODImages(params?: {
     page?: number;
     limit?: number;
+    // Single value filters (backwards compatible)
     status?: string;
     source?: string;
     folder?: string;
     search?: string;
+    merchant_id?: number;
+    store_id?: number;
+    // Multi-select filters (comma-separated)
+    statuses?: string;
+    sources?: string;
+    folders?: string;
+    merchant_ids?: string;
+    store_ids?: string;
   }): Promise<{
     images: Array<{
       id: string;
@@ -1651,6 +1660,10 @@ class ApiClient {
       status: string;
       source: string;
       folder?: string;
+      merchant_id?: number;
+      merchant_name?: string;
+      store_id?: number;
+      store_name?: string;
       created_at: string;
     }>;
     total: number;
@@ -1658,6 +1671,20 @@ class ApiClient {
     limit: number;
   }> {
     return this.request("/api/v1/od/images", { params });
+  }
+
+  async getODImageFilterOptions(): Promise<{
+    // New format with counts for FilterDrawer
+    status: Array<{ value: string; label: string; count: number }>;
+    source: Array<{ value: string; label: string; count: number }>;
+    folder: Array<{ value: string; label: string; count: number }>;
+    merchant: Array<{ value: string; label: string; count: number }>;
+    store: Array<{ value: string; label: string; count: number }>;
+    // Backwards compatible
+    merchants: Array<{ id: number; name: string }>;
+    stores: Array<{ id: number; name: string }>;
+  }> {
+    return this.request("/api/v1/od/images/filters/options");
   }
 
   async getODImage(id: string): Promise<{
@@ -1728,10 +1755,44 @@ class ApiClient {
     return this.request("/api/v1/od/images/bulk", { method: "DELETE", body: imageIds });
   }
 
+  // Bulk operations by filters (for "select all filtered" mode)
+  async deleteODImagesByFilters(filters: {
+    search?: string;
+    statuses?: string;
+    sources?: string;
+    folders?: string;
+    merchant_ids?: string;
+    store_ids?: string;
+  }): Promise<{ deleted: number; total_matched: number; errors: string[] }> {
+    return this.request("/api/v1/od/images/bulk/delete-by-filters", {
+      method: "POST",
+      body: filters,
+    });
+  }
+
+  async addFilteredImagesToODDataset(
+    datasetId: string,
+    filters: {
+      search?: string;
+      statuses?: string;
+      sources?: string;
+      folders?: string;
+      merchant_ids?: string;
+      store_ids?: string;
+    }
+  ): Promise<{ added: number; skipped: number; total_matched: number; errors: string[] }> {
+    return this.request(`/api/v1/od/images/bulk/add-to-dataset-by-filters?dataset_id=${datasetId}`, {
+      method: "POST",
+      body: filters,
+    });
+  }
+
   // OD Classes
   async getODClasses(params?: {
+    dataset_id?: string;
     category?: string;
     is_active?: boolean;
+    include_templates?: boolean;
   }): Promise<Array<{
     id: string;
     name: string;
@@ -1740,8 +1801,21 @@ class ApiClient {
     category?: string;
     annotation_count: number;
     is_system: boolean;
+    dataset_id?: string;
   }>> {
     return this.request("/api/v1/od/classes", { params });
+  }
+
+  async getODDatasetClasses(datasetId: string): Promise<Array<{
+    id: string;
+    name: string;
+    display_name?: string;
+    color: string;
+    category?: string;
+    annotation_count: number;
+    is_system: boolean;
+  }>> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/classes`);
   }
 
   async createODClass(data: {
@@ -1749,8 +1823,18 @@ class ApiClient {
     display_name?: string;
     color?: string;
     category?: string;
+    dataset_id?: string;
   }): Promise<{ id: string; name: string; color: string }> {
     return this.request("/api/v1/od/classes", { method: "POST", body: data });
+  }
+
+  async createODDatasetClass(datasetId: string, data: {
+    name: string;
+    display_name?: string;
+    color?: string;
+    category?: string;
+  }): Promise<{ id: string; name: string; color: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/classes`, { method: "POST", body: data });
   }
 
   async updateODClass(id: string, data: {
@@ -1768,6 +1852,27 @@ class ApiClient {
 
   async mergeODClasses(sourceClassIds: string[], targetClassId: string): Promise<{ merged_count: number; annotations_moved: number }> {
     return this.request("/api/v1/od/classes/merge", { method: "POST", body: { source_class_ids: sourceClassIds, target_class_id: targetClassId } });
+  }
+
+  async getODClassDuplicates(datasetId: string, threshold?: number): Promise<{
+    groups: Array<{
+      classes: Array<{
+        id: string;
+        name: string;
+        display_name?: string;
+        annotation_count: number;
+        is_system: boolean;
+        color?: string;
+        similarity?: number;
+      }>;
+      max_similarity: number;
+      suggested_target: string;
+      suggested_sources: string[];
+      total_annotations: number;
+    }>;
+    total_groups: number;
+  }> {
+    return this.request("/api/v1/od/classes/duplicates", { params: { dataset_id: datasetId, ...(threshold ? { threshold: threshold.toString() } : {}) } });
   }
 
   // OD Datasets
@@ -1834,6 +1939,14 @@ class ApiClient {
     return this.request(`/api/v1/od/datasets/${datasetId}/images/${imageId}`, { method: "DELETE" });
   }
 
+  async removeImagesFromODDatasetBulk(datasetId: string, imageIds: string[]): Promise<{ removed: number }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-remove`, { method: "POST", body: imageIds });
+  }
+
+  async updateODDatasetImageStatus(datasetId: string, imageId: string, status: string): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/${imageId}/status`, { method: "PATCH", params: { status } });
+  }
+
   async getODDatasetStats(datasetId: string): Promise<{
     dataset: { id: string; name: string };
     images_by_status: Record<string, number>;
@@ -1860,7 +1973,15 @@ class ApiClient {
     bbox: { x: number; y: number; width: number; height: number };
     is_ai_generated?: boolean;
     confidence?: number;
-  }): Promise<{ id: string }> {
+  }): Promise<{
+    id: string;
+    class_id: string;
+    class_name: string;
+    class_color: string;
+    bbox: { x: number; y: number; width: number; height: number };
+    is_ai_generated: boolean;
+    confidence?: number;
+  }> {
     return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}`, { method: "POST", body: data });
   }
 
@@ -1888,6 +2009,285 @@ class ApiClient {
     return this.request(`/api/v1/od/annotations/datasets/${datasetId}/images/${imageId}/bulk`, { method: "DELETE", body: annotationIds });
   }
 
+  // ===========================================
+  // OD Image Import (Advanced)
+  // ===========================================
+
+  async importODImagesFromUrls(data: {
+    urls: string[];
+    folder?: string;
+    skip_duplicates?: boolean;
+    dataset_id?: string;
+  }): Promise<{
+    success: boolean;
+    images_imported: number;
+    images_skipped: number;
+    duplicates_found: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/od/images/import/url", { method: "POST", body: data });
+  }
+
+  async previewODImport(file: File): Promise<{
+    format_detected: string;
+    total_images: number;
+    total_annotations: number;
+    classes_found: string[];
+    sample_images: Array<{
+      filename: string;
+      annotation_count: number;
+      classes: string[];
+    }>;
+    errors: string[];
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/od/images/import/preview`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Preview failed");
+    }
+
+    return response.json();
+  }
+
+  async importODAnnotatedDataset(
+    file: File,
+    datasetId: string,
+    classMapping: Array<{
+      source_name: string;
+      target_class_id?: string;
+      create_new?: boolean;
+      skip?: boolean;
+      color?: string;
+    }>,
+    options?: {
+      skip_duplicates?: boolean;
+      merge_annotations?: boolean;
+    }
+  ): Promise<{
+    success: boolean;
+    images_imported: number;
+    annotations_imported: number;
+    images_skipped: number;
+    duplicates_found: number;
+    errors: string[];
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("dataset_id", datasetId);
+    formData.append("class_mapping_json", JSON.stringify(classMapping));
+    if (options?.skip_duplicates !== undefined) {
+      formData.append("skip_duplicates", String(options.skip_duplicates));
+    }
+    if (options?.merge_annotations !== undefined) {
+      formData.append("merge_annotations", String(options.merge_annotations));
+    }
+
+    const response = await fetch(`${this.baseUrl}/api/v1/od/images/import/annotated`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Import failed");
+    }
+
+    return response.json();
+  }
+
+  // ===========================================
+  // OD Duplicate Detection
+  // ===========================================
+
+  async checkODImageDuplicate(file: File): Promise<{
+    is_duplicate: boolean;
+    similar_images: Array<{
+      id: string;
+      filename: string;
+      image_url: string;
+      similarity: number;
+    }>;
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/od/images/check-duplicate`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Duplicate check failed");
+    }
+
+    return response.json();
+  }
+
+  async getODImageDuplicateGroups(threshold?: number): Promise<{
+    groups: Array<{
+      images: Array<{
+        id: string;
+        filename: string;
+        image_url: string;
+        similarity?: number;
+      }>;
+      max_similarity: number;
+    }>;
+    total_groups: number;
+  }> {
+    return this.request("/api/v1/od/images/duplicates", {
+      params: threshold ? { threshold } : undefined,
+    });
+  }
+
+  async resolveODImageDuplicates(
+    keepImageId: string,
+    deleteImageIds: string[],
+    mergeToDatasets?: boolean
+  ): Promise<{ deleted: number; errors: string[] }> {
+    return this.request("/api/v1/od/images/duplicates/resolve", {
+      method: "POST",
+      params: {
+        keep_image_id: keepImageId,
+        merge_to_datasets: mergeToDatasets,
+      },
+      body: deleteImageIds,
+    });
+  }
+
+  // ===========================================
+  // OD Bulk Operations
+  // ===========================================
+
+  async bulkTagODImages(
+    imageIds: string[],
+    tags: string[],
+    operation: "add" | "remove" | "replace" = "add"
+  ): Promise<{
+    success: boolean;
+    affected_count: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/od/images/bulk/tags", {
+      method: "POST",
+      body: { image_ids: imageIds, tags, operation },
+    });
+  }
+
+  async bulkMoveODImages(
+    imageIds: string[],
+    folder?: string
+  ): Promise<{
+    success: boolean;
+    affected_count: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/od/images/bulk/move", {
+      method: "POST",
+      body: { image_ids: imageIds, folder },
+    });
+  }
+
+  async bulkAddODImagesToDataset(
+    imageIds: string[],
+    datasetId: string
+  ): Promise<{
+    success: boolean;
+    affected_count: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/od/images/bulk/add-to-dataset", {
+      method: "POST",
+      params: { dataset_id: datasetId },
+      body: imageIds,
+    });
+  }
+
+  // ===========================================
+  // BuyBuddy Sync for OD
+  // ===========================================
+
+  async checkBuyBuddySyncStatus(): Promise<{
+    configured: boolean;
+    accessible: boolean;
+    message: string;
+  }> {
+    return this.request("/api/v1/od/images/buybuddy/status");
+  }
+
+  async previewBuyBuddySync(options?: {
+    start_date?: string;
+    end_date?: string;
+    store_id?: number;
+    is_annotated?: boolean;
+    is_approved?: boolean;
+    limit?: number;
+  }): Promise<{
+    total_available: number;
+    sample_count: number;
+    sample_images: Array<{
+      buybuddy_image_id: string;
+      image_url: string;
+      image_type?: string;
+      inserted_at?: string;
+      basket_id?: number;
+      basket_identifier?: string;
+      merchant_id?: number;
+      merchant_name?: string;
+      store_id?: number;
+      store_name?: string;
+      store_code?: string;
+      is_annotated?: boolean;
+      is_approved?: boolean;
+      annotation_id?: number;
+      in_datasets?: number[];
+    }>;
+    filters_applied: {
+      start_date?: string;
+      end_date?: string;
+      store_id?: number;
+      is_annotated?: boolean;
+      is_approved?: boolean;
+    };
+  }> {
+    return this.request("/api/v1/od/images/buybuddy/preview", {
+      params: options,
+    });
+  }
+
+  async syncFromBuyBuddy(options: {
+    start_date?: string;
+    end_date?: string;
+    store_id?: number;
+    is_annotated?: boolean;
+    is_approved?: boolean;
+    max_images?: number;
+    dataset_id?: string;
+    tags?: string[];
+  }): Promise<{
+    synced: number;
+    skipped: number;
+    total_found: number;
+    errors: string[];
+    message: string;
+  }> {
+    return this.request("/api/v1/od/images/buybuddy/sync", {
+      method: "POST",
+      body: options,
+    });
+  }
+
   async uploadScanRequestImage(file: File): Promise<{ success: boolean; path: string; url: string }> {
     const formData = new FormData();
     formData.append("file", file);
@@ -1908,6 +2308,225 @@ class ApiClient {
     }
 
     return response.json();
+  }
+
+  // ===========================================
+  // Roboflow Integration
+  // ===========================================
+
+  async validateRoboflowKey(apiKey: string): Promise<{
+    valid: boolean;
+    error?: string;
+    workspaces: Array<{ name: string; url: string; projects: number }>;
+    projects?: Array<{ id: string; name: string; type: string; images: number }>;
+  }> {
+    return this.request("/api/v1/od/images/roboflow/validate-key", {
+      method: "POST",
+      body: { api_key: apiKey },
+    });
+  }
+
+  async getRoboflowProjects(apiKey: string, workspace: string): Promise<Array<{
+    id: string;
+    name: string;
+    type: string;
+    created: string;
+    updated: string;
+    images: number;
+    classes: string[];
+    versions: number;
+  }>> {
+    return this.request("/api/v1/od/images/roboflow/projects", {
+      params: { api_key: apiKey, workspace },
+    });
+  }
+
+  async getRoboflowVersions(
+    apiKey: string,
+    workspace: string,
+    project: string
+  ): Promise<Array<{
+    id: string;
+    name: string;
+    version: number;
+    images: Record<string, number>;
+    splits: Record<string, number>;
+    classes: string[];
+    preprocessing: Record<string, unknown>;
+    augmentation: Record<string, unknown>;
+    created: string;
+    exports: string[];
+  }>> {
+    return this.request("/api/v1/od/images/roboflow/versions", {
+      params: { api_key: apiKey, workspace, project },
+    });
+  }
+
+  async previewRoboflowImport(
+    apiKey: string,
+    workspace: string,
+    project: string,
+    version: number
+  ): Promise<{
+    workspace: string;
+    project: string;
+    version: number;
+    version_name: string;
+    total_images: number;
+    splits: Record<string, number>;
+    classes: Array<{ name: string; count: number }>;
+    class_count: number;
+    preprocessing: Record<string, unknown>;
+    augmentation: Record<string, unknown>;
+  }> {
+    return this.request("/api/v1/od/images/roboflow/preview", {
+      params: { api_key: apiKey, workspace, project, version },
+    });
+  }
+
+  async importFromRoboflow(params: {
+    api_key: string;
+    workspace: string;
+    project: string;
+    version: number;
+    dataset_id: string;
+    format?: "coco" | "yolov8" | "yolov5pytorch" | "voc";
+    class_mapping?: Array<{
+      source_name: string;
+      target_class_id?: string;
+      create_new?: boolean;
+      skip?: boolean;
+      color?: string;
+    }>;
+  }): Promise<{
+    job_id: string;
+    status: string;
+    message: string;
+  }> {
+    return this.request("/api/v1/od/images/roboflow/import", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getRoboflowImportStatus(jobId: string): Promise<{
+    job_id: string;
+    status: "pending" | "running" | "completed" | "failed";
+    progress: number;
+    result?: {
+      stage: string;
+      message?: string;
+      success?: boolean;
+      images_imported?: number;
+      annotations_imported?: number;
+      images_skipped?: number;
+      duplicates_found?: number;
+      errors?: string[];
+    };
+    error?: string;
+    created_at: string;
+    updated_at?: string;
+  }> {
+    return this.request(`/api/v1/od/images/roboflow/import/${jobId}`);
+  }
+
+  // ===========================================
+  // OD AI Annotation (Phase 6)
+  // ===========================================
+
+  async getODAIModels(): Promise<{
+    detection_models: Array<{
+      id: string;
+      name: string;
+      description: string;
+      tasks: string[];
+      requires_prompt: boolean;
+    }>;
+    segmentation_models: Array<{
+      id: string;
+      name: string;
+      description: string;
+      tasks: string[];
+      requires_prompt: boolean;
+    }>;
+  }> {
+    return this.request("/api/v1/od/ai/models");
+  }
+
+  async predictODAI(params: {
+    image_id: string;
+    model: string;
+    text_prompt: string;
+    box_threshold?: number;
+    text_threshold?: number;
+  }): Promise<{
+    predictions: Array<{
+      bbox: { x: number; y: number; width: number; height: number };
+      label: string;
+      confidence: number;
+      mask?: string;
+    }>;
+    model: string;
+    processing_time_ms?: number;
+  }> {
+    return this.request("/api/v1/od/ai/predict", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async segmentODAI(params: {
+    image_id: string;
+    model: string;
+    prompt_type: "point" | "box";
+    point?: [number, number];
+    box?: [number, number, number, number];
+    label?: number;
+    text_prompt?: string;
+  }): Promise<{
+    bbox: { x: number; y: number; width: number; height: number };
+    confidence: number;
+    mask?: string;
+    processing_time_ms?: number;
+  }> {
+    return this.request("/api/v1/od/ai/segment", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async batchAnnotateODAI(params: {
+    dataset_id: string;
+    image_ids?: string[];
+    model: string;
+    text_prompt: string;
+    box_threshold?: number;
+    text_threshold?: number;
+    auto_accept?: boolean;
+    class_mapping?: Record<string, string>;
+  }): Promise<{
+    job_id: string;
+    status: string;
+    total_images: number;
+    message: string;
+  }> {
+    return this.request("/api/v1/od/ai/batch", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getODAIJobStatus(jobId: string): Promise<{
+    job_id: string;
+    status: string;
+    progress: number;
+    total_images: number;
+    predictions_generated: number;
+    error_message?: string;
+    started_at?: string;
+    completed_at?: string;
+  }> {
+    return this.request(`/api/v1/od/ai/jobs/${jobId}`);
   }
 }
 

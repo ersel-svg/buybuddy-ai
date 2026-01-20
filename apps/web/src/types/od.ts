@@ -252,3 +252,94 @@ export interface ODStartTrainingRequest {
   model_size?: "small" | "medium" | "large";
   config?: Partial<ODTrainingConfig>;
 }
+
+// ===========================================
+// AI Annotation Types (Phase 6)
+// ===========================================
+
+export type AIModelType = "grounding_dino" | "sam3" | "sam2" | "florence2";
+
+export interface AIPredictRequest {
+  image_id: string;
+  model: AIModelType;
+  text_prompt: string;
+  box_threshold?: number;
+  text_threshold?: number;
+}
+
+export interface AISegmentRequest {
+  image_id: string;
+  model: "sam2" | "sam3";
+  prompt_type: "point" | "box";
+  point?: [number, number];
+  box?: [number, number, number, number];
+  label?: number;
+  text_prompt?: string;
+}
+
+export interface AIBatchAnnotateRequest {
+  dataset_id: string;
+  image_ids?: string[];
+  model: AIModelType;
+  text_prompt: string;
+  box_threshold?: number;
+  text_threshold?: number;
+  auto_accept?: boolean;
+  class_mapping?: Record<string, string>;
+}
+
+export interface AIPrediction {
+  bbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  label: string;
+  confidence: number;
+  mask?: string;
+}
+
+export interface AIPredictResponse {
+  predictions: AIPrediction[];
+  model: string;
+  processing_time_ms?: number;
+}
+
+export interface AISegmentResponse {
+  bbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  confidence: number;
+  mask?: string;
+  processing_time_ms?: number;
+}
+
+export interface AIBatchJobResponse {
+  job_id: string;
+  status: string;
+  total_images: number;
+  message: string;
+}
+
+export interface AIJobStatusResponse {
+  job_id: string;
+  status: string;
+  progress: number;
+  total_images: number;
+  predictions_generated: number;
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface AIModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  tasks: string[];
+  requires_prompt: boolean;
+}

@@ -5,6 +5,7 @@ Endpoints for managing detection classes.
 """
 
 from typing import Optional
+from difflib import SequenceMatcher
 from fastapi import APIRouter, HTTPException
 
 from services.supabase import supabase_service
@@ -20,12 +21,24 @@ router = APIRouter()
 
 @router.get("", response_model=list[ODClassResponse])
 async def list_classes(
+    dataset_id: Optional[str] = None,
     category: Optional[str] = None,
     is_active: Optional[bool] = True,
-    include_counts: bool = True,
+    include_templates: bool = False,
 ):
-    """List all detection classes."""
+    """List detection classes. If dataset_id is provided, returns classes for that dataset."""
     query = supabase_service.client.table("od_classes").select("*")
+
+    if dataset_id:
+        # Get classes for specific dataset
+        if include_templates:
+            # Include both dataset classes and templates
+            query = query.or_(f"dataset_id.eq.{dataset_id},dataset_id.is.null")
+        else:
+            query = query.eq("dataset_id", dataset_id)
+    else:
+        # Get all classes (legacy behavior) or only templates
+        pass  # Returns all classes
 
     if is_active is not None:
         query = query.eq("is_active", is_active)
@@ -36,6 +49,109 @@ async def list_classes(
     result = query.execute()
 
     return result.data or []
+
+
+@router.get("/templates", response_model=list[ODClassResponse])
+async def list_template_classes(
+    category: Optional[str] = None,
+):
+    """List template classes (classes without a dataset, used as templates for new datasets)."""
+    query = supabase_service.client.table("od_classes").select("*").is_("dataset_id", "null")
+
+    if category:
+        query = query.eq("category", category)
+
+    query = query.order("name")
+    result = query.execute()
+
+    return result.data or []
+
+
+@router.get("/duplicates")
+async def detect_duplicates(dataset_id: str, threshold: float = 0.75):
+    """
+    Detect potentially duplicate classes based on name similarity.
+
+    Args:
+        dataset_id: The dataset to check for duplicates
+        threshold: Similarity threshold (0-1), default 0.75
+
+    Returns:
+        Groups of similar classes with similarity scores
+    """
+    # Get all classes for the dataset
+    result = supabase_service.client.table("od_classes").select("*").eq("dataset_id", dataset_id).eq("is_active", True).execute()
+    classes = result.data or []
+
+    if len(classes) < 2:
+        return {"groups": [], "total_groups": 0}
+
+    # Find similar pairs
+    similar_groups = []
+    processed_ids = set()
+
+    for i, class_a in enumerate(classes):
+        if class_a["id"] in processed_ids:
+            continue
+
+        group = {
+            "classes": [
+                {
+                    "id": class_a["id"],
+                    "name": class_a["name"],
+                    "display_name": class_a.get("display_name"),
+                    "annotation_count": class_a.get("annotation_count", 0) or 0,
+                    "is_system": class_a.get("is_system", False),
+                    "color": class_a.get("color"),
+                }
+            ],
+            "max_similarity": 0.0,
+        }
+
+        for j, class_b in enumerate(classes):
+            if i >= j or class_b["id"] in processed_ids:
+                continue
+
+            # Calculate similarity using SequenceMatcher
+            name_a = class_a["name"].lower()
+            name_b = class_b["name"].lower()
+            similarity = SequenceMatcher(None, name_a, name_b).ratio()
+
+            # Also check if one is plural of another (simple check)
+            if name_a + "s" == name_b or name_b + "s" == name_a:
+                similarity = max(similarity, 0.95)
+            if name_a + "es" == name_b or name_b + "es" == name_a:
+                similarity = max(similarity, 0.95)
+
+            if similarity >= threshold:
+                group["classes"].append({
+                    "id": class_b["id"],
+                    "name": class_b["name"],
+                    "display_name": class_b.get("display_name"),
+                    "annotation_count": class_b.get("annotation_count", 0) or 0,
+                    "is_system": class_b.get("is_system", False),
+                    "color": class_b.get("color"),
+                    "similarity": round(similarity, 2),
+                })
+                group["max_similarity"] = max(group["max_similarity"], similarity)
+                processed_ids.add(class_b["id"])
+
+        if len(group["classes"]) > 1:
+            # Sort by annotation count descending (suggest keeping the one with most annotations)
+            group["classes"].sort(key=lambda x: x["annotation_count"], reverse=True)
+            group["suggested_target"] = group["classes"][0]["id"]
+            group["suggested_sources"] = [c["id"] for c in group["classes"][1:]]
+            group["total_annotations"] = sum(c["annotation_count"] for c in group["classes"])
+            similar_groups.append(group)
+            processed_ids.add(class_a["id"])
+
+    # Sort groups by max similarity descending
+    similar_groups.sort(key=lambda x: x["max_similarity"], reverse=True)
+
+    return {
+        "groups": similar_groups,
+        "total_groups": len(similar_groups),
+    }
 
 
 @router.get("/{class_id}", response_model=ODClassResponse)
@@ -51,11 +167,18 @@ async def get_class(class_id: str):
 
 @router.post("", response_model=ODClassResponse)
 async def create_class(data: ODClassCreate):
-    """Create a new detection class."""
-    # Check if name already exists
-    existing = supabase_service.client.table("od_classes").select("id").eq("name", data.name).execute()
+    """Create a new detection class for a specific dataset or as a template."""
+    # Check if name already exists in the same dataset (or globally for templates)
+    query = supabase_service.client.table("od_classes").select("id").eq("name", data.name)
+    if data.dataset_id:
+        query = query.eq("dataset_id", data.dataset_id)
+    else:
+        query = query.is_("dataset_id", "null")
+
+    existing = query.execute()
     if existing.data:
-        raise HTTPException(status_code=400, detail=f"Class with name '{data.name}' already exists")
+        scope = f"dataset" if data.dataset_id else "template classes"
+        raise HTTPException(status_code=400, detail=f"Class with name '{data.name}' already exists in {scope}")
 
     class_data = data.model_dump()
     result = supabase_service.client.table("od_classes").insert(class_data).execute()
@@ -70,6 +193,11 @@ async def create_class(data: ODClassCreate):
         "new_name": data.name,
     }).execute()
 
+    # Update dataset class_count if this class is for a dataset
+    if data.dataset_id:
+        count_result = supabase_service.client.table("od_classes").select("id", count="exact").eq("dataset_id", data.dataset_id).execute()
+        supabase_service.client.table("od_datasets").update({"class_count": count_result.count or 0}).eq("id", data.dataset_id).execute()
+
     return result.data[0]
 
 
@@ -80,10 +208,6 @@ async def update_class(class_id: str, data: ODClassUpdate):
     current = supabase_service.client.table("od_classes").select("*").eq("id", class_id).single().execute()
     if not current.data:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    # Prevent modifying system classes' name
-    if current.data["is_system"] and data.name and data.name != current.data["name"]:
-        raise HTTPException(status_code=400, detail="Cannot rename system classes")
 
     update_data = data.model_dump(exclude_unset=True)
     if not update_data:
@@ -117,9 +241,6 @@ async def delete_class(class_id: str, force: bool = False):
     current = supabase_service.client.table("od_classes").select("*").eq("id", class_id).single().execute()
     if not current.data:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    if current.data["is_system"]:
-        raise HTTPException(status_code=400, detail="Cannot delete system classes")
 
     # Check for annotations using this class
     annotation_count = current.data.get("annotation_count", 0)
@@ -158,11 +279,6 @@ async def merge_classes(data: ODClassMergeRequest):
     sources = supabase_service.client.table("od_classes").select("*").in_("id", data.source_class_ids).execute()
     if len(sources.data or []) != len(data.source_class_ids):
         raise HTTPException(status_code=400, detail="One or more source classes not found")
-
-    # Check no system classes in sources
-    for source in sources.data:
-        if source["is_system"]:
-            raise HTTPException(status_code=400, detail=f"Cannot merge system class '{source['name']}'")
 
     total_moved = 0
 

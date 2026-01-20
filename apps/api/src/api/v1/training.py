@@ -82,6 +82,10 @@ class SOTALossConfig(BaseModel):
     arcface_margin: float = Field(0.5, ge=0.1, le=0.8)
     arcface_scale: float = Field(64.0, ge=16, le=128)
     triplet_margin: float = Field(0.3, ge=0.1, le=0.5)
+    # Circle Loss (CVPR 2020)
+    circle_weight: float = Field(0.3, ge=0, le=2, description="Weight for Circle Loss")
+    circle_margin: float = Field(0.25, ge=0.1, le=0.5, description="Relaxation margin for Circle Loss")
+    circle_gamma: float = Field(256.0, ge=64, le=512, description="Scale factor for Circle Loss")
 
 
 class SOTASamplingConfig(BaseModel):
@@ -99,19 +103,29 @@ class SOTACurriculumConfig(BaseModel):
     finetune_epochs: int = Field(3, ge=0, le=10)
 
 
+class SOTATTAConfig(BaseModel):
+    """SOTA Test-Time Augmentation configuration."""
+    enabled: bool = Field(False, description="Enable TTA during evaluation")
+    mode: Literal["light", "standard", "full"] = Field(
+        "light",
+        description="TTA mode: light (2 views), standard (4 views), full (5+ views)"
+    )
+
+
 class SOTAConfig(BaseModel):
     """
     SOTA Training configuration.
 
     All features can be toggled on/off via config flags:
-    - Combined loss (ArcFace + Triplet + Domain Adversarial)
+    - Combined loss (ArcFace + Triplet + Circle + Domain Adversarial)
     - P-K batch sampling with domain balancing
     - Curriculum learning
     - Domain adaptation
     - Early stopping
+    - Test-Time Augmentation (TTA)
     """
     enabled: bool = Field(True, description="Enable SOTA training features")
-    use_combined_loss: bool = Field(True, description="Use combined loss (ArcFace + Triplet + Domain)")
+    use_combined_loss: bool = Field(True, description="Use combined loss (ArcFace + Triplet + Circle + Domain)")
     use_pk_sampling: bool = Field(True, description="Use P-K batch sampling with domain balancing")
     use_curriculum: bool = Field(False, description="Enable curriculum learning")
     use_domain_adaptation: bool = Field(True, description="Enable domain adversarial training")
@@ -122,6 +136,7 @@ class SOTAConfig(BaseModel):
     loss: SOTALossConfig = Field(default_factory=SOTALossConfig)
     sampling: SOTASamplingConfig = Field(default_factory=SOTASamplingConfig)
     curriculum: SOTACurriculumConfig = Field(default_factory=SOTACurriculumConfig)
+    tta: SOTATTAConfig = Field(default_factory=SOTATTAConfig)
 
     # Triplet mining integration
     triplet_mining_run_id: Optional[str] = Field(None, description="Pre-mined triplets from triplet mining run")

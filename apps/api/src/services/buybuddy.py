@@ -243,5 +243,209 @@ class BuybuddyService:
         return all_items
 
 
+    # ===========================================
+    # Object Detection - Evaluation Images
+    # ===========================================
+
+    async def get_evaluation_images(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        store_id: Optional[int] = None,
+        limit: int = 50,
+        offset: int = 0,
+        is_annotated: Optional[bool] = None,
+        is_approved: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """
+        Fetch evaluation/basket images from BuyBuddy API for OD training.
+
+        Args:
+            start_date: Start date filter (YYYY-MM-DD)
+            end_date: End date filter (YYYY-MM-DD)
+            store_id: Filter by store ID
+            limit: Max items to return (default 50)
+            offset: Pagination offset (default 0)
+            is_annotated: Filter by annotation status (optional)
+            is_approved: Filter by approval status (optional)
+
+        Returns:
+            Dict with:
+            - items: List of evaluation images
+            - total_count: Total count
+            - limit: Limit used
+            - offset: Offset used
+            - has_more: Whether there are more pages
+        """
+        token = await self._ensure_token()
+
+        params: dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if store_id is not None:
+            params["store_id"] = store_id
+        if is_annotated is not None:
+            params["is_annotated"] = is_annotated
+        if is_approved is not None:
+            params["is_approved"] = is_approved
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                f"{self.base_url}/basket/evaluation/images",
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            # Retry with fresh token on 401
+            if resp.status_code == 401:
+                token = await self._ensure_token(force_refresh=True)
+                resp = await client.get(
+                    f"{self.base_url}/basket/evaluation/images",
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Parse response
+        images = data.get("images", [])
+        total_count = data.get("total_count", len(images))
+
+        # Transform to our format
+        result_items = []
+        for item in images:
+            result_items.append({
+                "buybuddy_image_id": str(item.get("image_id")),
+                "image_url": item.get("image_url"),
+                "image_type": item.get("image_type"),
+                "inserted_at": item.get("inserted_at"),
+                "basket_id": item.get("basket_id"),
+                "basket_identifier": item.get("basket_identifier"),
+                "merchant_id": item.get("merchant_id"),
+                "merchant_name": item.get("merchant_name"),
+                "store_id": item.get("store_id"),
+                "store_name": item.get("store_name"),
+                "store_code": item.get("store_code"),
+                "is_annotated": item.get("is_annotated", False),
+                "is_approved": item.get("is_approved", False),
+                "annotation_id": item.get("annotation_id"),
+                "in_datasets": item.get("in_datasets", []),
+            })
+
+        return {
+            "items": result_items,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + len(images)) < total_count,
+        }
+
+    async def preview_od_sync(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        store_id: Optional[int] = None,
+        is_annotated: Optional[bool] = None,
+        is_approved: Optional[bool] = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Preview what images would be synced from BuyBuddy.
+
+        Returns count and sample of images that would be imported.
+        """
+        result = await self.get_evaluation_images(
+            start_date=start_date,
+            end_date=end_date,
+            store_id=store_id,
+            is_annotated=is_annotated,
+            is_approved=is_approved,
+            limit=limit,
+            offset=0,
+        )
+
+        return {
+            "total_available": result.get("total_count", len(result["items"])),
+            "sample_count": len(result["items"]),
+            "sample_images": result["items"],
+            "filters_applied": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "store_id": store_id,
+                "is_annotated": is_annotated,
+                "is_approved": is_approved,
+            }
+        }
+
+    async def sync_od_images(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        store_id: Optional[int] = None,
+        is_annotated: Optional[bool] = None,
+        is_approved: Optional[bool] = None,
+        max_images: Optional[int] = None,
+        batch_size: int = 50,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch all evaluation images for OD sync.
+
+        Args:
+            start_date: Start date filter (YYYY-MM-DD)
+            end_date: End date filter (YYYY-MM-DD)
+            store_id: Filter by store
+            is_annotated: Filter by annotation status
+            is_approved: Filter by approval status
+            max_images: Maximum images to fetch
+            batch_size: Items per batch
+
+        Returns:
+            List of all images matching criteria
+        """
+        all_items = []
+        offset = 0
+
+        while True:
+            result = await self.get_evaluation_images(
+                start_date=start_date,
+                end_date=end_date,
+                store_id=store_id,
+                is_annotated=is_annotated,
+                is_approved=is_approved,
+                limit=batch_size,
+                offset=offset,
+            )
+
+            all_items.extend(result["items"])
+
+            # Check limits
+            if max_images and len(all_items) >= max_images:
+                all_items = all_items[:max_images]
+                break
+
+            if not result["has_more"]:
+                break
+
+            offset += batch_size
+
+            # Rate limiting
+            import asyncio
+            await asyncio.sleep(0.1)
+
+        return all_items
+
+
 # Singleton instance
 buybuddy_service = BuybuddyService()

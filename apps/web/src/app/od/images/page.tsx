@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
@@ -43,6 +43,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  FilterDrawer,
+  FilterTrigger,
+  useFilterState,
+  type FilterSection,
+} from "@/components/filters/filter-drawer";
+import {
   RefreshCw,
   Loader2,
   ImageIcon,
@@ -58,9 +64,13 @@ import {
   Grid3X3,
   List,
   Plus,
+  FolderPlus,
+  Package,
 } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import Image from "next/image";
 import { useDropzone } from "react-dropzone";
+import { ImportModal } from "@/components/od/import-modal";
 
 const PAGE_SIZE = 48;
 
@@ -81,18 +91,33 @@ export default function ODImagesPage() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [filterStatus, setFilterStatus] = useState<string>("all");
-  const [filterSource, setFilterSource] = useState<string>("all");
-  const [filterFolder, setFilterFolder] = useState<string>("all");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+
+  // Filter state using the hook
+  const {
+    filterState,
+    setFilter,
+    clearSection,
+    clearAll,
+    getTotalCount,
+  } = useFilterState();
 
   // Selection state
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
+  const [selectAllFilteredMode, setSelectAllFilteredMode] = useState(false);
 
   // Upload dialog state
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadFolder, setUploadFolder] = useState("");
+
+  // Advanced import modal state
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
+  // Add to dataset dialog state
+  const [isAddToDatasetOpen, setIsAddToDatasetOpen] = useState(false);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
 
   // Fetch OD stats
   const { data: stats } = useQuery({
@@ -100,21 +125,122 @@ export default function ODImagesPage() {
     queryFn: () => apiClient.getODStats(),
   });
 
-  // Fetch images
+  // Fetch datasets for "Add to Dataset" dialog
+  const { data: datasets } = useQuery({
+    queryKey: ["od-datasets"],
+    queryFn: () => apiClient.getODDatasets(),
+  });
+
+  // Fetch filter options with counts
+  const { data: filterOptions } = useQuery({
+    queryKey: ["od-image-filter-options"],
+    queryFn: () => apiClient.getODImageFilterOptions(),
+  });
+
+  // Build filter sections from API data
+  const filterSections: FilterSection[] = useMemo(() => {
+    if (!filterOptions) return [];
+
+    const sections: FilterSection[] = [];
+
+    // Status filter
+    if (filterOptions.status?.length > 0) {
+      sections.push({
+        id: "status",
+        label: "Status",
+        type: "checkbox",
+        options: filterOptions.status,
+        defaultExpanded: true,
+      });
+    }
+
+    // Source filter
+    if (filterOptions.source?.length > 0) {
+      sections.push({
+        id: "source",
+        label: "Source",
+        type: "checkbox",
+        options: filterOptions.source,
+        defaultExpanded: true,
+      });
+    }
+
+    // Merchant filter
+    if (filterOptions.merchant?.length > 0) {
+      sections.push({
+        id: "merchant",
+        label: "Merchant",
+        type: "checkbox",
+        options: filterOptions.merchant,
+        searchable: true,
+        defaultExpanded: true,
+      });
+    }
+
+    // Store filter
+    if (filterOptions.store?.length > 0) {
+      sections.push({
+        id: "store",
+        label: "Store",
+        type: "checkbox",
+        options: filterOptions.store,
+        searchable: true,
+        defaultExpanded: false,
+      });
+    }
+
+    // Folder filter
+    if (filterOptions.folder?.length > 0) {
+      sections.push({
+        id: "folder",
+        label: "Folder",
+        type: "checkbox",
+        options: filterOptions.folder,
+        searchable: true,
+        defaultExpanded: false,
+      });
+    }
+
+    return sections;
+  }, [filterOptions]);
+
+  // Convert filter state to API params
+  const apiFilters = useMemo(() => {
+    const params: Record<string, string | undefined> = {};
+
+    // Convert Set to comma-separated string
+    const setToString = (key: string): string | undefined => {
+      const filter = filterState[key] as Set<string> | undefined;
+      if (filter?.size) {
+        return Array.from(filter).join(",");
+      }
+      return undefined;
+    };
+
+    params.statuses = setToString("status");
+    params.sources = setToString("source");
+    params.merchant_ids = setToString("merchant");
+    params.store_ids = setToString("store");
+    params.folders = setToString("folder");
+
+    return params;
+  }, [filterState]);
+
+  const activeFilterCount = getTotalCount();
+
+  // Fetch images with multi-select filters
   const {
     data: imagesData,
     isLoading,
     isFetching,
   } = useQuery({
-    queryKey: ["od-images", page, search, filterStatus, filterSource, filterFolder],
+    queryKey: ["od-images", page, search, apiFilters],
     queryFn: () =>
       apiClient.getODImages({
         page,
         limit: PAGE_SIZE,
         search: search || undefined,
-        status: filterStatus !== "all" ? filterStatus : undefined,
-        source: filterSource !== "all" ? filterSource : undefined,
-        folder: filterFolder !== "all" ? filterFolder : undefined,
+        ...apiFilters,
       }),
   });
 
@@ -161,6 +287,79 @@ export default function ODImagesPage() {
     },
   });
 
+  // Add to dataset mutation (by IDs)
+  const addToDatasetMutation = useMutation({
+    mutationFn: async ({ datasetId, imageIds }: { datasetId: string; imageIds: string[] }) => {
+      return apiClient.addImagesToODDataset(datasetId, imageIds);
+    },
+    onSuccess: (result) => {
+      toast.success(`Added ${result.added} image${result.added !== 1 ? "s" : ""} to dataset${result.skipped > 0 ? ` (${result.skipped} already in dataset)` : ""}`);
+      queryClient.invalidateQueries({ queryKey: ["od-datasets"] });
+      queryClient.invalidateQueries({ queryKey: ["od-stats"] });
+      setIsAddToDatasetOpen(false);
+      setSelectedDatasetId("");
+      clearSelection();
+    },
+    onError: (error) => {
+      toast.error(`Failed to add images: ${error.message}`);
+    },
+  });
+
+  // Delete by filters mutation (for selectAllFilteredMode)
+  const deleteByFiltersMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.deleteODImagesByFilters({
+        search: search || undefined,
+        ...apiFilters,
+      });
+    },
+    onSuccess: (result) => {
+      toast.success(`Deleted ${result.deleted} image${result.deleted !== 1 ? "s" : ""}`);
+      queryClient.invalidateQueries({ queryKey: ["od-images"] });
+      queryClient.invalidateQueries({ queryKey: ["od-stats"] });
+      queryClient.invalidateQueries({ queryKey: ["od-image-filter-options"] });
+      clearSelection();
+    },
+    onError: (error) => {
+      toast.error(`Delete failed: ${error.message}`);
+    },
+  });
+
+  // Add to dataset by filters mutation (for selectAllFilteredMode)
+  const addToDatasetByFiltersMutation = useMutation({
+    mutationFn: async ({ datasetId }: { datasetId: string }) => {
+      return apiClient.addFilteredImagesToODDataset(datasetId, {
+        search: search || undefined,
+        ...apiFilters,
+      });
+    },
+    onSuccess: (result) => {
+      toast.success(`Added ${result.added} image${result.added !== 1 ? "s" : ""} to dataset${result.skipped > 0 ? ` (${result.skipped} already in dataset)` : ""}`);
+      queryClient.invalidateQueries({ queryKey: ["od-datasets"] });
+      queryClient.invalidateQueries({ queryKey: ["od-stats"] });
+      setIsAddToDatasetOpen(false);
+      setSelectedDatasetId("");
+      clearSelection();
+    },
+    onError: (error) => {
+      toast.error(`Failed to add images: ${error.message}`);
+    },
+  });
+
+  const handleAddToDataset = () => {
+    if (!selectedDatasetId) return;
+
+    if (selectAllFilteredMode) {
+      addToDatasetByFiltersMutation.mutate({ datasetId: selectedDatasetId });
+    } else {
+      if (selectedImages.size === 0) return;
+      addToDatasetMutation.mutate({
+        datasetId: selectedDatasetId,
+        imageIds: Array.from(selectedImages),
+      });
+    }
+  };
+
   // Dropzone for upload
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setUploadFiles((prev) => [...prev, ...acceptedFiles]);
@@ -175,6 +374,10 @@ export default function ODImagesPage() {
 
   // Image selection handlers
   const toggleImageSelection = (imageId: string) => {
+    // Exit selectAllFilteredMode when individual selection is made
+    if (selectAllFilteredMode) {
+      setSelectAllFilteredMode(false);
+    }
     setSelectedImages((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(imageId)) {
@@ -195,10 +398,26 @@ export default function ODImagesPage() {
     }
   };
 
+  const handleSelectAllFiltered = () => {
+    setSelectAllFilteredMode(true);
+    setSelectedImages(new Set());
+  };
+
+  const clearSelection = () => {
+    setSelectAllFilteredMode(false);
+    setSelectedImages(new Set());
+  };
+
   const handleDeleteSelected = () => {
-    if (selectedImages.size === 0) return;
-    if (!confirm(`Delete ${selectedImages.size} selected images?`)) return;
-    deleteMutation.mutate(Array.from(selectedImages));
+    if (selectAllFilteredMode) {
+      const total = imagesData?.total || 0;
+      if (!confirm(`Delete ALL ${total} filtered images? This cannot be undone.`)) return;
+      deleteByFiltersMutation.mutate();
+    } else {
+      if (selectedImages.size === 0) return;
+      if (!confirm(`Delete ${selectedImages.size} selected images?`)) return;
+      deleteMutation.mutate(Array.from(selectedImages));
+    }
   };
 
   const totalPages = imagesData ? Math.ceil(imagesData.total / PAGE_SIZE) : 0;
@@ -258,9 +477,13 @@ export default function ODImagesPage() {
             <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
           </Button>
-          <Button onClick={() => setIsUploadDialogOpen(true)}>
+          <Button variant="outline" onClick={() => setIsUploadDialogOpen(true)}>
             <Upload className="h-4 w-4 mr-2" />
-            Upload Images
+            Quick Upload
+          </Button>
+          <Button onClick={() => setIsImportModalOpen(true)}>
+            <Package className="h-4 w-4 mr-2" />
+            Import
           </Button>
         </div>
       </div>
@@ -328,19 +551,59 @@ export default function ODImagesPage() {
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              {selectedImages.size > 0 && (
+              {(selectedImages.size > 0 || selectAllFilteredMode) && (
                 <>
                   <span className="text-sm text-muted-foreground">
-                    {selectedImages.size} selected
+                    {selectAllFilteredMode
+                      ? `All ${imagesData?.total || 0} filtered images selected`
+                      : `${selectedImages.size} selected`}
                   </span>
+                  {/* Show "Select all filtered" link when page items are selected */}
+                  {!selectAllFilteredMode && selectedImages.size > 0 && (imagesData?.total || 0) > (imagesData?.images?.length || 0) && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-blue-600 p-0 h-auto"
+                      onClick={handleSelectAllFiltered}
+                    >
+                      Select all {imagesData?.total} filtered images
+                    </Button>
+                  )}
+                  {selectAllFilteredMode && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-muted-foreground p-0 h-auto"
+                      onClick={clearSelection}
+                    >
+                      Clear selection
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsAddToDatasetOpen(true)}
+                  >
+                    <FolderPlus className="h-4 w-4 mr-1" />
+                    Add to Dataset
+                  </Button>
                   <Button
                     variant="destructive"
                     size="sm"
                     onClick={handleDeleteSelected}
-                    disabled={deleteMutation.isPending}
+                    disabled={deleteMutation.isPending || deleteByFiltersMutation.isPending}
                   >
-                    <Trash2 className="h-4 w-4 mr-1" />
-                    Delete
+                    {(deleteMutation.isPending || deleteByFiltersMutation.isPending) ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4 mr-1" />
+                        Delete
+                      </>
+                    )}
                   </Button>
                 </>
               )}
@@ -367,8 +630,8 @@ export default function ODImagesPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Filter Row */}
-          <div className="flex gap-4">
-            <div className="flex-1">
+          <div className="flex gap-4 items-center">
+            <div className="flex-1 max-w-md">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -382,43 +645,30 @@ export default function ODImagesPage() {
                 />
               </div>
             </div>
-            <Select
-              value={filterStatus}
-              onValueChange={(v) => {
-                setFilterStatus(v);
-                setPage(1);
-              }}
-            >
-              <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="annotating">Annotating</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-                <SelectItem value="skipped">Skipped</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={filterSource}
-              onValueChange={(v) => {
-                setFilterSource(v);
-                setPage(1);
-              }}
-            >
-              <SelectTrigger className="w-[150px]">
-                <SelectValue placeholder="Source" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Sources</SelectItem>
-                <SelectItem value="upload">Upload</SelectItem>
-                <SelectItem value="buybuddy_sync">BuyBuddy Sync</SelectItem>
-                <SelectItem value="import">Import</SelectItem>
-              </SelectContent>
-            </Select>
+
+            {/* Filter Button */}
+            <div className="flex items-center gap-2">
+              <FilterTrigger
+                onClick={() => setFilterDrawerOpen(true)}
+                activeCount={activeFilterCount}
+              />
+              {activeFilterCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    clearAll();
+                    setPage(1);
+                  }}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  Clear filters
+                </Button>
+              )}
+            </div>
+
             {imagesData?.images && imagesData.images.length > 0 && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 ml-auto">
                 <Checkbox
                   checked={selectedImages.size === imagesData.images.length && imagesData.images.length > 0}
                   onCheckedChange={toggleSelectAll}
@@ -427,6 +677,28 @@ export default function ODImagesPage() {
               </div>
             )}
           </div>
+
+          {/* Filter Drawer */}
+          <FilterDrawer
+            open={filterDrawerOpen}
+            onOpenChange={setFilterDrawerOpen}
+            sections={filterSections}
+            filterState={filterState}
+            onFilterChange={(sectionId, value) => {
+              setFilter(sectionId, value);
+              setPage(1);
+            }}
+            onClearAll={() => {
+              clearAll();
+              setPage(1);
+            }}
+            onClearSection={(sectionId) => {
+              clearSection(sectionId);
+              setPage(1);
+            }}
+            title="Image Filters"
+            description="Filter images by status, source, merchant, store, and folder"
+          />
 
           {/* Image Grid/List */}
           {isLoading ? (
@@ -438,14 +710,20 @@ export default function ODImagesPage() {
               <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium">No images found</h3>
               <p className="text-muted-foreground mt-1">
-                {search || filterStatus !== "all" || filterSource !== "all"
+                {search || activeFilterCount > 0
                   ? "Try adjusting your filters"
-                  : "Upload images to get started"}
+                  : "Upload images or import from URL, COCO, YOLO formats"}
               </p>
-              <Button className="mt-4" onClick={() => setIsUploadDialogOpen(true)}>
-                <Upload className="h-4 w-4 mr-2" />
-                Upload Images
-              </Button>
+              <div className="flex gap-2 justify-center mt-4">
+                <Button variant="outline" onClick={() => setIsUploadDialogOpen(true)}>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Quick Upload
+                </Button>
+                <Button onClick={() => setIsImportModalOpen(true)}>
+                  <Package className="h-4 w-4 mr-2" />
+                  Import
+                </Button>
+              </div>
             </div>
           ) : viewMode === "grid" ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
@@ -724,6 +1002,90 @@ export default function ODImagesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Add to Dataset Dialog */}
+      <Dialog open={isAddToDatasetOpen} onOpenChange={setIsAddToDatasetOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FolderPlus className="h-5 w-5" />
+              Add to Dataset
+            </DialogTitle>
+            <DialogDescription>
+              Add {selectedImages.size} selected image{selectedImages.size !== 1 ? "s" : ""} to a dataset.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            <label className="text-sm font-medium mb-2 block">Select Dataset</label>
+            {datasets && datasets.length > 0 ? (
+              <ScrollArea className="h-[200px] border rounded-md">
+                <div className="p-2 space-y-1">
+                  {datasets.map((dataset) => (
+                    <div
+                      key={dataset.id}
+                      onClick={() => setSelectedDatasetId(dataset.id)}
+                      className={`flex items-center justify-between p-3 rounded-md cursor-pointer transition-colors ${
+                        selectedDatasetId === dataset.id
+                          ? "bg-primary text-primary-foreground"
+                          : "hover:bg-muted"
+                      }`}
+                    >
+                      <div>
+                        <p className="font-medium">{dataset.name}</p>
+                        <p className={`text-xs ${selectedDatasetId === dataset.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                          {dataset.image_count} images · {dataset.annotation_count} annotations
+                        </p>
+                      </div>
+                      {selectedDatasetId === dataset.id && (
+                        <CheckCircle className="h-4 w-4" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <FolderOpen className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No datasets found</p>
+                <p className="text-sm">Create a dataset first</p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAddToDatasetOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddToDataset}
+              disabled={!selectedDatasetId || addToDatasetMutation.isPending}
+            >
+              {addToDatasetMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Adding...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add to Dataset
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Advanced Import Modal */}
+      <ImportModal
+        open={isImportModalOpen}
+        onOpenChange={setIsImportModalOpen}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["od-images"] });
+          queryClient.invalidateQueries({ queryKey: ["od-stats"] });
+        }}
+      />
     </div>
   );
 }

@@ -1,0 +1,51 @@
+{
+  "name": "SOTA Full Test - Circle Loss + TTA v2",
+  "description": "Testing all SOTA features: Circle Loss, Combined Loss, P-K Sampling, TTA, Early Stopping",
+  "base_model_type": "dinov2-base",
+  "data_source": "all_products",
+  "label_config": {
+    "label_field": "product_id",
+    "min_samples_per_class": 1
+  },
+  "image_config": {
+    "image_types": ["synthetic", "real"],
+    "frame_selection": "key_frames",
+    "max_frames_per_type": 8,
+    "include_matched_cutouts": true
+  },
+  "sota_config": {
+    "enabled": true,
+    "use_combined_loss": true,
+    "use_pk_sampling": true,
+    "use_curriculum": false,
+    "use_domain_adaptation": true,
+    "use_early_stopping": true,
+    "early_stopping_patience": 5,
+    "loss": {
+      "arcface_weight": 1.0,
+      "triplet_weight": 0.5,
+      "domain_weight": 0.1,
+      "arcface_margin": 0.5,
+      "arcface_scale": 64.0,
+      "triplet_margin": 0.3,
+      "circle_weight": 0.3,
+      "circle_margin": 0.25,
+      "circle_gamma": 256.0
+    },
+    "sampling": {
+      "products_per_batch": 4,
+      "samples_per_product": 4,
+      "synthetic_ratio": 0.5
+    },
+    "tta": {
+      "enabled": true,
+      "mode": "light"
+    }
+  },
+  "config_overrides": {
+    "epochs": 3,
+    "batch_size": 16,
+    "learning_rate": 0.0001,
+    "gradient_accumulation_steps": 2
+  }
+}

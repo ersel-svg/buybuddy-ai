@@ -77,12 +77,43 @@ async def get_dataset_images(
 
 @router.post("", response_model=ODDatasetResponse)
 async def create_dataset(data: ODDatasetCreate):
-    """Create a new dataset."""
+    """Create a new dataset and copy template classes to it."""
     dataset_data = data.model_dump()
     result = supabase_service.client.table("od_datasets").insert(dataset_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create dataset")
+
+    dataset_id = result.data[0]["id"]
+
+    # Copy all template classes (those with NULL dataset_id) to this new dataset
+    templates = supabase_service.client.table("od_classes").select("*").is_("dataset_id", "null").execute()
+
+    if templates.data:
+        new_classes = []
+        for template in templates.data:
+            new_classes.append({
+                "dataset_id": dataset_id,
+                "name": template["name"],
+                "display_name": template.get("display_name"),
+                "description": template.get("description"),
+                "color": template["color"],
+                "category": template.get("category"),
+                "aliases": template.get("aliases"),
+                "is_active": True,
+                "is_system": template.get("is_system", False),
+                "annotation_count": 0,
+            })
+
+        if new_classes:
+            supabase_service.client.table("od_classes").insert(new_classes).execute()
+
+            # Update dataset class_count
+            supabase_service.client.table("od_datasets").update({
+                "class_count": len(new_classes)
+            }).eq("id", dataset_id).execute()
+
+            result.data[0]["class_count"] = len(new_classes)
 
     return result.data[0]
 
@@ -200,6 +231,65 @@ async def remove_images_bulk(dataset_id: str, image_ids: list[str]):
     supabase_service.client.table("od_datasets").update({"image_count": new_count}).eq("id", dataset_id).execute()
 
     return {"removed": removed}
+
+
+@router.get("/{dataset_id}/classes")
+async def get_dataset_classes(dataset_id: str, include_templates: bool = False):
+    """Get all classes for a specific dataset."""
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Get classes for this dataset
+    query = supabase_service.client.table("od_classes").select("*")
+
+    if include_templates:
+        # Include both dataset classes and templates (for UI showing all available)
+        query = query.or_(f"dataset_id.eq.{dataset_id},dataset_id.is.null")
+    else:
+        query = query.eq("dataset_id", dataset_id)
+
+    query = query.eq("is_active", True).order("name")
+    result = query.execute()
+
+    return result.data or []
+
+
+@router.post("/{dataset_id}/classes")
+async def add_class_to_dataset(dataset_id: str, data: dict):
+    """Create a new class for a specific dataset."""
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Check if name already exists in this dataset
+    existing = supabase_service.client.table("od_classes").select("id").eq("name", data["name"]).eq("dataset_id", dataset_id).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail=f"Class '{data['name']}' already exists in this dataset")
+
+    # Create the class
+    class_data = {
+        "dataset_id": dataset_id,
+        "name": data["name"],
+        "display_name": data.get("display_name"),
+        "color": data.get("color", "#3B82F6"),
+        "category": data.get("category"),
+        "is_active": True,
+        "annotation_count": 0,
+    }
+
+    result = supabase_service.client.table("od_classes").insert(class_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create class")
+
+    # Update dataset class_count
+    count_result = supabase_service.client.table("od_classes").select("id", count="exact").eq("dataset_id", dataset_id).execute()
+    supabase_service.client.table("od_datasets").update({"class_count": count_result.count or 0}).eq("id", dataset_id).execute()
+
+    return result.data[0]
 
 
 @router.get("/{dataset_id}/stats")

@@ -11,15 +11,23 @@
 |-------|----------|---------------------|
 | Phase 0 | Navigation & Layout Setup | 5 |
 | Phase 1 | Database & Backend Foundation | 15 |
-| Phase 2 | Image Management | 12 |
-| Phase 3 | Dataset Management | 10 |
+| Phase 2 | Image Management (Roboflow-Level) | **45+** |
+| Phase 3 | Dataset Management | **35+** |
 | Phase 4 | Class Management | 8 |
 | Phase 5 | Annotation Editor | 20 |
 | Phase 6 | AI Auto-Annotation Worker | 12 |
 | Phase 7 | Export/Import | 10 |
 | Phase 8 | Training Pipeline | 14 |
 | Phase 9 | Model Registry | 8 |
-| **Total** | | **~114 tasks** |
+| **Total** | | **~170+ tasks** |
+
+### 🎯 Key Features (Roboflow-Level)
+- **Multi-source import:** Upload, URL, BuyBuddy API, Cloud Storage, ZIP
+- **Annotated dataset import:** COCO, YOLO, Pascal VOC, LabelMe, CVAT
+- **Smart class mapping:** Auto-match similar names, create new, skip
+- **Duplicate detection:** Perceptual hash (pHash) based
+- **Bulk operations:** Multi-select, batch processing
+- **Advanced filtering:** By source, status, tags, datasets, dimensions
 
 ---
 
@@ -231,63 +239,240 @@ od_trained_models     → Detection models
 
 ---
 
-## Phase 2: Image Management
+## Phase 2: Image Management (Roboflow-Level)
 
-### 2.1 Backend - Image API
+> Roboflow benzeri gelişmiş image management sistemi
+
+### 2.1 Backend - Core Image API
 
 - [ ] **2.1.1** `GET /api/v1/od/images` - List images
-  - [ ] Pagination (limit, offset)
-  - [ ] Filters (source, folder, tags)
-  - [ ] Search (filename)
-  - [ ] Sort (created_at, filename)
+  - [ ] Pagination (limit, offset, cursor-based)
+  - [ ] Filters (source, folder, tags, has_annotations, dataset_id)
+  - [ ] Search (filename, fuzzy search)
+  - [ ] Sort (created_at, filename, annotation_count)
+  - [ ] Bulk selection support (return ids for bulk ops)
 
-- [ ] **2.1.2** `POST /api/v1/od/images` - Upload image(s)
+- [ ] **2.1.2** `POST /api/v1/od/images/upload` - Upload image(s)
   - [ ] Single file upload
-  - [ ] Bulk upload support
-  - [ ] Thumbnail generation
-  - [ ] Metadata extraction (width, height, format)
+  - [ ] Bulk upload support (multipart)
+  - [ ] Thumbnail generation (multiple sizes: 128, 256, 512)
+  - [ ] Metadata extraction (width, height, format, EXIF)
+  - [ ] Auto-orient based on EXIF
+  - [ ] Perceptual hash (pHash) calculation for duplicate detection
   - [ ] Supabase Storage'a kaydet
+  - [ ] Optional auto-resize (max dimension config)
 
 - [ ] **2.1.3** `GET /api/v1/od/images/{id}` - Get image detail
+  - [ ] Include annotation count
+  - [ ] Include datasets it belongs to
+  - [ ] Include similar images (by pHash)
 
-- [ ] **2.1.4** `PATCH /api/v1/od/images/{id}` - Update image (folder, tags)
+- [ ] **2.1.4** `PATCH /api/v1/od/images/{id}` - Update image metadata
+  - [ ] Folder assignment
+  - [ ] Tags (add/remove)
+  - [ ] Custom metadata fields
 
 - [ ] **2.1.5** `DELETE /api/v1/od/images/{id}` - Delete image
   - [ ] Storage'dan da sil
   - [ ] İlişkili annotation'ları kontrol et
+  - [ ] Cascade delete option (force=true)
+  - [ ] Soft delete support (is_deleted flag)
 
-- [ ] **2.1.6** `POST /api/v1/od/images/sync/buybuddy` - BuyBuddy API sync
+- [ ] **2.1.6** `POST /api/v1/od/images/bulk` - Bulk operations
+  - [ ] Bulk delete
+  - [ ] Bulk tag assignment
+  - [ ] Bulk folder move
+  - [ ] Bulk add to dataset
+
+### 2.2 Backend - Import APIs
+
+- [ ] **2.2.1** `POST /api/v1/od/images/import/url` - Import from URL(s)
+  - [ ] Single URL
+  - [ ] URL list (newline separated)
+  - [ ] Download with retry
+  - [ ] Validate image format
+  - [ ] Return import job ID for tracking
+
+- [ ] **2.2.2** `POST /api/v1/od/images/import/buybuddy` - BuyBuddy API sync
   - [ ] Date range filter
-  - [ ] Store/merchant filter
-  - [ ] Pagination
-  - [ ] Duplicate check (buybuddy_image_id)
+  - [ ] Store filter (multi-select)
+  - [ ] Merchant filter
+  - [ ] Status filter (approved, pending, rejected)
+  - [ ] Preview mode (dry-run, count only)
+  - [ ] Duplicate check (buybuddy_image_id + pHash)
+  - [ ] Auto-tag by store name
+  - [ ] Save source metadata (store, merchant, capture_date)
+  - [ ] Pagination & batch processing
+  - [ ] Background job with progress tracking
 
-### 2.2 Frontend - Image Library
+- [ ] **2.2.3** `POST /api/v1/od/images/import/annotated` - Import annotated dataset
+  - [ ] Support COCO JSON format
+  - [ ] Support YOLO format (data.yaml + labels/)
+  - [ ] Support Pascal VOC (XML per image)
+  - [ ] Support LabelMe JSON
+  - [ ] Support CVAT XML export
+  - [ ] Class mapping interface (source → target)
+  - [ ] Auto-create missing classes option
+  - [ ] Validation (bbox bounds, class existence)
+  - [ ] Conflict resolution (skip/replace/merge annotations)
+  - [ ] Preview mode with stats
+  - [ ] Background job for large imports
 
-- [ ] **2.2.1** `/od/images/page.tsx` - Image list page
-  - [ ] Grid view
+- [ ] **2.2.4** `POST /api/v1/od/images/import/zip` - Import from ZIP
+  - [ ] Extract and process images
+  - [ ] Detect annotation files (COCO, YOLO, VOC)
+  - [ ] Auto-detect format
+  - [ ] Nested folder support
+
+- [ ] **2.2.5** `GET /api/v1/od/images/import/{jobId}` - Import job status
+  - [ ] Progress percentage
+  - [ ] Processed / total count
+  - [ ] Errors list
+  - [ ] Result summary
+
+### 2.3 Backend - Duplicate Detection
+
+- [ ] **2.3.1** `POST /api/v1/od/images/check-duplicates` - Check for duplicates
+  - [ ] Input: file hash or pHash
+  - [ ] Return matching images with similarity score
+  - [ ] Threshold configuration
+
+- [ ] **2.3.2** `GET /api/v1/od/images/duplicates` - List duplicate groups
+  - [ ] Group by pHash similarity
+  - [ ] Include annotation status per duplicate
+  - [ ] Suggest which to keep (most annotated)
+
+- [ ] **2.3.3** `POST /api/v1/od/images/duplicates/resolve` - Resolve duplicates
+  - [ ] Keep one, delete others
+  - [ ] Merge annotations option
+  - [ ] Bulk resolve
+
+### 2.4 Frontend - Image Library Page
+
+- [ ] **2.4.1** `/od/images/page.tsx` - Main image library
+  - [ ] Grid view (thumbnail cards)
   - [ ] Table view toggle
-  - [ ] Pagination
-  - [ ] Filters sidebar
-  - [ ] Search bar
+  - [ ] Infinite scroll / pagination toggle
+  - [ ] Multi-select with Shift+Click, Ctrl+Click
+  - [ ] Select all / deselect all
+  - [ ] Bulk action bar (when items selected)
 
-- [ ] **2.2.2** Upload component
-  - [ ] Drag & drop zone
-  - [ ] File picker
-  - [ ] Progress indicator
-  - [ ] Bulk upload support
+- [ ] **2.4.2** Filter sidebar
+  - [ ] Source filter (upload, url, buybuddy, import)
+  - [ ] Folder tree navigation
+  - [ ] Tag filter (multi-select)
+  - [ ] Annotation status (annotated, unannotated, partial)
+  - [ ] Dataset membership filter
+  - [ ] Date range filter
+  - [ ] Dimension filter (min/max width/height)
 
-- [ ] **2.2.3** Import modal component
-  - [ ] Tab: Upload files
-  - [ ] Tab: Import from URL
-  - [ ] Tab: Sync from BuyBuddy
-  - [ ] Tab: Import dataset (COCO/YOLO) - Phase 7'de tamamlanacak
+- [ ] **2.4.3** Search & sort
+  - [ ] Filename search (fuzzy)
+  - [ ] Sort by: date, name, annotation count, size
+  - [ ] Ascending / descending toggle
 
-- [ ] **2.2.4** Image detail modal/page
-  - [ ] Image preview
-  - [ ] Metadata display
-  - [ ] Folder/tag edit
-  - [ ] Delete action
+- [ ] **2.4.4** Image card component
+  - [ ] Thumbnail with lazy loading
+  - [ ] Selection checkbox
+  - [ ] Quick annotation count badge
+  - [ ] Source icon indicator
+  - [ ] Hover: show preview + quick actions
+
+### 2.5 Frontend - Advanced Import Modal
+
+- [ ] **2.5.1** Import modal - Tab structure
+  ```
+  [📤 Upload] [🔗 URL] [📦 Annotated] [🛒 BuyBuddy] [☁️ Cloud]
+  ```
+
+- [ ] **2.5.2** Upload Tab
+  - [ ] Drag & drop zone (full modal size)
+  - [ ] File picker button
+  - [ ] Folder upload support
+  - [ ] Upload queue list with status per file
+  - [ ] Duplicate indicator (⚠️ already exists)
+  - [ ] Remove from queue button
+  - [ ] Progress bar per file + total
+  - [ ] Options: skip duplicates, auto-resize, auto-tag
+
+- [ ] **2.5.3** URL Import Tab
+  - [ ] Text area for URL list
+  - [ ] Paste from clipboard button
+  - [ ] URL validation (format check)
+  - [ ] Preview thumbnails before import
+  - [ ] Detected count display
+
+- [ ] **2.5.4** Annotated Import Tab (Key Feature!)
+  - [ ] Format selector: COCO, YOLO, VOC, LabelMe, CVAT
+  - [ ] File drop zone for annotation file + images
+  - [ ] ZIP upload option
+  - [ ] **Preview panel:**
+    - [ ] Image count
+    - [ ] Class list found
+    - [ ] Annotation count
+    - [ ] Sample image with annotations overlay
+  - [ ] **Class mapping table:**
+    - [ ] Source class name
+    - [ ] Target class dropdown (existing classes + "Create New")
+    - [ ] Auto-map similar names (fuzzy match)
+    - [ ] Skip class option
+    - [ ] Color preview
+  - [ ] **Options:**
+    - [ ] Skip duplicate images
+    - [ ] Replace existing annotations
+    - [ ] Merge annotations (add to existing)
+    - [ ] Auto-create missing classes
+    - [ ] Assign to dataset (optional)
+  - [ ] **Validation errors display**
+  - [ ] Import progress with detailed log
+
+- [ ] **2.5.5** BuyBuddy Sync Tab
+  - [ ] Date range picker
+  - [ ] Store multi-select dropdown (fetch from API)
+  - [ ] Merchant filter
+  - [ ] Status checkboxes (approved, pending, rejected)
+  - [ ] **Preview button** → shows count before import
+  - [ ] Preview panel:
+    - [ ] Total found
+    - [ ] New images (not in system)
+    - [ ] Duplicates (will skip)
+    - [ ] Sample thumbnails
+  - [ ] Options:
+    - [ ] Import only new
+    - [ ] Save metadata (store, merchant, date)
+    - [ ] Auto-tag by store
+  - [ ] Progress tracking for large syncs
+
+- [ ] **2.5.6** Cloud Storage Tab (Phase 2 - Optional)
+  - [ ] S3 bucket configuration
+  - [ ] Path/prefix input
+  - [ ] List files button
+  - [ ] Select files to import
+  - [ ] GCS support
+  - [ ] Azure Blob support
+
+### 2.6 Frontend - Image Detail
+
+- [ ] **2.6.1** Image detail modal/drawer
+  - [ ] Large image preview with zoom
+  - [ ] Annotation overlay toggle
+  - [ ] Metadata panel (dimensions, format, size, dates)
+  - [ ] Source info (origin, buybuddy metadata)
+  - [ ] Tags editor (add/remove)
+  - [ ] Folder selector
+  - [ ] Datasets list (which datasets contain this image)
+  - [ ] Similar images section (by pHash)
+  - [ ] Quick actions: Edit in annotator, Delete, Add to dataset
+
+### 2.7 Frontend - Duplicate Management
+
+- [ ] **2.7.1** Duplicates page/modal
+  - [ ] List duplicate groups
+  - [ ] Side-by-side comparison
+  - [ ] Annotation status per duplicate
+  - [ ] "Keep this one" button
+  - [ ] Bulk resolve all duplicates
+  - [ ] Merge annotations option
 
 ---
 
@@ -296,38 +481,186 @@ od_trained_models     → Detection models
 ### 3.1 Backend - Dataset API
 
 - [ ] **3.1.1** `GET /api/v1/od/datasets` - List datasets
+  - [ ] Include stats (image_count, annotated_count, class_count)
+  - [ ] Filter by status (active, archived)
+  - [ ] Sort options
+
 - [ ] **3.1.2** `POST /api/v1/od/datasets` - Create dataset
+  - [ ] Name, description
+  - [ ] Annotation type (bbox, polygon, both)
+  - [ ] Initial class assignment (from templates or custom)
+  - [ ] Auto-create from import option
+
 - [ ] **3.1.3** `GET /api/v1/od/datasets/{id}` - Get dataset with stats
+  - [ ] Full stats (images, annotations, classes)
+  - [ ] Progress metrics
+  - [ ] Recent activity
+
 - [ ] **3.1.4** `PATCH /api/v1/od/datasets/{id}` - Update dataset
 - [ ] **3.1.5** `DELETE /api/v1/od/datasets/{id}` - Delete dataset
+  - [ ] Soft delete (archive) option
+  - [ ] Hard delete with confirmation
 
-- [ ] **3.1.6** Dataset Images sub-endpoints
-  - [ ] `GET /api/v1/od/datasets/{id}/images` - List images in dataset
-  - [ ] `POST /api/v1/od/datasets/{id}/images` - Add images to dataset
-  - [ ] `DELETE /api/v1/od/datasets/{id}/images/{imageId}` - Remove image
+### 3.2 Backend - Dataset Images API
 
-- [ ] **3.1.7** `GET /api/v1/od/datasets/{id}/stats` - Dataset statistics
-  - [ ] Image count by status
+- [ ] **3.2.1** `GET /api/v1/od/datasets/{id}/images` - List images in dataset
+  - [ ] Pagination
+  - [ ] Filter by status (pending, annotated, reviewed, skipped)
+  - [ ] Filter by annotation count
+  - [ ] Sort by various fields
+  - [ ] Include annotation preview
+
+- [ ] **3.2.2** `POST /api/v1/od/datasets/{id}/images` - Add images to dataset
+  - [ ] Add from image library (image IDs list)
+  - [ ] Skip duplicates option
+  - [ ] Copy annotations option (if image has annotations from other dataset)
+  - [ ] Batch processing
+
+- [ ] **3.2.3** `POST /api/v1/od/datasets/{id}/images/upload` - Upload directly to dataset
+  - [ ] Same as main upload but auto-assigns to dataset
+  - [ ] Inherits dataset classes
+
+- [ ] **3.2.4** `POST /api/v1/od/datasets/{id}/images/import` - Import annotated to dataset
+  - [ ] Import with annotations directly into dataset
+  - [ ] Class mapping scoped to dataset classes
+  - [ ] Auto-create classes in dataset
+
+- [ ] **3.2.5** `DELETE /api/v1/od/datasets/{id}/images/{imageId}` - Remove from dataset
+  - [ ] Remove link only (keep image in library)
+  - [ ] Delete annotations in this dataset option
+
+- [ ] **3.2.6** `POST /api/v1/od/datasets/{id}/images/bulk` - Bulk operations
+  - [ ] Bulk remove from dataset
+  - [ ] Bulk status change
+  - [ ] Bulk annotation operations
+
+### 3.3 Backend - Dataset Stats
+
+- [ ] **3.3.1** `GET /api/v1/od/datasets/{id}/stats` - Dataset statistics
+  - [ ] Image count by status (pending/annotated/reviewed/skipped)
   - [ ] Annotation count by class
-  - [ ] Class distribution chart data
+  - [ ] Class distribution data (for charts)
+  - [ ] Annotation density stats (avg per image)
+  - [ ] Progress over time (daily/weekly)
 
-### 3.2 Frontend - Dataset Pages
+- [ ] **3.3.2** `GET /api/v1/od/datasets/{id}/health` - Dataset health check
+  - [ ] Images without annotations
+  - [ ] Classes without usage
+  - [ ] Annotation quality metrics
+  - [ ] Potential issues list
 
-- [ ] **3.2.1** `/od/datasets/page.tsx` - Dataset list
-  - [ ] Card grid view
-  - [ ] Stats preview (image count, progress)
+### 3.4 Frontend - Dataset List Page
+
+- [ ] **3.4.1** `/od/datasets/page.tsx` - Dataset list
+  - [ ] Card grid view with preview
+  - [ ] Table view toggle
+  - [ ] Stats preview (image count, progress bar)
+  - [ ] Quick actions (annotate, export, delete)
   - [ ] Create dataset button
+  - [ ] Import dataset button (creates new dataset from import)
 
-- [ ] **3.2.2** Create dataset modal
-  - [ ] Name, description input
-  - [ ] Annotation type selection (bbox, polygon)
+### 3.5 Frontend - Create Dataset
 
-- [ ] **3.2.3** `/od/datasets/[id]/page.tsx` - Dataset detail
-  - [ ] Overview tab (stats, charts)
-  - [ ] Images tab
-  - [ ] Classes tab
-  - [ ] Versions tab (Phase 7)
-  - [ ] Export tab (Phase 7)
+- [ ] **3.5.1** Create dataset modal/wizard
+  - [ ] Step 1: Basic info (name, description)
+  - [ ] Step 2: Annotation type (bbox, polygon)
+  - [ ] Step 3: Initial classes
+    - [ ] Use template classes
+    - [ ] Import from another dataset
+    - [ ] Create custom classes
+    - [ ] Skip (add later)
+  - [ ] Step 4: Add initial images (optional)
+    - [ ] From library
+    - [ ] Upload new
+    - [ ] Import annotated
+    - [ ] Skip (add later)
+
+### 3.6 Frontend - Dataset Detail Page
+
+- [ ] **3.6.1** `/od/datasets/[id]/page.tsx` - Dataset detail with tabs
+
+#### Overview Tab
+- [ ] **3.6.2** Stats cards (total images, annotated, annotations, classes)
+- [ ] **3.6.3** Progress bar (annotation completion)
+- [ ] **3.6.4** Class distribution chart (pie/bar)
+- [ ] **3.6.5** Annotation activity chart (over time)
+- [ ] **3.6.6** Quick actions (Start annotating, Export, Add images)
+- [ ] **3.6.7** Health alerts (if issues detected)
+
+#### Images Tab
+- [ ] **3.6.8** Image grid with status indicators
+- [ ] **3.6.9** Status filter tabs (All, Pending, Annotated, Reviewed, Skipped)
+- [ ] **3.6.10** Multi-select support
+- [ ] **3.6.11** Bulk actions (remove, change status, re-annotate)
+- [ ] **3.6.12** **"Add Images" button → Advanced Add Modal**
+
+#### Classes Tab
+- [ ] **3.6.13** Class list with annotation counts
+- [ ] **3.6.14** Add/edit/delete classes
+- [ ] **3.6.15** Class color management
+- [ ] **3.6.16** Merge classes (within dataset)
+- [ ] **3.6.17** Import classes from template/other dataset
+
+#### Versions Tab (Phase 7)
+#### Export Tab (Phase 7)
+
+### 3.7 Frontend - Add Images to Dataset Modal (Key Feature!)
+
+> Dataset'e image eklemek için gelişmiş modal - Roboflow seviyesinde
+
+- [ ] **3.7.1** Add Images Modal - Tab structure
+  ```
+  [📚 Library] [📤 Upload] [📦 Import Annotated] [🛒 BuyBuddy]
+  ```
+
+- [ ] **3.7.2** Library Tab (Add from existing images)
+  - [ ] Image grid from main library
+  - [ ] Filter: not in this dataset
+  - [ ] Multi-select with checkboxes
+  - [ ] Search and filter
+  - [ ] Preview selection count
+  - [ ] "Add X images" button
+  - [ ] Option: Copy existing annotations (if any)
+
+- [ ] **3.7.3** Upload Tab (Upload new images directly to dataset)
+  - [ ] Drag & drop zone
+  - [ ] File picker
+  - [ ] Upload queue with status
+  - [ ] Duplicate check (within dataset + library)
+  - [ ] Progress tracking
+  - [ ] Options:
+    - [ ] Also add to main library
+    - [ ] Skip duplicates
+    - [ ] Auto-resize
+
+- [ ] **3.7.4** Import Annotated Tab (Import with annotations to dataset)
+  - [ ] Format selector (COCO, YOLO, VOC, etc.)
+  - [ ] File upload (annotations + images)
+  - [ ] **Class mapping UI:**
+    - [ ] Map to existing dataset classes
+    - [ ] Create new class in dataset
+    - [ ] Skip class
+    - [ ] Auto-map by name similarity
+  - [ ] Preview:
+    - [ ] Image count
+    - [ ] Annotation count
+    - [ ] Sample with overlay
+  - [ ] Options:
+    - [ ] Add images to library also
+    - [ ] Merge/replace existing annotations
+  - [ ] Validation errors display
+  - [ ] Import progress
+
+- [ ] **3.7.5** BuyBuddy Tab (Sync from BuyBuddy to dataset)
+  - [ ] Same filters as main BuyBuddy import
+  - [ ] Preview count
+  - [ ] Direct add to this dataset
+  - [ ] Option: Also add to library
+
+- [ ] **3.7.6** Common footer
+  - [ ] Selected count summary
+  - [ ] Cancel button
+  - [ ] Add/Import button with count
 
 ---
 
@@ -796,4 +1129,20 @@ od_trained_models     → Detection models
 
 ---
 
-*Son güncelleme: 2026-01-19*
+*Son güncelleme: 2026-01-20*
+
+---
+
+## 📊 Feature Comparison: Before vs After
+
+| Feature | Eski (Basit) | Yeni (Roboflow-Level) |
+|---------|--------------|----------------------|
+| Image Upload | Tek dosya/bulk | Drag&drop, folder, queue, progress |
+| URL Import | ❌ | ✅ Tek/çoklu URL, validation |
+| Annotated Import | Phase 7'de | ✅ COCO, YOLO, VOC, LabelMe, CVAT |
+| Class Mapping | ❌ | ✅ Auto-map, create, skip UI |
+| Duplicate Detection | ❌ | ✅ pHash based, similarity groups |
+| BuyBuddy Sync | Basit | ✅ Preview, filters, metadata, tags |
+| Dataset Image Add | Basit modal | ✅ Multi-tab advanced modal |
+| Bulk Operations | ❌ | ✅ Multi-select, batch actions |
+| Import Progress | ❌ | ✅ Real-time progress, job tracking |

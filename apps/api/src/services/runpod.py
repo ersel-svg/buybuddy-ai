@@ -15,6 +15,7 @@ class EndpointType(str, Enum):
     TRAINING = "training"
     EMBEDDING = "embedding"
     PREVIEW = "preview"  # Segmentation preview (single frame)
+    OD_ANNOTATION = "od_annotation"  # OD AI annotation (Grounding DINO, SAM, Florence)
 
 
 class RunpodService:
@@ -30,6 +31,7 @@ class RunpodService:
             EndpointType.TRAINING: settings.runpod_endpoint_training,
             EndpointType.EMBEDDING: settings.runpod_endpoint_embedding,
             EndpointType.PREVIEW: settings.runpod_endpoint_preview,
+            EndpointType.OD_ANNOTATION: settings.runpod_endpoint_od_annotation,
         }
 
     def _get_headers(self) -> dict[str, str]:

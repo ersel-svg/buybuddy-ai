@@ -24,6 +24,8 @@ import {
   PenTool,
   Cpu,
   FolderOpen,
+  Tags,
+  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -128,6 +130,16 @@ const navigationGroups = [
         name: "Annotate",
         href: "/od/annotate",
         icon: PenTool,
+      },
+      {
+        name: "Classes",
+        href: "/od/classes",
+        icon: Tags,
+      },
+      {
+        name: "Duplicates",
+        href: "/od/duplicates",
+        icon: Copy,
       },
       {
         name: "Training",
