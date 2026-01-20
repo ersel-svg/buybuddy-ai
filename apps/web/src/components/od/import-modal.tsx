@@ -128,7 +128,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
   const [rfApiKey, setRfApiKey] = useState("");
   const [rfKeyValidated, setRfKeyValidated] = useState(false);
   const [rfWorkspaces, setRfWorkspaces] = useState<Array<{ name: string; url: string; projects: number }>>([]);
-  const [rfProjects, setRfProjects] = useState<Array<{ id: string; name: string; type: string; images: number; versions: number }>>([]);
+  const [rfProjects, setRfProjects] = useState<Array<{ id: string; name: string; type: string; images: number; versions?: number }>>([]);
   const [rfSelectedWorkspace, setRfSelectedWorkspace] = useState<string>("");
   const [rfSelectedProject, setRfSelectedProject] = useState<string>("");
   const [rfVersions, setRfVersions] = useState<Array<{ id: string; name: string; version: number; images: Record<string, number>; classes: string[] }>>([]);
@@ -1205,7 +1205,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                                 <div className="flex items-center justify-between w-full">
                                   <span>{proj.name}</span>
                                   <span className="text-muted-foreground text-xs ml-2">
-                                    {proj.images} images • {proj.versions} versions
+                                    {proj.images} images{proj.versions !== undefined ? ` • ${proj.versions} versions` : ''}
                                   </span>
                                 </div>
                               </SelectItem>
