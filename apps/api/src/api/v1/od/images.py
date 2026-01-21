@@ -1773,12 +1773,6 @@ async def import_from_roboflow(
     """Start a background import from Roboflow. Returns job ID for tracking."""
     import asyncio
 
-    # TEMPORARY BLOCK: Disable imports until zombie import is resolved
-    raise HTTPException(
-        status_code=503,
-        detail="Import temporarily disabled for maintenance. Please try again later."
-    )
-
     try:
         # Verify dataset exists
         dataset = supabase_service.client.table("od_datasets").select("id, name").eq("id", request.dataset_id).single().execute()
@@ -1900,12 +1894,6 @@ async def retry_roboflow_import(
     If the download was complete, it will resume from the processing stage.
     Otherwise, it will start a fresh download.
     """
-    # TEMPORARY BLOCK: Disable imports until zombie import is resolved
-    raise HTTPException(
-        status_code=503,
-        detail="Import temporarily disabled for maintenance. Please try again later."
-    )
-
     import asyncio
     from services.import_checkpoint import checkpoint_service
 
