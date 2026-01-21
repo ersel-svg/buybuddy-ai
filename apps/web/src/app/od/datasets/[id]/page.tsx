@@ -1788,12 +1788,12 @@ export default function ODDatasetDetailPage({
                 {/* Version Selection */}
                 <div className="space-y-3">
                   <Label>Dataset Version</Label>
-                  <Select value={selectedVersionId} onValueChange={setSelectedVersionId}>
+                  <Select value={selectedVersionId || "latest"} onValueChange={(v) => setSelectedVersionId(v === "latest" ? "" : v)}>
                     <SelectTrigger>
                       <SelectValue placeholder="Latest (current state)" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Latest (current state)</SelectItem>
+                      <SelectItem value="latest">Latest (current state)</SelectItem>
                       {versions?.map((v) => (
                         <SelectItem key={v.id} value={v.id}>
                           v{v.version_number} - {v.name || `Version ${v.version_number}`}

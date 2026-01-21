@@ -898,6 +898,261 @@ class RoboflowService:
             "augmentation": version_data.get("augmentation", {}),
         }
 
+    # ========== STREAMING IMPORT METHODS ==========
+
+    def _get_roboflow_project(self, api_key: str, workspace: str, project: str):
+        """
+        Get Roboflow SDK project instance.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace slug
+            project: Project slug
+
+        Returns:
+            Roboflow Project instance
+        """
+        from roboflow import Roboflow
+
+        rf = Roboflow(api_key=api_key)
+        # Handle full project ID (workspace/project) or just project name
+        if "/" in project:
+            project_slug = project.split("/")[-1]
+        else:
+            project_slug = project
+
+        return rf.workspace().project(project_slug)
+
+    async def list_project_images(
+        self,
+        api_key: str,
+        workspace: str,
+        project: str,
+        max_images: int = 0,
+    ) -> list[dict]:
+        """
+        List all images in a project with their IDs.
+
+        Uses Roboflow REST API directly (SDK has bugs with search_all).
+        This returns basic info (id, created timestamp) for all images.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace slug
+            project: Project slug
+            max_images: Maximum images to return (0 = all)
+
+        Returns:
+            List of image metadata dicts with 'id' and 'created' keys
+        """
+        import httpx
+
+        # Handle full project ID (workspace/project) or just project name
+        if "/" in project:
+            project_slug = project.split("/")[-1]
+        else:
+            project_slug = project
+
+        all_images = []
+        offset = 0
+        batch_size = 200  # Roboflow max is usually 200
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            while True:
+                url = f"https://api.roboflow.com/{workspace}/{project_slug}/search"
+                params = {"api_key": api_key}
+                payload = {
+                    "fields": ["id", "created", "name"],
+                    "limit": batch_size,
+                    "offset": offset,
+                }
+
+                response = await client.post(url, params=params, json=payload)
+                response.raise_for_status()
+                data = response.json()
+
+                results = data.get("results", [])
+                if not results:
+                    break
+
+                all_images.extend(results)
+                offset += len(results)
+
+                # Check if we've hit max_images limit
+                if max_images > 0 and len(all_images) >= max_images:
+                    all_images = all_images[:max_images]
+                    break
+
+                # Check if we've fetched all images
+                total = data.get("total", 0)
+                if offset >= total:
+                    break
+
+        return all_images
+
+    async def get_image_details(
+        self,
+        api_key: str,
+        workspace: str,
+        project: str,
+        image_id: str,
+        client: "httpx.AsyncClient | None" = None,
+    ) -> dict:
+        """
+        Get full image details including URLs and annotations.
+
+        Uses Roboflow REST API directly for reliability.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace slug
+            project: Project slug
+            image_id: Roboflow image ID
+            client: Optional httpx client (for connection reuse)
+
+        Returns:
+            Full image data including:
+            - urls: {original, thumb}
+            - annotation: {boxes, width, height}
+            - split: train|valid|test
+            - name: original filename
+        """
+        import httpx
+
+        # Handle full project ID (workspace/project) or just project name
+        if "/" in project:
+            project_slug = project.split("/")[-1]
+        else:
+            project_slug = project
+
+        url = f"https://api.roboflow.com/{workspace}/{project_slug}/images/{image_id}"
+        params = {"api_key": api_key}
+
+        if client:
+            response = await client.get(url, params=params)
+        else:
+            async with httpx.AsyncClient(timeout=30.0) as temp_client:
+                response = await temp_client.get(url, params=params)
+
+        response.raise_for_status()
+        data = response.json()
+
+        if "error" in data:
+            raise RuntimeError(data["error"])
+
+        if "image" not in data:
+            raise RuntimeError(f"Image {image_id} not found")
+
+        return data["image"]
+
+    async def iter_images_with_details(
+        self,
+        api_key: str,
+        workspace: str,
+        project: str,
+        image_ids: list[str],
+        concurrency: int = 20,
+    ):
+        """
+        Async generator that yields image details for given IDs.
+
+        Fetches images in parallel with controlled concurrency.
+        Uses a shared httpx client for connection reuse.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace slug
+            project: Project slug
+            image_ids: List of image IDs to fetch
+            concurrency: Max parallel requests
+
+        Yields:
+            Tuple of (image_id, image_data or None, error or None)
+        """
+        import asyncio
+        import httpx
+
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async def fetch_one(img_id: str):
+                async with semaphore:
+                    try:
+                        data = await self.get_image_details(
+                            api_key, workspace, project, img_id, client=client
+                        )
+                        return (img_id, data, None)
+                    except Exception as e:
+                        return (img_id, None, str(e))
+
+            # Create tasks for all images
+            tasks = [fetch_one(img_id) for img_id in image_ids]
+
+            # Yield results as they complete
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                yield result
+
+    async def fetch_images_with_details(
+        self,
+        api_key: str,
+        workspace: str,
+        project: str,
+        image_ids: list[str],
+        concurrency: int = 20,
+    ) -> list[tuple[str, dict | None, str | None]]:
+        """
+        Fetch image details for given IDs using asyncio.gather.
+
+        This is a non-generator version that returns all results at once,
+        which is more reliable in background task contexts.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace slug
+            project: Project slug
+            image_ids: List of image IDs to fetch
+            concurrency: Max parallel requests
+
+        Returns:
+            List of tuples (image_id, image_data or None, error or None)
+        """
+        import asyncio
+        import httpx
+
+        print(f"[DEBUG] fetch_images_with_details called with {len(image_ids)} image IDs")
+        semaphore = asyncio.Semaphore(concurrency)
+
+        print(f"[DEBUG] Creating httpx.AsyncClient...")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            print(f"[DEBUG] httpx.AsyncClient created, preparing tasks...")
+            async def fetch_one(img_id: str):
+                async with semaphore:
+                    try:
+                        data = await self.get_image_details(
+                            api_key, workspace, project, img_id, client=client
+                        )
+                        return (img_id, data, None)
+                    except Exception as e:
+                        return (img_id, None, str(e))
+
+            # Create tasks for all images and gather results
+            print(f"[DEBUG] Creating {len(image_ids)} fetch tasks...")
+            tasks = [fetch_one(img_id) for img_id in image_ids]
+            print(f"[DEBUG] Tasks created, calling asyncio.gather()...")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            print(f"[DEBUG] asyncio.gather() returned {len(results)} results")
+
+            # Convert exceptions to error tuples
+            final_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    final_results.append((image_ids[i], None, str(result)))
+                else:
+                    final_results.append(result)
+
+            return final_results
+
 
 # Singleton instance (for server-side default key usage)
 roboflow_service = RoboflowService()

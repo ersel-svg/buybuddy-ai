@@ -2430,6 +2430,16 @@ class ApiClient {
     return this.request(`/api/v1/od/images/roboflow/import/${jobId}`);
   }
 
+  async retryRoboflowImport(jobId: string): Promise<{
+    job_id: string;
+    status: string;
+    message: string;
+  }> {
+    return this.request(`/api/v1/od/images/roboflow/import/${jobId}/retry`, {
+      method: "POST",
+    });
+  }
+
   // ===========================================
   // OD AI Annotation (Phase 6)
   // ===========================================

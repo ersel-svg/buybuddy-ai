@@ -54,3 +54,6 @@ data/*
 !data/.gitkeep
 outputs/*
 !outputs/.gitkeep
+qdrant_storage/
+apps/api/data/
+notebooks/

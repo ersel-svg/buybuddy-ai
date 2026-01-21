@@ -187,19 +187,51 @@ async def add_images_to_dataset(dataset_id: str, data: ODAddImagesRequest):
 
 
 @router.delete("/{dataset_id}/images/{image_id}")
-async def remove_image_from_dataset(dataset_id: str, image_id: str):
-    """Remove an image from a dataset (also deletes its annotations in this dataset)."""
+async def remove_image_from_dataset(dataset_id: str, image_id: str, delete_completely: bool = True):
+    """
+    Remove an image from a dataset.
+
+    If delete_completely=True (default), also deletes:
+    - Annotations for this image
+    - The image record from od_images
+    - The image file from storage
+
+    If delete_completely=False, only removes the dataset link (image stays in system).
+    """
     # Get dataset_image record
     di = supabase_service.client.table("od_dataset_images").select("*").eq("dataset_id", dataset_id).eq("image_id", image_id).single().execute()
 
     if not di.data:
         raise HTTPException(status_code=404, detail="Image not in dataset")
 
+    # Get image data for storage deletion
+    image_data = None
+    if delete_completely:
+        image_result = supabase_service.client.table("od_images").select("filename").eq("id", image_id).single().execute()
+        image_data = image_result.data
+
     # Delete annotations for this image in this dataset
     supabase_service.client.table("od_annotations").delete().eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
     # Delete dataset_image record
     supabase_service.client.table("od_dataset_images").delete().eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+
+    # If delete_completely, also delete the image itself
+    if delete_completely:
+        # Check if image is used in other datasets
+        other_datasets = supabase_service.client.table("od_dataset_images").select("id").eq("image_id", image_id).limit(1).execute()
+
+        if not other_datasets.data:
+            # Not used elsewhere, safe to delete completely
+            # Delete from storage
+            if image_data and image_data.get("filename"):
+                try:
+                    supabase_service.client.storage.from_("od-images").remove([image_data["filename"]])
+                except Exception:
+                    pass  # Continue even if storage delete fails
+
+            # Delete image record
+            supabase_service.client.table("od_images").delete().eq("id", image_id).execute()
 
     # Update dataset counts
     dataset = supabase_service.client.table("od_datasets").select("image_count, annotation_count").eq("id", dataset_id).single().execute()
@@ -211,13 +243,28 @@ async def remove_image_from_dataset(dataset_id: str, image_id: str):
             "annotation_count": new_annotation_count,
         }).eq("id", dataset_id).execute()
 
-    return {"status": "removed", "dataset_id": dataset_id, "image_id": image_id}
+    return {"status": "removed", "dataset_id": dataset_id, "image_id": image_id, "deleted_completely": delete_completely}
 
 
 @router.post("/{dataset_id}/images/bulk-remove")
-async def remove_images_bulk(dataset_id: str, image_ids: list[str]):
-    """Remove multiple images from a dataset."""
+async def remove_images_bulk(dataset_id: str, image_ids: list[str], delete_completely: bool = True):
+    """
+    Remove multiple images from a dataset.
+
+    If delete_completely=True (default), also deletes:
+    - Annotations for these images
+    - Image records from od_images (if not used in other datasets)
+    - Image files from storage
+    """
     removed = 0
+    deleted_from_storage = 0
+
+    # Get all image filenames for storage deletion
+    images_data = {}
+    if delete_completely:
+        images_result = supabase_service.client.table("od_images").select("id, filename").in_("id", image_ids).execute()
+        images_data = {img["id"]: img["filename"] for img in (images_result.data or [])}
+
     for image_id in image_ids:
         try:
             # Delete annotations
@@ -226,6 +273,24 @@ async def remove_images_bulk(dataset_id: str, image_ids: list[str]):
             result = supabase_service.client.table("od_dataset_images").delete().eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
             if result.data:
                 removed += 1
+
+                # If delete_completely, also delete the image itself
+                if delete_completely:
+                    # Check if image is used in other datasets
+                    other_datasets = supabase_service.client.table("od_dataset_images").select("id").eq("image_id", image_id).limit(1).execute()
+
+                    if not other_datasets.data:
+                        # Not used elsewhere, safe to delete completely
+                        filename = images_data.get(image_id)
+                        if filename:
+                            try:
+                                supabase_service.client.storage.from_("od-images").remove([filename])
+                                deleted_from_storage += 1
+                            except Exception:
+                                pass
+
+                        # Delete image record
+                        supabase_service.client.table("od_images").delete().eq("id", image_id).execute()
         except Exception:
             continue
 
@@ -234,7 +299,7 @@ async def remove_images_bulk(dataset_id: str, image_ids: list[str]):
     new_count = count_result.count or 0
     supabase_service.client.table("od_datasets").update({"image_count": new_count}).eq("id", dataset_id).execute()
 
-    return {"removed": removed}
+    return {"removed": removed, "deleted_from_storage": deleted_from_storage}
 
 
 @router.get("/{dataset_id}/classes")

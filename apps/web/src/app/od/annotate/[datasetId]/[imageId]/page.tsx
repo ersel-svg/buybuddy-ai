@@ -442,37 +442,49 @@ export default function ODAnnotationEditorPage({
       return;
     }
 
-    let successCount = 0;
-    const newAnnotations: typeof annotations = [];
+    // Use bulk create for better performance (single API call instead of N calls)
+    const annotationsToCreate = selectedPredictions.map(prediction => ({
+      class_id: targetClassId,
+      bbox: prediction.bbox,
+      is_ai_generated: true,
+      confidence: prediction.confidence,
+    }));
 
-    for (const prediction of selectedPredictions) {
-      try {
-        const newAnnotation = await createMutation.mutateAsync({
+    try {
+      const result = await apiClient.createODAnnotationsBulk(datasetId, imageId, annotationsToCreate);
+
+      if (result.created > 0 && result.annotation_ids.length > 0) {
+        // Construct annotation objects from predictions + returned IDs
+        const newAnnotations = result.annotation_ids.map((id, idx) => ({
+          id,
+          image_id: imageId,
           class_id: targetClassId,
-          bbox: prediction.bbox,
+          class_name: targetClass.name,
+          class_display_name: targetClass.display_name,
+          class_color: targetClass.color,
+          bbox: selectedPredictions[idx].bbox,
           is_ai_generated: true,
-          confidence: prediction.confidence,
-        });
-        newAnnotations.push(newAnnotation);
-        successCount++;
-      } catch {
-        // Continue with others if one fails
+          confidence: selectedPredictions[idx].confidence,
+          created_at: new Date().toISOString(),
+        }));
+
+        const updatedAnnotations = [...annotations, ...newAnnotations];
+        setAnnotations(updatedAnnotations);
+        pushHistory(updatedAnnotations, `Accept ${result.created} AI predictions as ${targetClass.display_name || targetClass.name}`);
+
+        // Remove accepted predictions
+        setAiPredictions((prev) => prev.filter((_, i) => !indices.includes(i)));
+
+        toast.success(`Added ${result.created} annotations as "${targetClass.display_name || targetClass.name}"`);
+
+        // Invalidate cache to sync with server
+        queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
       }
+    } catch (error) {
+      console.error("Bulk create failed:", error);
+      toast.error("Failed to create annotations");
     }
-
-    if (newAnnotations.length > 0) {
-      const updatedAnnotations = [...annotations, ...newAnnotations];
-      setAnnotations(updatedAnnotations);
-      pushHistory(updatedAnnotations, `Accept ${successCount} AI predictions as ${targetClass.display_name || targetClass.name}`);
-    }
-
-    // Remove accepted predictions
-    setAiPredictions((prev) => prev.filter((_, i) => !indices.includes(i)));
-
-    if (successCount > 0) {
-      toast.success(`Added ${successCount} annotations as "${targetClass.display_name || targetClass.name}"`);
-    }
-  }, [aiPredictions, classes, createMutation, annotations, pushHistory]);
+  }, [aiPredictions, classes, datasetId, imageId, annotations, pushHistory, queryClient]);
 
   const handleRejectAIPrediction = useCallback((index: number) => {
     setAiPredictions((prev) => prev.filter((_, i) => i !== index));

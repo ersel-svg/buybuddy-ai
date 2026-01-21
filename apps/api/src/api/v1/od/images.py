@@ -1466,6 +1466,109 @@ class RoboflowImportRequest(BaseModel):
     format: str = "coco"
     skip_duplicates: bool = True
     merge_annotations: bool = False
+    use_streaming: bool = True  # NEW: Use streaming by default
+
+
+async def _run_roboflow_import_streaming(job_id: str, request_data: dict):
+    """
+    Background task to run Roboflow import using STREAMING.
+
+    This imports images directly from Roboflow URLs without downloading
+    the entire ZIP file first. Much faster and more memory-efficient.
+    """
+    import logging
+    from services.roboflow_streaming import streaming_import_from_roboflow
+
+    logger = logging.getLogger(__name__)
+
+    def update_job(progress: int, stage: str, message: str, status: str = "running"):
+        """Helper to update job progress."""
+        try:
+            supabase_service.client.table("jobs").update({
+                "status": status,
+                "progress": progress,
+                "result": {
+                    "stage": stage,
+                    "message": message,
+                }
+            }).eq("id", job_id).execute()
+        except Exception:
+            pass
+
+    def fail_job(error: str):
+        """Helper to mark job as failed."""
+        logger.error(f"Roboflow streaming import job {job_id} failed: {error}")
+        try:
+            supabase_service.client.table("jobs").update({
+                "status": "failed",
+                "error": error,
+                "result": {
+                    "stage": "failed",
+                    "error": error,
+                }
+            }).eq("id", job_id).execute()
+        except Exception:
+            pass
+
+    try:
+        update_job(5, "initializing", "Starting streaming import from Roboflow...")
+
+        last_progress = 0
+
+        def progress_callback(processed: int, total: int, message: str):
+            nonlocal last_progress
+            print(f"[DEBUG] progress_callback called: processed={processed}, total={total}")
+            if total > 0:
+                pct = 5 + int((processed / total) * 90)  # 5-95%
+                print(f"[DEBUG] pct={pct}, last_progress={last_progress}, update? {pct >= last_progress + 5}")
+                if pct >= last_progress + 5:  # Update every 5%
+                    last_progress = pct
+                    print(f"[DEBUG] Updating job progress to {pct}%")
+                    update_job(pct, "streaming", message)
+
+        # Run streaming import
+        print(f"[DEBUG] Starting streaming_import_from_roboflow for job {job_id}")
+        result = await streaming_import_from_roboflow(
+            api_key=request_data["api_key"],
+            workspace=request_data["workspace"],
+            project=request_data["project"],
+            dataset_id=request_data["dataset_id"],
+            class_mapping=request_data.get("class_mapping", []),
+            concurrency=10,  # 10 parallel uploads
+            progress_callback=progress_callback,
+        )
+        print(f"[DEBUG] streaming_import_from_roboflow returned: success={result.success}, images={result.images_imported}")
+
+        # Complete the job
+        if result.success:
+            supabase_service.client.table("jobs").update({
+                "status": "completed",
+                "progress": 100,
+                "result": {
+                    "stage": "completed",
+                    "success": True,
+                    "images_imported": result.images_imported,
+                    "annotations_imported": result.annotations_imported,
+                    "images_skipped": result.images_skipped,
+                    "images_failed": result.images_failed,
+                    "errors": result.errors[:20] if result.errors else [],
+                }
+            }).eq("id", job_id).execute()
+
+            logger.info(
+                f"Roboflow streaming import job {job_id} completed: "
+                f"{result.images_imported} images, {result.annotations_imported} annotations"
+            )
+        else:
+            error_msg = result.errors[0] if result.errors else "Import failed"
+            fail_job(error_msg)
+
+    except Exception as e:
+        import traceback
+        print(f"[DEBUG] EXCEPTION in streaming import task {job_id}: {e}")
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+        logger.exception(f"Unexpected error in Roboflow streaming import job {job_id}")
+        fail_job(f"Unexpected error: {str(e)}")
 
 
 async def _run_roboflow_import(job_id: str, request_data: dict, resume_checkpoint=None):
@@ -1668,6 +1771,8 @@ async def import_from_roboflow(
     background_tasks: BackgroundTasks,
 ):
     """Start a background import from Roboflow. Returns job ID for tracking."""
+    import asyncio
+
     try:
         # Verify dataset exists
         dataset = supabase_service.client.table("od_datasets").select("id, name").eq("id", request.dataset_id).single().execute()
@@ -1688,6 +1793,7 @@ async def import_from_roboflow(
                 "api_key": request.api_key,  # Stored for resume
                 "skip_duplicates": request.skip_duplicates,
                 "merge_annotations": request.merge_annotations,
+                "use_streaming": request.use_streaming,  # NEW
                 "class_mapping": [
                     {
                         "source_name": m.source_name,
@@ -1725,13 +1831,20 @@ async def import_from_roboflow(
             ]
         }
 
-        # Start background task
-        background_tasks.add_task(_run_roboflow_import, job["id"], request_data)
+        # Start background task using asyncio.create_task for async functions
+        # This ensures the task runs on the current event loop properly
+        if request.use_streaming:
+            asyncio.create_task(_run_roboflow_import_streaming(job["id"], request_data))
+            message = "Streaming import started. Use job_id to track progress."
+        else:
+            asyncio.create_task(_run_roboflow_import(job["id"], request_data))
+            message = "Import started (ZIP mode). Use job_id to track progress."
 
         return {
             "job_id": job["id"],
             "status": "started",
-            "message": "Import started. Use job_id to track progress.",
+            "message": message,
+            "mode": "streaming" if request.use_streaming else "zip",
         }
 
     except HTTPException:
@@ -1781,6 +1894,7 @@ async def retry_roboflow_import(
     If the download was complete, it will resume from the processing stage.
     Otherwise, it will start a fresh download.
     """
+    import asyncio
     from services.import_checkpoint import checkpoint_service
 
     # Get the job
@@ -1838,9 +1952,9 @@ async def retry_roboflow_import(
         "progress": checkpoint.download_complete * 50 if checkpoint else 0,  # Start at 50% if download complete
     }).eq("id", job_id).execute()
 
-    # Start background task
+    # Start background task using asyncio.create_task for async functions
     if can_resume:
-        background_tasks.add_task(_run_roboflow_import, job_id, request_data, checkpoint)
+        asyncio.create_task(_run_roboflow_import(job_id, request_data, checkpoint))
         return {
             "job_id": job_id,
             "status": "resumed",
@@ -1850,7 +1964,7 @@ async def retry_roboflow_import(
     else:
         # Clean up any partial files and start fresh
         checkpoint_service.cleanup_job(job_id)
-        background_tasks.add_task(_run_roboflow_import, job_id, request_data, None)
+        asyncio.create_task(_run_roboflow_import(job_id, request_data, None))
         return {
             "job_id": job_id,
             "status": "restarted",

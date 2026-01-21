@@ -4,6 +4,7 @@ BuyBuddy AI Platform - FastAPI Backend
 Main application entry point.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -86,7 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     print(f"   API prefix: {settings.api_prefix}")
 
     # Resume interrupted Roboflow imports
-    await resume_interrupted_roboflow_imports()
+    # NOTE: Disabled for now - was causing startup hang
+    # TODO: Fix the underlying issue in resume_interrupted_roboflow_imports
+    # await resume_interrupted_roboflow_imports()
 
     # Cleanup old import files
     try:
