@@ -20,6 +20,8 @@ from .classes import router as classes_router
 from .datasets import router as datasets_router
 from .annotations import router as annotations_router
 from .ai import router as ai_router
+from .training import router as training_router
+from .models import router as models_router
 
 router = APIRouter()
 
@@ -29,6 +31,8 @@ router.include_router(classes_router, prefix="/classes", tags=["OD Classes"])
 router.include_router(datasets_router, prefix="/datasets", tags=["OD Datasets"])
 router.include_router(annotations_router, prefix="/annotations", tags=["OD Annotations"])
 router.include_router(ai_router, prefix="/ai", tags=["OD AI Annotation"])
+router.include_router(training_router, prefix="/training", tags=["OD Training"])
+router.include_router(models_router, prefix="/models", tags=["OD Models"])
 
 
 # Health check endpoint for OD module

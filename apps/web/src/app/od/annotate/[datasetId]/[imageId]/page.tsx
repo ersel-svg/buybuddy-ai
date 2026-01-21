@@ -1267,6 +1267,41 @@ export default function ODAnnotationEditorPage({
   }, [annotations, selectedIds, pushHistory, datasetId, imageId, queryClient]);
 
   // ============================================
+  // DELETE ALL
+  // ============================================
+
+  const deleteAll = useCallback(async () => {
+    if (annotations.length === 0) return;
+
+    // Confirm before deleting all
+    if (!window.confirm(`Delete all ${annotations.length} annotations? This cannot be undone.`)) {
+      return;
+    }
+
+    // Filter out temp annotations (not saved to DB yet)
+    const dbAnnotationIds = annotations
+      .filter((ann) => !ann.id.startsWith("temp-"))
+      .map((ann) => ann.id);
+
+    // Use bulk delete for efficiency
+    if (dbAnnotationIds.length > 0) {
+      try {
+        await apiClient.deleteODAnnotationsBulk(datasetId, imageId, dbAnnotationIds);
+        queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+      } catch (error) {
+        toast.error("Failed to delete annotations");
+        return;
+      }
+    }
+
+    const count = annotations.length;
+    setAnnotations([]);
+    pushHistory([], `Delete all ${count} annotation(s)`);
+    setSelectedIds(new Set());
+    toast.success(`Deleted all ${count} annotation(s)`);
+  }, [annotations, pushHistory, datasetId, imageId, queryClient]);
+
+  // ============================================
   // SELECT ALL
   // ============================================
 
@@ -1827,7 +1862,7 @@ export default function ODAnnotationEditorPage({
 
   if (imageInfoLoading || annotationsLoading) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
+      <div className="flex items-center justify-center h-full">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
@@ -1838,7 +1873,7 @@ export default function ODAnnotationEditorPage({
   // ============================================
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex flex-col bg-background">
+    <div className="h-full flex flex-col bg-background">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 border-b bg-card">
         <div className="flex items-center gap-4">
@@ -2210,12 +2245,25 @@ export default function ODAnnotationEditorPage({
               Annotations
               <Badge variant="secondary">{annotations.length}</Badge>
             </h3>
-            {selectedIds.size > 0 && (
-              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={deleteSelected}>
-                <Trash2 className="h-3 w-3 mr-1" />
-                {selectedIds.size}
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {selectedIds.size > 0 && (
+                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={deleteSelected}>
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  {selectedIds.size}
+                </Button>
+              )}
+              {annotations.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-red-600 hover:text-red-700 hover:bg-red-100"
+                  onClick={deleteAll}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  All
+                </Button>
+              )}
+            </div>
           </div>
 
           <ScrollArea className="flex-1 min-h-0">

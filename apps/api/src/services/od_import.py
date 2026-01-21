@@ -41,35 +41,138 @@ from services.supabase import supabase_service
 
 
 # ===========================================
-# Storage Upload Helper with Retry
+# Color Generation for New Classes
+# ===========================================
+
+# Predefined colors for new classes (distinguishable colors)
+DEFAULT_CLASS_COLORS = [
+    "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+    "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
+    "#F8B500", "#00CED1", "#FF69B4", "#32CD32", "#FFD700",
+    "#8A2BE2", "#00FA9A", "#FF4500", "#1E90FF", "#FF1493",
+]
+
+_color_index = 0
+
+def get_next_class_color() -> str:
+    """Get the next color from the predefined color list."""
+    global _color_index
+    color = DEFAULT_CLASS_COLORS[_color_index % len(DEFAULT_CLASS_COLORS)]
+    _color_index += 1
+    return color
+
+
+# ===========================================
+# Concurrent Import Protection
+# ===========================================
+
+async def check_concurrent_import(dataset_id: str) -> tuple[bool, str | None]:
+    """
+    Check if there's already an import running for this dataset.
+
+    Returns:
+        (is_locked, job_id): is_locked is True if another import is running
+    """
+    try:
+        result = supabase_service.client.table("jobs").select(
+            "id, status"
+        ).eq("resource_id", dataset_id).in_(
+            "status", ["pending", "processing"]
+        ).eq("job_type", "roboflow_import").execute()
+
+        if result.data and len(result.data) > 0:
+            return True, result.data[0]["id"]
+        return False, None
+    except Exception:
+        # If we can't check, allow the import to proceed
+        return False, None
+
+
+# ===========================================
+# Adaptive Rate Limiter for Bulk Uploads
+# ===========================================
+
+class AdaptiveRateLimiter:
+    """
+    Adaptive rate limiter that slows down when errors occur.
+    Thread-safe for use with concurrent uploads.
+    """
+    def __init__(self):
+        self.consecutive_errors = 0
+        self.delay_multiplier = 1.0
+        self.max_multiplier = 10.0
+        self.base_delay = 0.15  # 150ms base delay between uploads
+        self._lock = asyncio.Lock() if asyncio else None
+
+    def reset(self):
+        """Reset to default state."""
+        self.consecutive_errors = 0
+        self.delay_multiplier = 1.0
+
+    def on_error(self):
+        """Called when a rate limit error occurs."""
+        self.consecutive_errors += 1
+        self.delay_multiplier = min(
+            1.0 + (self.consecutive_errors * 0.5),
+            self.max_multiplier
+        )
+        logger.info(f"Rate limit hit #{self.consecutive_errors}, delay multiplier: {self.delay_multiplier:.1f}x")
+
+    def on_success(self):
+        """Called after successful upload."""
+        if self.consecutive_errors > 0:
+            self.consecutive_errors = max(0, self.consecutive_errors - 1)
+            self.delay_multiplier = max(1.0, self.delay_multiplier - 0.25)
+
+    def get_delay(self) -> float:
+        """Get current delay to apply before next upload."""
+        return self.base_delay * self.delay_multiplier
+
+
+# Global rate limiter instance
+_rate_limiter = AdaptiveRateLimiter()
+
+
+# ===========================================
+# Storage Upload Helper with Retry (Enhanced)
 # ===========================================
 
 def upload_to_storage_with_retry(
     filename: str,
     content: bytes,
     content_type: str,
-    max_retries: int = 3,
-    base_delay: float = 2.0,
-) -> bool:
+    max_retries: int = 8,  # Increased from 3 for stability
+    base_delay: float = 3.0,  # Increased from 2.0
+) -> tuple[bool, str]:
     """
-    Upload a file to Supabase Storage with retry logic.
+    Upload a file to Supabase Storage with enhanced retry logic.
 
-    Uses exponential backoff: 2s, 4s, 8s between retries.
+    Features:
+    - Adaptive rate limiting: slows down when errors occur
+    - Duplicate detection: treats 409 as "soft success"
+    - More retries with longer delays for stability
+    - Exponential backoff with jitter
 
     Args:
         filename: Target filename in storage
         content: File content bytes
         content_type: MIME type
-        max_retries: Maximum number of retry attempts
-        base_delay: Base delay in seconds (doubles each retry)
+        max_retries: Maximum retry attempts (default 8)
+        base_delay: Base delay in seconds (default 3.0)
 
     Returns:
-        True if upload succeeded
-
-    Raises:
-        Exception: If all retries fail
+        Tuple of (success: bool, status: str):
+        - (True, "uploaded") - New file uploaded successfully
+        - (True, "exists") - File already existed (duplicate, 409)
+        - (False, error_message) - Upload failed
     """
+    import random
     last_error = None
+
+    # Apply adaptive delay before upload
+    adaptive_delay = _rate_limiter.get_delay()
+    if adaptive_delay > 0:
+        time.sleep(adaptive_delay)
 
     for attempt in range(max_retries):
         try:
@@ -78,28 +181,56 @@ def upload_to_storage_with_retry(
                 content,
                 {"content-type": content_type}
             )
-            return True
+            _rate_limiter.on_success()
+            return (True, "uploaded")
 
         except Exception as e:
             last_error = e
             error_msg = str(e).lower()
 
-            # Check if it's a timeout or network error (retriable)
-            if any(term in error_msg for term in ["timeout", "timed out", "connection", "network", "socket"]):
+            # Check for duplicate (409 Conflict) - treat as soft success
+            if "409" in str(e) or "duplicate" in error_msg or "already exists" in error_msg:
+                logger.info(f"File {filename} already exists (409), treating as success")
+                return (True, "exists")
+
+            # Check if it's a retriable error
+            retriable_terms = [
+                "timeout", "timed out", "connection", "network", "socket",
+                "resource temporarily unavailable", "errno 35", "eagain",
+                "temporarily unavailable", "try again", "rate", "throttl",
+                "too many requests", "429", "503", "502",
+                # Connection reset / broken pipe errors
+                "broken pipe", "errno 32", "connection reset", "reset by peer",
+                "eof occurred", "incomplete read", "server disconnected",
+                "connection aborted", "errno 54", "errno 104",
+                # JSON parse errors (server returned non-JSON response, usually temporary)
+                "json", "decode", "expecting value", "unterminated string",
+                "invalid control character", "jsondecodeerror"
+            ]
+
+            is_rate_limit = any(term in error_msg for term in retriable_terms)
+
+            if is_rate_limit:
+                _rate_limiter.on_error()
+
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    # Exponential backoff with jitter
+                    base = base_delay * (2 ** attempt) * _rate_limiter.delay_multiplier
+                    jitter = random.uniform(0.8, 1.2)
+                    delay = min(base * jitter, 120.0)  # Cap at 2 minutes
+
                     logger.warning(
-                        f"Storage upload attempt {attempt + 1}/{max_retries} failed for {filename}: {e}. "
-                        f"Retrying in {delay}s..."
+                        f"Upload attempt {attempt + 1}/{max_retries} failed for {filename}: {e}. "
+                        f"Retrying in {delay:.1f}s..."
                     )
                     time.sleep(delay)
                     continue
             else:
-                # Non-retriable error (e.g., file too large, permission denied)
-                raise
+                # Non-retriable error
+                return (False, f"Non-retriable error: {str(e)}")
 
     # All retries exhausted
-    raise last_error or Exception(f"Upload failed after {max_retries} attempts")
+    return (False, f"Failed after {max_retries} attempts: {last_error}")
 
 
 async def upload_single_image(
@@ -107,7 +238,7 @@ async def upload_single_image(
     filename: str,
     content: bytes,
     content_type: str,
-    max_retries: int = 3,
+    max_retries: int = 8,
 ) -> tuple[bool, str, Optional[str]]:
     """
     Upload a single image with semaphore-controlled concurrency.
@@ -119,65 +250,93 @@ async def upload_single_image(
         try:
             # Run sync upload in thread pool to not block event loop
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            success, status = await loop.run_in_executor(
                 None,
                 lambda: upload_to_storage_with_retry(filename, content, content_type, max_retries)
             )
-            return (True, filename, None)
+            if success:
+                return (True, filename, None)
+            else:
+                return (False, filename, status)
         except Exception as e:
             return (False, filename, str(e))
 
 
 async def parallel_upload_images(
     images: list[tuple[str, bytes, str]],  # List of (filename, content, content_type)
-    max_concurrent: int = 5,
+    max_concurrent: int = 2,  # Reduced from 3 for better stability
     progress_callback: Optional[callable] = None,
+    batch_size: int = 100,  # Process in batches
+    batch_delay: float = 2.0,  # Delay between batches
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """
-    Upload multiple images in parallel with controlled concurrency.
+    Upload multiple images with controlled concurrency and batch processing.
 
-    This is a SOTA approach for bulk uploads:
-    - Uses asyncio.Semaphore for concurrency control
-    - Parallel uploads (5 concurrent by default)
-    - Individual retry per image
+    Enhanced for 10,000+ image uploads:
+    - Batch processing: uploads in chunks with delays between batches
+    - Lower concurrency (2 concurrent) for stability
+    - Adaptive rate limiting
     - Progress tracking
-    - Graceful error handling (continues on individual failures)
+    - Graceful error handling
 
     Args:
         images: List of (filename, content, content_type) tuples
-        max_concurrent: Maximum concurrent uploads (default 5)
+        max_concurrent: Maximum concurrent uploads (default 2)
         progress_callback: Optional callback(completed, total) for progress
+        batch_size: Number of images per batch (default 100)
+        batch_delay: Seconds to wait between batches (default 2.0)
 
     Returns:
         Tuple of (successful_filenames, failed_list[(filename, error)])
     """
+    # Reset rate limiter at start of bulk upload
+    _rate_limiter.reset()
+
     semaphore = asyncio.Semaphore(max_concurrent)
     successful = []
     failed = []
     total = len(images)
     completed = 0
 
-    # Create upload tasks
-    tasks = [
-        upload_single_image(semaphore, filename, content, content_type)
-        for filename, content, content_type in images
-    ]
+    # Process in batches for large uploads
+    num_batches = (total + batch_size - 1) // batch_size
+    logger.info(f"Starting upload of {total} images in {num_batches} batches (batch_size={batch_size}, concurrent={max_concurrent})")
 
-    # Process results as they complete
-    for coro in asyncio.as_completed(tasks):
-        success, filename, error = await coro
-        completed += 1
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, total)
+        batch = images[start_idx:end_idx]
 
-        if success:
-            successful.append(filename)
-        else:
-            failed.append((filename, error))
+        logger.info(f"Processing batch {batch_idx + 1}/{num_batches} ({len(batch)} images)")
 
-        # Progress callback
-        if progress_callback and completed % 10 == 0:
-            progress_callback(completed, total)
+        # Create upload tasks for this batch
+        tasks = [
+            upload_single_image(semaphore, filename, content, content_type)
+            for filename, content, content_type in batch
+        ]
 
-    logger.info(f"Parallel upload complete: {len(successful)} succeeded, {len(failed)} failed")
+        # Process batch results
+        for coro in asyncio.as_completed(tasks):
+            success, filename, error = await coro
+            completed += 1
+
+            if success:
+                successful.append(filename)
+            else:
+                failed.append((filename, error))
+
+            # Progress callback every 10 images
+            if progress_callback and completed % 10 == 0:
+                progress_callback(completed, total)
+
+        # Delay between batches (except for last batch)
+        if batch_idx < num_batches - 1:
+            # Adaptive delay: increase if we had errors in this batch
+            actual_delay = batch_delay * _rate_limiter.delay_multiplier
+            logger.info(f"Batch {batch_idx + 1} complete. Waiting {actual_delay:.1f}s before next batch...")
+            await asyncio.sleep(actual_delay)
+
+    logger.info(f"Upload complete: {len(successful)} succeeded, {len(failed)} failed out of {total}")
     return successful, failed
 
 
@@ -615,12 +774,21 @@ def detect_format_from_zip(zip_file: zipfile.ZipFile) -> tuple[str, dict]:
     file_list = zip_file.namelist()
 
     # Check for COCO format (annotations.json or similar)
+    # IMPORTANT: Collect ALL annotation files (train/valid/test splits)
+    coco_annotation_files = []
     for name in file_list:
         if name.endswith(".json") and ("annotation" in name.lower() or "instances" in name.lower()):
-            content = zip_file.read(name).decode("utf-8")
-            data = json.loads(content)
-            if "images" in data and "annotations" in data and "categories" in data:
-                return "coco", {"annotations_file": name}
+            try:
+                content = zip_file.read(name).decode("utf-8")
+                data = json.loads(content)
+                if "images" in data and "annotations" in data and "categories" in data:
+                    coco_annotation_files.append(name)
+            except Exception:
+                continue
+
+    if coco_annotation_files:
+        # Return all annotation files for merging
+        return "coco", {"annotations_files": coco_annotation_files}
 
     # Check for YOLO format (data.yaml + labels/)
     yaml_file = None
@@ -716,12 +884,16 @@ async def import_from_urls(
                 unique_filename = f"{uuid4()}.{ext}"
 
                 # Upload to storage with retry
-                upload_to_storage_with_retry(
+                success, status = upload_to_storage_with_retry(
                     unique_filename,
                     content,
                     content_type,
-                    max_retries=3,
+                    max_retries=8,
                 )
+
+                if not success:
+                    result.errors.append(f"{url}: Upload failed - {status}")
+                    continue
 
                 image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
 
@@ -888,12 +1060,19 @@ async def import_annotated_dataset(
     class_mapping: list[ClassMapping],
     skip_duplicates: bool = True,
     merge_annotations: bool = False,
+    atomic: bool = True,
 ) -> ImportResult:
     """
-    Import an annotated dataset from a ZIP file.
+    Import an annotated dataset from a ZIP file in memory.
 
-    This function is ATOMIC - either all data is imported successfully,
-    or nothing is imported (rollback on failure).
+    When atomic=True (default), this function is STRICTLY ATOMIC:
+    - Either ALL images upload and import successfully, or nothing is imported
+    - If ANY upload fails after retries, the entire import is rolled back
+    - This prevents orphan data (images without annotations)
+
+    When atomic=False, partial success is allowed:
+    - Successful uploads are imported even if some fail
+    - May result in partial data if connection is unstable
 
     Args:
         zip_content: The ZIP file content
@@ -901,15 +1080,24 @@ async def import_annotated_dataset(
         class_mapping: How to map source classes to target classes
         skip_duplicates: Skip images that already exist (by pHash)
         merge_annotations: If image exists, merge annotations instead of skip
+        atomic: If True, rollback on any failure (default True)
 
     Returns:
         ImportResult with statistics
     """
     result = ImportResult(success=True)
 
+    # Check for concurrent imports (protection against race conditions)
+    is_locked, existing_job_id = await check_concurrent_import(dataset_id)
+    if is_locked:
+        result.success = False
+        result.errors.append(f"Another import is already running for this dataset (job: {existing_job_id}). Please wait for it to complete.")
+        return result
+
     # Track what we've created for rollback
     uploaded_files: list[str] = []  # Storage filenames
     inserted_image_ids: list[str] = []  # Database image IDs
+    created_class_ids: list[str] = []  # Track newly created classes for potential rollback
 
     async def rollback():
         """Clean up on failure - delete all created data."""
@@ -941,6 +1129,24 @@ async def import_annotated_dataset(
             except Exception:
                 pass
 
+        # Delete newly created classes
+        for class_id in created_class_ids:
+            try:
+                supabase_service.client.table("od_classes").delete().eq("id", class_id).execute()
+            except Exception:
+                pass
+
+        # Sync dataset image count after rollback
+        try:
+            count = supabase_service.client.table("od_dataset_images").select(
+                "id", count="exact"
+            ).eq("dataset_id", dataset_id).execute()
+            supabase_service.client.table("od_datasets").update({
+                "image_count": count.count or 0
+            }).eq("id", dataset_id).execute()
+        except Exception:
+            pass
+
     try:
         with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             format_type, files_info = detect_format_from_zip(zf)
@@ -954,9 +1160,25 @@ async def import_annotated_dataset(
             imported_images: list[ImportedImage] = []
 
             if format_type == "coco":
-                content = zf.read(files_info["annotations_file"]).decode("utf-8")
-                data = json.loads(content)
-                imported_images, _ = parse_coco_json(data)
+                # Merge ALL annotation files (train/valid/test splits)
+                annotation_files = files_info.get("annotations_files", [])
+                # Backward compatibility for single file
+                if not annotation_files and "annotations_file" in files_info:
+                    annotation_files = [files_info["annotations_file"]]
+
+                logger.info(f"Found {len(annotation_files)} COCO annotation files to merge")
+                all_classes = set()
+
+                for ann_file in annotation_files:
+                    logger.info(f"Parsing: {ann_file}")
+                    content = zf.read(ann_file).decode("utf-8")
+                    data = json.loads(content)
+                    images, classes = parse_coco_json(data)
+                    imported_images.extend(images)
+                    all_classes.update(classes)
+                    logger.info(f"  -> {len(images)} images, {sum(len(img.annotations) for img in images)} annotations")
+
+                logger.info(f"Total merged: {len(imported_images)} images from {len(annotation_files)} files")
 
             elif format_type == "yolo":
                 yaml_content = zf.read(files_info["yaml_file"]).decode("utf-8")
@@ -975,12 +1197,33 @@ async def import_annotated_dataset(
                     img = parse_voc_xml(content)
                     imported_images.append(img)
 
-            # Build class mapping dict
+            # Build class mapping dict (with create_new support)
             class_map = {}
             for mapping in class_mapping:
                 if mapping.skip:
                     continue
-                class_map[mapping.source_name] = mapping.target_class_id
+
+                # Handle create_new: create a new class if target_class_id is None
+                if mapping.create_new and not mapping.target_class_id:
+                    try:
+                        color = mapping.color or get_next_class_color()
+                        new_class_result = supabase_service.client.table("od_classes").insert({
+                            "dataset_id": dataset_id,
+                            "name": mapping.source_name,
+                            "color": color,
+                        }).execute()
+
+                        if new_class_result.data:
+                            new_class_id = new_class_result.data[0]["id"]
+                            created_class_ids.append(new_class_id)
+                            class_map[mapping.source_name] = new_class_id
+                            logger.info(f"Created new class '{mapping.source_name}' with ID {new_class_id}")
+                        else:
+                            result.errors.append(f"Failed to create class '{mapping.source_name}'")
+                    except Exception as e:
+                        result.errors.append(f"Failed to create class '{mapping.source_name}': {str(e)}")
+                else:
+                    class_map[mapping.source_name] = mapping.target_class_id
 
             # Get all image files from ZIP
             image_files = {}
@@ -993,6 +1236,7 @@ async def import_annotated_dataset(
             # PHASE 1: Prepare all data (no side effects)
             # ============================================
             prepared_images = []  # List of (imported_img, image_content, image_file_path, file_hash)
+            existing_images_for_merge = []  # List of (existing_image_id, imported_img) for merge_annotations
 
             for imported_img in imported_images:
                 # Find matching image file
@@ -1026,19 +1270,19 @@ async def import_annotated_dataset(
                     file_hash = calculate_file_hash(image_content)
                     existing = await check_duplicate_by_hash(file_hash)
                     if existing:
-                        if not merge_annotations:
-                            result.duplicates_found += 1
-                            result.images_skipped += 1
-                            continue
-                        # For merge, we'd need different handling - skip for now
                         result.duplicates_found += 1
-                        result.images_skipped += 1
+                        if merge_annotations:
+                            # Track existing image for annotation merge
+                            existing_images_for_merge.append((existing["id"], imported_img))
+                            logger.info(f"Image '{imported_img.filename}' exists, will merge annotations")
+                        else:
+                            result.images_skipped += 1
                         continue
 
                 prepared_images.append((imported_img, image_content, image_file_path, file_hash))
 
-            if not prepared_images:
-                # Nothing to import
+            if not prepared_images and not existing_images_for_merge:
+                # Nothing to import and nothing to merge
                 if result.duplicates_found > 0:
                     result.success = True
                     return result
@@ -1061,24 +1305,35 @@ async def import_annotated_dataset(
                 upload_items.append((unique_filename, image_content, content_type))
                 upload_metadata.append((unique_filename, imported_img, file_hash, len(image_content)))
 
-            # Parallel upload with 5 concurrent connections
-            logger.info(f"Starting parallel upload of {len(upload_items)} images (5 concurrent)")
+            # Parallel upload with batch processing (optimized for large datasets)
+            logger.info(f"Starting batch upload of {len(upload_items)} images")
             successful_files, failed_uploads = await parallel_upload_images(
                 upload_items,
-                max_concurrent=5,
+                max_concurrent=2,  # Lower concurrency for stability
+                batch_size=100,    # Process in batches of 100
+                batch_delay=2.0,   # 2 second delay between batches
             )
 
             # Track uploaded files for potential rollback
             uploaded_files.extend(successful_files)
 
-            # Log failures but continue with successful uploads
+            # Handle upload failures based on atomic mode
             if failed_uploads:
                 for filename, error in failed_uploads:
                     result.errors.append(f"Upload failed for {filename}: {error}")
                 logger.warning(f"{len(failed_uploads)} images failed to upload")
 
-            # If ALL uploads failed, rollback and return error
-            if not successful_files:
+                # ATOMIC MODE: If ANY upload fails, rollback everything
+                if atomic:
+                    logger.warning(f"ATOMIC MODE: Rolling back {len(successful_files)} successful uploads due to {len(failed_uploads)} failures")
+                    await rollback()
+                    result.success = False
+                    result.errors.insert(0, f"ATOMIC MODE: {len(failed_uploads)} uploads failed - rolling back all {len(successful_files)} successful uploads to prevent orphan data")
+                    return result
+
+            # If ALL uploads failed (non-atomic mode), still fail
+            # BUT only if there are no existing images to merge annotations into
+            if not successful_files and not existing_images_for_merge:
                 await rollback()
                 result.success = False
                 result.errors.append("All image uploads failed")
@@ -1092,7 +1347,7 @@ async def import_annotated_dataset(
                     image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
                     image_records.append((unique_filename, image_url, imported_img, file_hash, file_size))
 
-            logger.info(f"Uploaded {len(image_records)} images to storage ({len(failed_uploads)} failed)")
+            logger.info(f"Uploaded {len(image_records)} images to storage, {len(existing_images_for_merge)} existing images for annotation merge")
 
             # ============================================
             # PHASE 3: Batch insert images to database
@@ -1155,6 +1410,9 @@ async def import_annotated_dataset(
             # PHASE 5: Batch insert annotations
             # ============================================
             annotations_to_insert = []
+            skipped_by_class: dict[str, int] = {}  # Track skipped annotations
+
+            # Process annotations for NEW images
             for unique_filename, _, imported_img, _, _ in image_records:
                 image_id = filename_to_id.get(unique_filename)
                 if not image_id:
@@ -1166,6 +1424,8 @@ async def import_annotated_dataset(
                 for ann in imported_img.annotations:
                     target_class_id = class_map.get(ann.class_name)
                     if not target_class_id:
+                        # Track skipped annotations for warning
+                        skipped_by_class[ann.class_name] = skipped_by_class.get(ann.class_name, 0) + 1
                         continue
 
                     # Ensure bbox is normalized
@@ -1185,6 +1445,46 @@ async def import_annotated_dataset(
                         "is_ai_generated": False,
                         "confidence": ann.confidence,
                     })
+
+            # Process annotations for EXISTING images (merge_annotations)
+            merged_annotations_count = 0
+            for existing_image_id, imported_img in existing_images_for_merge:
+                width = imported_img.width or 1
+                height = imported_img.height or 1
+
+                for ann in imported_img.annotations:
+                    target_class_id = class_map.get(ann.class_name)
+                    if not target_class_id:
+                        skipped_by_class[ann.class_name] = skipped_by_class.get(ann.class_name, 0) + 1
+                        continue
+
+                    # Ensure bbox is normalized
+                    bbox_x = ann.bbox_x if ann.bbox_x <= 1 else ann.bbox_x / width
+                    bbox_y = ann.bbox_y if ann.bbox_y <= 1 else ann.bbox_y / height
+                    bbox_w = ann.bbox_width if ann.bbox_width <= 1 else ann.bbox_width / width
+                    bbox_h = ann.bbox_height if ann.bbox_height <= 1 else ann.bbox_height / height
+
+                    annotations_to_insert.append({
+                        "dataset_id": dataset_id,
+                        "image_id": existing_image_id,
+                        "class_id": target_class_id,
+                        "bbox_x": max(0, min(1, bbox_x)),
+                        "bbox_y": max(0, min(1, bbox_y)),
+                        "bbox_width": max(0.001, min(1, bbox_w)),
+                        "bbox_height": max(0.001, min(1, bbox_h)),
+                        "is_ai_generated": False,
+                        "confidence": ann.confidence,
+                    })
+                    merged_annotations_count += 1
+
+            if merged_annotations_count > 0:
+                logger.info(f"Merging {merged_annotations_count} annotations to {len(existing_images_for_merge)} existing images")
+
+            # Warn about skipped annotations
+            if skipped_by_class:
+                total_skipped = sum(skipped_by_class.values())
+                classes_str = ", ".join(f"{cls}: {cnt}" for cls, cnt in skipped_by_class.items())
+                result.errors.append(f"WARNING: {total_skipped} annotations skipped (no class mapping): {classes_str}")
 
             try:
                 if annotations_to_insert:
@@ -1286,6 +1586,7 @@ async def import_annotated_dataset_from_file(
     class_mapping: list[ClassMapping],
     skip_duplicates: bool = True,
     merge_annotations: bool = False,
+    atomic: bool = True,
 ) -> ImportResult:
     """
     Import an annotated dataset from a ZIP file on disk.
@@ -1293,8 +1594,14 @@ async def import_annotated_dataset_from_file(
     This is a memory-efficient version that reads directly from disk
     instead of keeping the entire ZIP in memory.
 
-    This function is ATOMIC - either all data is imported successfully,
-    or nothing is imported (rollback on failure).
+    When atomic=True (default), this function is STRICTLY ATOMIC:
+    - Either ALL images upload and import successfully, or nothing is imported
+    - If ANY upload fails after retries, the entire import is rolled back
+    - This prevents orphan data (images without annotations)
+
+    When atomic=False, partial success is allowed:
+    - Successful uploads are imported even if some fail
+    - May result in partial data if connection is unstable
 
     Args:
         zip_file_path: Path to the ZIP file on disk
@@ -1302,6 +1609,7 @@ async def import_annotated_dataset_from_file(
         class_mapping: How to map source classes to target classes
         skip_duplicates: Skip images that already exist (by pHash)
         merge_annotations: If image exists, merge annotations instead of skip
+        atomic: If True, rollback on any failure (default True)
 
     Returns:
         ImportResult with statistics
@@ -1311,9 +1619,17 @@ async def import_annotated_dataset_from_file(
 
     result = ImportResult(success=True)
 
+    # Check for concurrent imports (protection against race conditions)
+    is_locked, existing_job_id = await check_concurrent_import(dataset_id)
+    if is_locked:
+        result.success = False
+        result.errors.append(f"Another import is already running for this dataset (job: {existing_job_id}). Please wait for it to complete.")
+        return result
+
     # Track what we've created for rollback
     uploaded_files: list[str] = []  # Storage filenames
     inserted_image_ids: list[str] = []  # Database image IDs
+    created_class_ids: list[str] = []  # Track newly created classes for potential rollback
 
     async def rollback():
         """Clean up on failure - delete all created data."""
@@ -1347,6 +1663,25 @@ async def import_annotated_dataset_from_file(
             except Exception:
                 pass
 
+        # Delete newly created classes
+        for class_id in created_class_ids:
+            try:
+                supabase_service.client.table("od_classes").delete().eq("id", class_id).execute()
+            except Exception:
+                pass
+
+        # Sync dataset image count after rollback
+        try:
+            count = supabase_service.client.table("od_dataset_images").select(
+                "id", count="exact"
+            ).eq("dataset_id", dataset_id).execute()
+            supabase_service.client.table("od_datasets").update({
+                "image_count": count.count or 0
+            }).eq("id", dataset_id).execute()
+            logger.info(f"Updated dataset {dataset_id} image_count to {count.count or 0}")
+        except Exception as e:
+            logger.warning(f"Failed to sync dataset image count: {e}")
+
     try:
         # Open ZIP file directly from disk (memory-efficient)
         with zipfile.ZipFile(zip_file_path, 'r') as zf:
@@ -1363,10 +1698,23 @@ async def import_annotated_dataset_from_file(
             imported_images: list[ImportedImage] = []
 
             if format_type == "coco":
-                content = zf.read(files_info["annotations_file"]).decode("utf-8")
-                data = json.loads(content)
-                imported_images, _ = parse_coco_json(data)
-                logger.info(f"Parsed {len(imported_images)} images from COCO annotations")
+                # Merge ALL annotation files (train/valid/test splits)
+                annotation_files = files_info.get("annotations_files", [])
+                # Backward compatibility for single file
+                if not annotation_files and "annotations_file" in files_info:
+                    annotation_files = [files_info["annotations_file"]]
+
+                logger.info(f"Found {len(annotation_files)} COCO annotation files to merge")
+
+                for ann_file in annotation_files:
+                    logger.info(f"Parsing: {ann_file}")
+                    content = zf.read(ann_file).decode("utf-8")
+                    data = json.loads(content)
+                    images, _ = parse_coco_json(data)
+                    imported_images.extend(images)
+                    logger.info(f"  -> {len(images)} images, {sum(len(img.annotations) for img in images)} annotations")
+
+                logger.info(f"Total merged: {len(imported_images)} images from {len(annotation_files)} files")
 
             elif format_type == "yolo":
                 yaml_content = zf.read(files_info["yaml_file"]).decode("utf-8")
@@ -1387,12 +1735,33 @@ async def import_annotated_dataset_from_file(
                     imported_images.append(img)
                 logger.info(f"Parsed {len(imported_images)} images from VOC annotations")
 
-            # Build class mapping dict
+            # Build class mapping dict (with create_new support)
             class_map = {}
             for mapping in class_mapping:
                 if mapping.skip:
                     continue
-                class_map[mapping.source_name] = mapping.target_class_id
+
+                # Handle create_new: create a new class if target_class_id is None
+                if mapping.create_new and not mapping.target_class_id:
+                    try:
+                        color = mapping.color or get_next_class_color()
+                        new_class_result = supabase_service.client.table("od_classes").insert({
+                            "dataset_id": dataset_id,
+                            "name": mapping.source_name,
+                            "color": color,
+                        }).execute()
+
+                        if new_class_result.data:
+                            new_class_id = new_class_result.data[0]["id"]
+                            created_class_ids.append(new_class_id)
+                            class_map[mapping.source_name] = new_class_id
+                            logger.info(f"Created new class '{mapping.source_name}' with ID {new_class_id}")
+                        else:
+                            result.errors.append(f"Failed to create class '{mapping.source_name}'")
+                    except Exception as e:
+                        result.errors.append(f"Failed to create class '{mapping.source_name}': {str(e)}")
+                else:
+                    class_map[mapping.source_name] = mapping.target_class_id
 
             # Get all image files from ZIP
             image_files = {}
@@ -1407,6 +1776,7 @@ async def import_annotated_dataset_from_file(
             # PHASE 1: Prepare all data (no side effects)
             # ============================================
             prepared_images = []  # List of (imported_img, image_content, image_file_path, file_hash)
+            existing_images_for_merge = []  # List of (existing_image_id, imported_img) for merge_annotations
 
             for imported_img in imported_images:
                 # Find matching image file
@@ -1440,19 +1810,19 @@ async def import_annotated_dataset_from_file(
                     file_hash = calculate_file_hash(image_content)
                     existing = await check_duplicate_by_hash(file_hash)
                     if existing:
-                        if not merge_annotations:
-                            result.duplicates_found += 1
-                            result.images_skipped += 1
-                            continue
-                        # For merge, we'd need different handling - skip for now
                         result.duplicates_found += 1
-                        result.images_skipped += 1
+                        if merge_annotations:
+                            # Track existing image for annotation merge
+                            existing_images_for_merge.append((existing["id"], imported_img))
+                            logger.info(f"Image '{imported_img.filename}' exists, will merge annotations")
+                        else:
+                            result.images_skipped += 1
                         continue
 
                 prepared_images.append((imported_img, image_content, image_file_path, file_hash))
 
-            if not prepared_images:
-                # Nothing to import
+            if not prepared_images and not existing_images_for_merge:
+                # Nothing to import and nothing to merge
                 if result.duplicates_found > 0:
                     result.success = True
                     logger.info(f"No new images to import, {result.duplicates_found} duplicates skipped")
@@ -1482,25 +1852,36 @@ async def import_annotated_dataset_from_file(
             def log_progress(completed: int, total: int):
                 logger.info(f"Uploaded {completed}/{total} images to storage")
 
-            # Parallel upload with 5 concurrent connections
-            logger.info(f"Starting parallel upload of {len(upload_items)} images (5 concurrent)")
+            # Parallel upload with batch processing (optimized for large datasets)
+            logger.info(f"Starting batch upload of {len(upload_items)} images")
             successful_files, failed_uploads = await parallel_upload_images(
                 upload_items,
-                max_concurrent=5,
+                max_concurrent=2,  # Lower concurrency for stability
                 progress_callback=log_progress,
+                batch_size=100,    # Process in batches of 100
+                batch_delay=2.0,   # 2 second delay between batches
             )
 
             # Track uploaded files for potential rollback
             uploaded_files.extend(successful_files)
 
-            # Log failures but continue with successful uploads
+            # Handle upload failures based on atomic mode
             if failed_uploads:
                 for filename, error in failed_uploads:
                     result.errors.append(f"Upload failed for {filename}: {error}")
                 logger.warning(f"{len(failed_uploads)} images failed to upload")
 
-            # If ALL uploads failed, rollback and return error
-            if not successful_files:
+                # ATOMIC MODE: If ANY upload fails, rollback everything
+                if atomic:
+                    logger.warning(f"ATOMIC MODE: Rolling back {len(successful_files)} successful uploads due to {len(failed_uploads)} failures")
+                    await rollback()
+                    result.success = False
+                    result.errors.insert(0, f"ATOMIC MODE: {len(failed_uploads)} uploads failed - rolling back all {len(successful_files)} successful uploads to prevent orphan data")
+                    return result
+
+            # If ALL uploads failed (non-atomic mode), still fail
+            # BUT only if there are no existing images to merge annotations into
+            if not successful_files and not existing_images_for_merge:
                 await rollback()
                 result.success = False
                 result.errors.append("All image uploads failed")
@@ -1514,7 +1895,7 @@ async def import_annotated_dataset_from_file(
                     image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
                     image_records.append((unique_filename, image_url, imported_img, file_hash, file_size))
 
-            logger.info(f"Uploaded {len(image_records)} images to storage ({len(failed_uploads)} failed)")
+            logger.info(f"Uploaded {len(image_records)} images to storage, {len(existing_images_for_merge)} existing images for annotation merge")
 
             # ============================================
             # PHASE 3: Batch insert images to database
@@ -1590,6 +1971,9 @@ async def import_annotated_dataset_from_file(
             # PHASE 5: Batch insert annotations
             # ============================================
             annotations_to_insert = []
+            skipped_by_class: dict[str, int] = {}  # Track skipped annotations
+
+            # Process annotations for NEW images
             for unique_filename, _, imported_img, _, _ in image_records:
                 image_id = filename_to_id.get(unique_filename)
                 if not image_id:
@@ -1601,6 +1985,8 @@ async def import_annotated_dataset_from_file(
                 for ann in imported_img.annotations:
                     target_class_id = class_map.get(ann.class_name)
                     if not target_class_id:
+                        # Track skipped annotations for warning
+                        skipped_by_class[ann.class_name] = skipped_by_class.get(ann.class_name, 0) + 1
                         continue
 
                     # Ensure bbox is normalized
@@ -1620,6 +2006,46 @@ async def import_annotated_dataset_from_file(
                         "is_ai_generated": False,
                         "confidence": ann.confidence,
                     })
+
+            # Process annotations for EXISTING images (merge_annotations)
+            merged_annotations_count = 0
+            for existing_image_id, imported_img in existing_images_for_merge:
+                width = imported_img.width or 1
+                height = imported_img.height or 1
+
+                for ann in imported_img.annotations:
+                    target_class_id = class_map.get(ann.class_name)
+                    if not target_class_id:
+                        skipped_by_class[ann.class_name] = skipped_by_class.get(ann.class_name, 0) + 1
+                        continue
+
+                    # Ensure bbox is normalized
+                    bbox_x = ann.bbox_x if ann.bbox_x <= 1 else ann.bbox_x / width
+                    bbox_y = ann.bbox_y if ann.bbox_y <= 1 else ann.bbox_y / height
+                    bbox_w = ann.bbox_width if ann.bbox_width <= 1 else ann.bbox_width / width
+                    bbox_h = ann.bbox_height if ann.bbox_height <= 1 else ann.bbox_height / height
+
+                    annotations_to_insert.append({
+                        "dataset_id": dataset_id,
+                        "image_id": existing_image_id,
+                        "class_id": target_class_id,
+                        "bbox_x": max(0, min(1, bbox_x)),
+                        "bbox_y": max(0, min(1, bbox_y)),
+                        "bbox_width": max(0.001, min(1, bbox_w)),
+                        "bbox_height": max(0.001, min(1, bbox_h)),
+                        "is_ai_generated": False,
+                        "confidence": ann.confidence,
+                    })
+                    merged_annotations_count += 1
+
+            if merged_annotations_count > 0:
+                logger.info(f"Merging {merged_annotations_count} annotations to {len(existing_images_for_merge)} existing images")
+
+            # Warn about skipped annotations
+            if skipped_by_class:
+                total_skipped = sum(skipped_by_class.values())
+                classes_str = ", ".join(f"{cls}: {cnt}" for cls, cnt in skipped_by_class.items())
+                result.errors.append(f"WARNING: {total_skipped} annotations skipped (no class mapping): {classes_str}")
 
             try:
                 if annotations_to_insert:

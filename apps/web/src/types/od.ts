@@ -126,9 +126,9 @@ export interface ODTrainingRun {
   description?: string;
   dataset_id: string;
   dataset_version_id?: string;
-  model_type: "rf-detr" | "rt-detr" | "yolo-nas";
-  model_size: "small" | "medium" | "large";
-  status: "pending" | "preparing" | "running" | "completed" | "failed" | "cancelled";
+  model_type: "rt-detr" | "d-fine";
+  model_size: "s" | "m" | "l" | "x";
+  status: "pending" | "preparing" | "training" | "completed" | "failed" | "cancelled";
   config: ODTrainingConfig;
   current_epoch: number;
   total_epochs: number;
@@ -143,22 +143,41 @@ export interface ODTrainingRun {
 }
 
 export interface ODTrainingConfig {
+  // Basic
   epochs: number;
   batch_size: number;
   learning_rate: number;
   image_size: number;
-  augmentation?: {
-    horizontal_flip: boolean;
-    vertical_flip: boolean;
-    rotation: number;
-    brightness: number;
-    contrast: number;
-  };
-  split?: {
-    train_ratio: number;
-    val_ratio: number;
-    test_ratio: number;
-  };
+
+  // SOTA: Augmentation preset
+  augmentation_preset?: "sota" | "heavy" | "medium" | "light" | "none";
+
+  // SOTA: EMA
+  use_ema?: boolean;
+  ema_decay?: number;
+
+  // SOTA: LLRD
+  llrd_decay?: number;
+  head_lr_factor?: number;
+
+  // SOTA: Scheduler
+  warmup_epochs?: number;
+
+  // SOTA: Mixed Precision
+  mixed_precision?: boolean;
+
+  // SOTA: Regularization
+  weight_decay?: number;
+  gradient_clip?: number;
+
+  // SOTA: Multi-scale
+  multi_scale?: boolean;
+
+  // Early stopping
+  patience?: number;
+
+  // Checkpointing
+  save_freq?: number;
 }
 
 // ===========================================
@@ -170,7 +189,7 @@ export interface ODTrainedModel {
   training_run_id: string;
   name: string;
   description?: string;
-  model_type: "rf-detr" | "rt-detr" | "yolo-nas";
+  model_type: "rt-detr" | "d-fine";
   checkpoint_url: string;
   onnx_url?: string;
   map: number;
@@ -248,8 +267,8 @@ export interface ODStartTrainingRequest {
   description?: string;
   dataset_id: string;
   dataset_version_id?: string;
-  model_type: "rf-detr" | "rt-detr" | "yolo-nas";
-  model_size?: "small" | "medium" | "large";
+  model_type: "rt-detr" | "d-fine";
+  model_size?: "s" | "m" | "l" | "x";
   config?: Partial<ODTrainingConfig>;
 }
 

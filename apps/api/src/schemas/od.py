@@ -245,10 +245,52 @@ class ODStatsResponse(BaseModel):
 # ===========================================
 
 class ODTrainingConfigBase(BaseModel):
+    """Training configuration with SOTA features for OD models."""
+
+    # Basic parameters
     epochs: int = 100
     batch_size: int = 16
     learning_rate: float = 0.0001
     image_size: int = 640
+
+    # SOTA: Augmentation preset (IMPORTANT for user)
+    augmentation_preset: str = Field(
+        default="sota",
+        description="Augmentation preset: sota, heavy, medium, light, none"
+    )
+
+    # SOTA: EMA (Exponential Moving Average)
+    use_ema: bool = Field(default=True, description="Enable EMA for stable training")
+    ema_decay: float = Field(default=0.9999, description="EMA decay rate")
+
+    # SOTA: LLRD (Layer-wise Learning Rate Decay)
+    llrd_decay: float = Field(
+        default=0.9,
+        description="Layer-wise LR decay (1.0 = no decay, 0.9 = recommended)"
+    )
+    head_lr_factor: float = Field(
+        default=10.0,
+        description="Detection head LR multiplier"
+    )
+
+    # SOTA: Scheduler
+    warmup_epochs: int = Field(default=3, description="Linear warmup epochs")
+
+    # SOTA: Mixed Precision
+    mixed_precision: bool = Field(default=True, description="Enable FP16 training")
+
+    # SOTA: Regularization
+    weight_decay: float = Field(default=0.0001, description="Weight decay")
+    gradient_clip: float = Field(default=1.0, description="Gradient clipping max norm")
+
+    # SOTA: Multi-scale training
+    multi_scale: bool = Field(default=False, description="Enable multi-scale training")
+
+    # Early stopping
+    patience: int = Field(default=20, description="Early stopping patience (epochs)")
+
+    # Checkpointing
+    save_freq: int = Field(default=5, description="Save checkpoint every N epochs")
 
 
 class ODTrainingRunCreate(BaseModel):
@@ -256,8 +298,14 @@ class ODTrainingRunCreate(BaseModel):
     description: Optional[str] = None
     dataset_id: str
     dataset_version_id: Optional[str] = None
-    model_type: str = "rf-detr"
-    model_size: str = "medium"
+    model_type: str = Field(
+        default="rt-detr",
+        description="Model type: rt-detr (Apache 2.0), d-fine (Apache 2.0)"
+    )
+    model_size: str = Field(
+        default="l",
+        description="Model size: s, m, l (and x for d-fine)"
+    )
     config: Optional[ODTrainingConfigBase] = None
 
 
@@ -539,3 +587,70 @@ class AIWebhookPayload(BaseModel):
     status: str
     output: Optional[dict] = None
     error: Optional[str] = None
+
+
+# ===========================================
+# Export Schemas (Phase 7)
+# ===========================================
+
+class ExportConfig(BaseModel):
+    """Configuration for dataset export."""
+    train_split: float = Field(default=0.8, ge=0, le=1)
+    val_split: float = Field(default=0.15, ge=0, le=1)
+    test_split: float = Field(default=0.05, ge=0, le=1)
+    image_size: Optional[int] = Field(None, description="Resize images to this size")
+    include_unannotated: bool = False
+
+
+class ExportRequest(BaseModel):
+    """Request to export a dataset."""
+    format: str = Field(..., description="Export format: yolo, coco")
+    include_images: bool = Field(default=True, description="Include image files in export")
+    version_id: Optional[str] = Field(None, description="Export specific version")
+    split: Optional[str] = Field(None, description="Export specific split only")
+    config: Optional[ExportConfig] = None
+
+
+class ExportJobResponse(BaseModel):
+    """Response for export job creation."""
+    job_id: str
+    status: str
+    download_url: Optional[str] = None
+    progress: int = 0
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+# ===========================================
+# Dataset Version Schemas (Phase 7)
+# ===========================================
+
+class DatasetVersionCreate(BaseModel):
+    """Request to create a dataset version."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    train_split: float = Field(default=0.8, ge=0, le=1)
+    val_split: float = Field(default=0.15, ge=0, le=1)
+    test_split: float = Field(default=0.05, ge=0, le=1)
+
+
+class DatasetVersionResponse(BaseModel):
+    """Response for dataset version."""
+    id: str
+    dataset_id: str
+    version_number: int
+    name: Optional[str] = None
+    description: Optional[str] = None
+    image_count: int = 0
+    annotation_count: int = 0
+    class_count: int = 0
+    train_count: int = 0
+    val_count: int = 0
+    test_count: int = 0
+    class_mapping: Optional[dict] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

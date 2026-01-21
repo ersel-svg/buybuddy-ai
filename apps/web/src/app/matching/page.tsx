@@ -731,8 +731,8 @@ export default function MatchingPage() {
         </Card>
 
         {/* Right: Candidates */}
-        <Card className="flex-1 flex flex-col min-w-0">
-          <div className="p-4 border-b">
+        <Card className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <div className="flex-1 overflow-auto p-4">
             {/* Product Info Header */}
             <div className="flex items-start gap-6">
               {/* Large Product Image - Extra large for better visibility */}
@@ -853,7 +853,7 @@ export default function MatchingPage() {
                   </div>
                 </div>
 
-                {/* Action Buttons */}
+                {/* Selection Buttons */}
                 <div className="flex items-center gap-3">
                   <Button size="sm" variant="outline" onClick={handleSelectBarcodeMatches} disabled={!candidatesData?.barcode_match_count}>
                     <Check className="h-4 w-4 mr-1" />
@@ -867,27 +867,11 @@ export default function MatchingPage() {
                     <X className="h-4 w-4 mr-1" />
                     Clear
                   </Button>
-                  <div className="flex-1" />
-                  <span className="text-sm text-muted-foreground">
-                    <span className="font-semibold">{selectedCandidates.size}</span> selected
-                  </span>
-                  <Button
-                    onClick={() => matchMutation.mutate()}
-                    disabled={selectedCandidates.size === 0 || matchMutation.isPending}
-                  >
-                    {matchMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Link className="h-4 w-4 mr-2" />
-                    )}
-                    Match Selected
-                  </Button>
                 </div>
               </div>
             )}
-          </div>
 
-          <CardContent className="flex-1 overflow-auto p-4 flex flex-col">
+            {/* Candidates Section */}
             {!selectedProductId ? (
               <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                 <Package className="h-16 w-16 mb-4 opacity-30" />
@@ -1012,7 +996,27 @@ export default function MatchingPage() {
                 )}
               </>
             )}
-          </CardContent>
+          </div>
+
+          {/* Sticky Footer - Always visible */}
+          {selectedProductId && (
+            <div className="border-t bg-background p-3 flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                <span className="font-semibold">{selectedCandidates.size}</span> selected
+              </span>
+              <Button
+                onClick={() => matchMutation.mutate()}
+                disabled={selectedCandidates.size === 0 || matchMutation.isPending}
+              >
+                {matchMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Link className="h-4 w-4 mr-2" />
+                )}
+                Match Selected
+              </Button>
+            </div>
+          )}
         </Card>
       </div>
 

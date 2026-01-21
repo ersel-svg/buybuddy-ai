@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import {
   Sheet,
   SheetContent,
@@ -640,6 +641,124 @@ export function FilterTrigger({
 }
 
 // ===========================================
+// Active Filter Chips Component
+// ===========================================
+
+export interface ActiveFilterChip {
+  id: string;
+  sectionId: string;
+  label: string;
+  value: string;
+}
+
+export interface ActiveFilterChipsProps {
+  filterState: FilterState;
+  sections: FilterSection[];
+  onRemoveFilter: (sectionId: string, value: string) => void;
+  onClearAll: () => void;
+  className?: string;
+}
+
+export function ActiveFilterChips({
+  filterState,
+  sections,
+  onRemoveFilter,
+  onClearAll,
+  className,
+}: ActiveFilterChipsProps) {
+  // Build list of active filter chips
+  const chips: ActiveFilterChip[] = useMemo(() => {
+    const result: ActiveFilterChip[] = [];
+
+    for (const [sectionId, value] of Object.entries(filterState)) {
+      const section = sections.find((s) => s.id === sectionId);
+      if (!section) continue;
+
+      if (value instanceof Set) {
+        // Checkbox filter - create chip for each selected value
+        const checkboxSection = section as CheckboxFilterSection;
+        for (const v of value) {
+          const option = checkboxSection.options.find((o) => o.value === v);
+          result.push({
+            id: `${sectionId}-${v}`,
+            sectionId,
+            label: section.label,
+            value: option?.label || v,
+          });
+        }
+      } else if (typeof value === "boolean") {
+        // Boolean filter
+        const boolSection = section as BooleanFilterSection;
+        result.push({
+          id: sectionId,
+          sectionId,
+          label: section.label,
+          value: value ? boolSection.trueLabel : boolSection.falseLabel,
+        });
+      } else if (value && typeof value === "object" && "min" in value) {
+        // Range filter
+        const rangeSection = section as RangeFilterSection;
+        result.push({
+          id: sectionId,
+          sectionId,
+          label: section.label,
+          value: `${value.min}-${value.max}${rangeSection.unit || ""}`,
+        });
+      }
+    }
+
+    return result;
+  }, [filterState, sections]);
+
+  if (chips.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={cn("flex flex-wrap items-center gap-2", className)}>
+      {chips.map((chip) => (
+        <Badge
+          key={chip.id}
+          variant="secondary"
+          className="flex items-center gap-1.5 px-2 py-1 h-7 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50 cursor-pointer group"
+          onClick={() => onRemoveFilter(chip.sectionId, chip.value)}
+        >
+          <span className="text-xs font-medium text-blue-500 dark:text-blue-400">
+            {chip.label}:
+          </span>
+          <span className="text-xs">{chip.value}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveFilter(chip.sectionId, chip.value);
+            }}
+            className="ml-0.5 text-blue-400 hover:text-blue-600 dark:text-blue-500 dark:hover:text-blue-300"
+          >
+            <svg
+              className="h-3 w-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </Badge>
+      ))}
+      {chips.length > 1 && (
+        <button
+          onClick={onClearAll}
+          className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 underline"
+        >
+          Clear all
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ===========================================
 // Hook for managing filter state
 // ===========================================
 
@@ -665,6 +784,225 @@ export function useFilterState(initialState?: FilterState) {
 
   const clearAll = useCallback(() => {
     setFilterState({});
+  }, []);
+
+  const getTotalCount = useCallback(() => {
+    let count = 0;
+    Object.entries(filterState).forEach(([, value]) => {
+      if (value instanceof Set) {
+        count += value.size;
+      } else if (typeof value === "boolean") {
+        count += 1;
+      } else if (value && typeof value === "object" && "min" in value) {
+        count += 1;
+      }
+    });
+    return count;
+  }, [filterState]);
+
+  const hasActiveFilters = useCallback(() => {
+    return getTotalCount() > 0;
+  }, [getTotalCount]);
+
+  return {
+    filterState,
+    setFilter,
+    clearSection,
+    clearAll,
+    getTotalCount,
+    hasActiveFilters,
+  };
+}
+
+// ===========================================
+// Hook for managing filter state with URL sync
+// ===========================================
+
+// URL parameter names mapping (frontend filter ID -> URL param name)
+const FILTER_URL_PARAMS: Record<string, string> = {
+  status: "status",
+  category: "category",
+  brand: "brand",
+  subBrand: "sub_brand",
+  productName: "product_name",
+  flavor: "flavor",
+  container: "container",
+  netQuantity: "net_quantity",
+  packType: "pack_type",
+  country: "country",
+  claims: "claims",
+  issueTypes: "issue_types",
+  hasVideo: "has_video",
+  hasImage: "has_image",
+  hasNutrition: "has_nutrition",
+  hasDescription: "has_description",
+  hasPrompt: "has_prompt",
+  hasIssues: "has_issues",
+  frameCount: "frame_count",
+  visibilityScore: "visibility_score",
+};
+
+// Reverse mapping (URL param name -> frontend filter ID)
+const URL_PARAM_TO_FILTER: Record<string, string> = Object.fromEntries(
+  Object.entries(FILTER_URL_PARAMS).map(([k, v]) => [v, k])
+);
+
+// Parse filter state from URL search params
+function parseFiltersFromURL(searchParams: URLSearchParams): FilterState {
+  const state: FilterState = {};
+
+  for (const [urlParam, filterId] of Object.entries(URL_PARAM_TO_FILTER)) {
+    const value = searchParams.get(urlParam);
+    if (!value) continue;
+
+    // Boolean filters
+    if (filterId.startsWith("has")) {
+      if (value === "true") {
+        state[filterId] = true;
+      } else if (value === "false") {
+        state[filterId] = false;
+      }
+    }
+    // Range filters (format: "min-max")
+    else if (filterId === "frameCount" || filterId === "visibilityScore") {
+      const match = value.match(/^(\d+)-(\d+)$/);
+      if (match) {
+        state[filterId] = {
+          min: parseInt(match[1], 10),
+          max: parseInt(match[2], 10),
+        };
+      }
+    }
+    // Checkbox filters (comma-separated values)
+    else {
+      const values = value.split(",").filter(Boolean);
+      if (values.length > 0) {
+        state[filterId] = new Set(values);
+      }
+    }
+  }
+
+  return state;
+}
+
+// Serialize filter state to URL search params
+function serializeFiltersToURL(
+  filterState: FilterState,
+  currentParams: URLSearchParams
+): URLSearchParams {
+  const params = new URLSearchParams(currentParams.toString());
+
+  // Remove all filter params first
+  for (const urlParam of Object.values(FILTER_URL_PARAMS)) {
+    params.delete(urlParam);
+  }
+
+  // Add active filters
+  for (const [filterId, value] of Object.entries(filterState)) {
+    const urlParam = FILTER_URL_PARAMS[filterId];
+    if (!urlParam) continue;
+
+    if (value instanceof Set && value.size > 0) {
+      params.set(urlParam, Array.from(value).join(","));
+    } else if (typeof value === "boolean") {
+      params.set(urlParam, String(value));
+    } else if (value && typeof value === "object" && "min" in value) {
+      params.set(urlParam, `${value.min}-${value.max}`);
+    }
+  }
+
+  return params;
+}
+
+export function useFilterStateWithURL() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  // Initialize state from URL on first render
+  const [filterState, setFilterState] = useState<FilterState>(() =>
+    parseFiltersFromURL(searchParams)
+  );
+
+  // Track if we're initialized and if URL update is needed
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [shouldUpdateURL, setShouldUpdateURL] = useState(false);
+
+  // Sync URL -> State when URL changes externally (e.g., browser back/forward)
+  useEffect(() => {
+    const urlState = parseFiltersFromURL(searchParams);
+
+    // Only update state if URL params actually differ
+    const currentKeys = Object.keys(filterState);
+    const urlKeys = Object.keys(urlState);
+
+    const statesMatch =
+      currentKeys.length === urlKeys.length &&
+      currentKeys.every(key => {
+        const current = filterState[key];
+        const fromUrl = urlState[key];
+
+        if (current instanceof Set && fromUrl instanceof Set) {
+          return current.size === fromUrl.size &&
+            Array.from(current).every(v => fromUrl.has(v));
+        }
+        if (typeof current === "object" && typeof fromUrl === "object" &&
+            current !== null && fromUrl !== null &&
+            "min" in current && "min" in fromUrl) {
+          return current.min === fromUrl.min && current.max === fromUrl.max;
+        }
+        return current === fromUrl;
+      });
+
+    if (!statesMatch && !shouldUpdateURL) {
+      setFilterState(urlState);
+    }
+
+    setIsInitialized(true);
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Update URL when filter state changes (via useEffect to avoid render-time setState)
+  useEffect(() => {
+    if (isInitialized && shouldUpdateURL) {
+      const params = serializeFiltersToURL(filterState, searchParams);
+      // Reset page when filters change
+      params.delete("page");
+      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+      setShouldUpdateURL(false);
+    }
+  }, [filterState, shouldUpdateURL, isInitialized, searchParams, router, pathname]);
+
+  const setFilter = useCallback(
+    (sectionId: string, value: Set<string> | { min: number; max: number } | boolean | undefined) => {
+      setFilterState((prev) => {
+        const newState = { ...prev };
+        if (value === undefined || (value instanceof Set && value.size === 0)) {
+          delete newState[sectionId];
+        } else {
+          newState[sectionId] = value;
+        }
+        return newState;
+      });
+      setShouldUpdateURL(true);
+    },
+    []
+  );
+
+  const clearSection = useCallback(
+    (sectionId: string) => {
+      setFilterState((prev) => {
+        const newState = { ...prev };
+        delete newState[sectionId];
+        return newState;
+      });
+      setShouldUpdateURL(true);
+    },
+    []
+  );
+
+  const clearAll = useCallback(() => {
+    setFilterState({});
+    setShouldUpdateURL(true);
   }, []);
 
   const getTotalCount = useCallback(() => {

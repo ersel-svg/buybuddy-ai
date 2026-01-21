@@ -114,6 +114,12 @@ import {
   X,
   CheckSquare,
   Sparkles,
+  Download,
+  History,
+  FileArchive,
+  GitBranch,
+  Settings2,
+  SplitSquareVertical,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -171,7 +177,7 @@ export default function ODDatasetDetailPage({
   const queryClient = useQueryClient();
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<"images" | "classes">("images");
+  const [activeTab, setActiveTab] = useState<"images" | "classes" | "versions" | "export">("images");
 
   // Images tab state
   const [page, setPage] = useState(1);
@@ -206,6 +212,25 @@ export default function ODDatasetDetailPage({
   // Classes tab state
   const [classSearch, setClassSearch] = useState("");
   const [filterCategory, setFilterCategory] = useState<string>("all");
+
+  // Versions tab state
+  const [isCreateVersionDialogOpen, setIsCreateVersionDialogOpen] = useState(false);
+  const [versionName, setVersionName] = useState("");
+  const [versionDescription, setVersionDescription] = useState("");
+  const [trainSplit, setTrainSplit] = useState(0.8);
+  const [valSplit, setValSplit] = useState(0.15);
+  const [testSplit, setTestSplit] = useState(0.05);
+
+  // Export tab state
+  const [exportFormat, setExportFormat] = useState<"yolo" | "coco">("yolo");
+  const [includeImages, setIncludeImages] = useState(true);
+  const [selectedVersionId, setSelectedVersionId] = useState<string>("");
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{
+    download_url?: string;
+    result?: { total_images: number; total_annotations: number; total_classes: number };
+    error?: string;
+  } | null>(null);
   const [isCreateClassDialogOpen, setIsCreateClassDialogOpen] = useState(false);
   const [isEditClassDialogOpen, setIsEditClassDialogOpen] = useState(false);
   const [isMergeDialogOpen, setIsMergeDialogOpen] = useState(false);
@@ -429,6 +454,89 @@ export default function ODDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to update status: ${error.message}`);
+    },
+  });
+
+  // ============ Versions Tab Queries & Mutations ============
+
+  // Fetch versions
+  const { data: versions, isLoading: versionsLoading } = useQuery({
+    queryKey: ["od-dataset-versions", datasetId],
+    queryFn: () => apiClient.getODDatasetVersions(datasetId),
+    enabled: activeTab === "versions" || activeTab === "export",
+    staleTime: 30000,
+  });
+
+  // Create version mutation
+  const createVersionMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.createODDatasetVersion(datasetId, {
+        name: versionName || undefined,
+        description: versionDescription || undefined,
+        train_split: trainSplit,
+        val_split: valSplit,
+        test_split: testSplit,
+      });
+    },
+    onSuccess: (data) => {
+      toast.success(`Version ${data.version_number} created successfully`);
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-versions", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      setIsCreateVersionDialogOpen(false);
+      setVersionName("");
+      setVersionDescription("");
+    },
+    onError: (error) => {
+      toast.error(`Failed to create version: ${error.message}`);
+    },
+  });
+
+  // Delete version mutation
+  const deleteVersionMutation = useMutation({
+    mutationFn: async (versionId: string) => {
+      return apiClient.deleteODDatasetVersion(datasetId, versionId);
+    },
+    onSuccess: () => {
+      toast.success("Version deleted");
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-versions", datasetId] });
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete version: ${error.message}`);
+    },
+  });
+
+  // Export mutation
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      setIsExporting(true);
+      return apiClient.exportODDataset(datasetId, {
+        format: exportFormat,
+        include_images: includeImages,
+        version_id: selectedVersionId || undefined,
+        config: {
+          train_split: trainSplit,
+          val_split: valSplit,
+          test_split: testSplit,
+        },
+      });
+    },
+    onSuccess: (data) => {
+      setIsExporting(false);
+      if (data.download_url) {
+        setExportResult({
+          download_url: data.download_url,
+          result: data.result,
+        });
+        toast.success("Export completed! Click download to get your file.");
+      } else if (data.error) {
+        setExportResult({ error: data.error });
+        toast.error(`Export failed: ${data.error}`);
+      }
+    },
+    onError: (error) => {
+      setIsExporting(false);
+      setExportResult({ error: error.message });
+      toast.error(`Export failed: ${error.message}`);
     },
   });
 
@@ -870,7 +978,7 @@ export default function ODDatasetDetailPage({
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "images" | "classes")}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "images" | "classes" | "versions" | "export")}>
         <TabsList>
           <TabsTrigger value="images" className="gap-2">
             <ImageIcon className="h-4 w-4" />
@@ -881,6 +989,14 @@ export default function ODDatasetDetailPage({
             <Tags className="h-4 w-4" />
             Classes
             {classes && <Badge variant="secondary" className="ml-1">{classes.length}</Badge>}
+          </TabsTrigger>
+          <TabsTrigger value="versions" className="gap-2">
+            <GitBranch className="h-4 w-4" />
+            Versions
+          </TabsTrigger>
+          <TabsTrigger value="export" className="gap-2">
+            <Download className="h-4 w-4" />
+            Export
           </TabsTrigger>
         </TabsList>
 
@@ -1495,7 +1611,473 @@ export default function ODDatasetDetailPage({
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Versions Tab */}
+        <TabsContent value="versions" className="space-y-6 mt-6">
+          <Card>
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <GitBranch className="h-5 w-5" />
+                    Dataset Versions
+                  </CardTitle>
+                  <CardDescription>
+                    Create snapshots of your dataset with train/val/test splits for training
+                  </CardDescription>
+                </div>
+                <Button onClick={() => setIsCreateVersionDialogOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create Version
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {versionsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : !versions || versions.length === 0 ? (
+                <div className="text-center py-12">
+                  <GitBranch className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-medium">No versions yet</h3>
+                  <p className="text-muted-foreground mt-1 mb-4">
+                    Create a version to snapshot your dataset with train/val/test splits
+                  </p>
+                  <Button onClick={() => setIsCreateVersionDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Create First Version
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {versions.map((version) => (
+                    <div
+                      key={version.id}
+                      className="border rounded-lg p-4 hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="font-mono">
+                              v{version.version_number}
+                            </Badge>
+                            <span className="font-medium">
+                              {version.name || `Version ${version.version_number}`}
+                            </span>
+                          </div>
+                          {version.description && (
+                            <p className="text-sm text-muted-foreground">
+                              {version.description}
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            Created {new Date(version.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                setSelectedVersionId(version.id);
+                                setActiveTab("export");
+                              }}
+                            >
+                              <Download className="h-4 w-4 mr-2" />
+                              Export this version
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-destructive"
+                              onClick={() => {
+                                if (confirm(`Delete version ${version.version_number}?`)) {
+                                  deleteVersionMutation.mutate(version.id);
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-4 mt-4">
+                        <div className="text-center p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                          <p className="text-2xl font-bold text-blue-600">{version.train_count}</p>
+                          <p className="text-xs text-muted-foreground">Train</p>
+                        </div>
+                        <div className="text-center p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                          <p className="text-2xl font-bold text-green-600">{version.val_count}</p>
+                          <p className="text-xs text-muted-foreground">Validation</p>
+                        </div>
+                        <div className="text-center p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg">
+                          <p className="text-2xl font-bold text-orange-600">{version.test_count}</p>
+                          <p className="text-xs text-muted-foreground">Test</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4 mt-3 text-sm text-muted-foreground">
+                        <span>{version.image_count} images</span>
+                        <span>{version.annotation_count} annotations</span>
+                        <span>{version.class_count} classes</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Export Tab */}
+        <TabsContent value="export" className="space-y-6 mt-6">
+          <div className="grid grid-cols-2 gap-6">
+            {/* Export Configuration */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Download className="h-5 w-5" />
+                  Export Dataset
+                </CardTitle>
+                <CardDescription>
+                  Export your dataset in YOLO or COCO format for training
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Format Selection */}
+                <div className="space-y-3">
+                  <Label>Export Format</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setExportFormat("yolo")}
+                      className={`p-4 border rounded-lg text-left transition-all ${
+                        exportFormat === "yolo"
+                          ? "border-primary bg-primary/5 ring-2 ring-primary/20"
+                          : "hover:border-muted-foreground/50"
+                      }`}
+                    >
+                      <div className="font-medium">YOLO</div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        data.yaml + labels/*.txt
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExportFormat("coco")}
+                      className={`p-4 border rounded-lg text-left transition-all ${
+                        exportFormat === "coco"
+                          ? "border-primary bg-primary/5 ring-2 ring-primary/20"
+                          : "hover:border-muted-foreground/50"
+                      }`}
+                    >
+                      <div className="font-medium">COCO</div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        annotations.json + images/
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Version Selection */}
+                <div className="space-y-3">
+                  <Label>Dataset Version</Label>
+                  <Select value={selectedVersionId} onValueChange={setSelectedVersionId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Latest (current state)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Latest (current state)</SelectItem>
+                      {versions?.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          v{v.version_number} - {v.name || `Version ${v.version_number}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Select a specific version or export the current dataset state
+                  </p>
+                </div>
+
+                {/* Split Configuration (only if no version selected) */}
+                {!selectedVersionId && (
+                  <div className="space-y-3">
+                    <Label>Train/Val/Test Split</Label>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Train</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={trainSplit}
+                          onChange={(e) => setTrainSplit(parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Val</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={valSplit}
+                          onChange={(e) => setValSplit(parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Test</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={testSplit}
+                          onChange={(e) => setTestSplit(parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                    </div>
+                    {trainSplit + valSplit + testSplit !== 1 && (
+                      <p className="text-xs text-amber-600">
+                        Splits should sum to 1.0 (currently {(trainSplit + valSplit + testSplit).toFixed(2)})
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Include Images */}
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    id="include-images"
+                    checked={includeImages}
+                    onCheckedChange={(checked) => setIncludeImages(checked as boolean)}
+                  />
+                  <Label htmlFor="include-images" className="cursor-pointer">
+                    Include image files in export
+                  </Label>
+                </div>
+
+                {/* Export Button */}
+                <Button
+                  className="w-full"
+                  size="lg"
+                  onClick={() => exportMutation.mutate()}
+                  disabled={isExporting || dataset.annotation_count === 0}
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-4 w-4 mr-2" />
+                      Export Dataset
+                    </>
+                  )}
+                </Button>
+
+                {dataset.annotation_count === 0 && (
+                  <p className="text-xs text-amber-600 text-center">
+                    Add annotations before exporting
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Export Result */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileArchive className="h-5 w-5" />
+                  Export Result
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {!exportResult ? (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <FileArchive className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p>Configure and run an export to see results here</p>
+                  </div>
+                ) : exportResult.error ? (
+                  <div className="text-center py-8">
+                    <AlertCircle className="h-12 w-12 mx-auto text-destructive mb-4" />
+                    <p className="text-destructive font-medium">Export Failed</p>
+                    <p className="text-sm text-muted-foreground mt-2">{exportResult.error}</p>
+                    <Button
+                      variant="outline"
+                      className="mt-4"
+                      onClick={() => setExportResult(null)}
+                    >
+                      Try Again
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="text-center py-4">
+                      <CheckCircle className="h-12 w-12 mx-auto text-green-600 mb-4" />
+                      <p className="font-medium text-green-600">Export Completed!</p>
+                    </div>
+
+                    {exportResult.result && (
+                      <div className="grid grid-cols-3 gap-3 text-center">
+                        <div className="p-3 bg-muted rounded-lg">
+                          <p className="text-xl font-bold">{exportResult.result.total_images}</p>
+                          <p className="text-xs text-muted-foreground">Images</p>
+                        </div>
+                        <div className="p-3 bg-muted rounded-lg">
+                          <p className="text-xl font-bold">{exportResult.result.total_annotations}</p>
+                          <p className="text-xs text-muted-foreground">Annotations</p>
+                        </div>
+                        <div className="p-3 bg-muted rounded-lg">
+                          <p className="text-xl font-bold">{exportResult.result.total_classes}</p>
+                          <p className="text-xs text-muted-foreground">Classes</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <Button
+                      className="w-full"
+                      size="lg"
+                      onClick={() => {
+                        if (exportResult.download_url) {
+                          window.open(exportResult.download_url, "_blank");
+                        }
+                      }}
+                    >
+                      <Download className="h-4 w-4 mr-2" />
+                      Download ZIP
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => setExportResult(null)}
+                    >
+                      Export Again
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
       </Tabs>
+
+      {/* Create Version Dialog */}
+      <Dialog open={isCreateVersionDialogOpen} onOpenChange={setIsCreateVersionDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GitBranch className="h-5 w-5" />
+              Create Dataset Version
+            </DialogTitle>
+            <DialogDescription>
+              Create a snapshot of your current dataset with train/val/test splits.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Version Name (optional)</Label>
+              <Input
+                placeholder="e.g., Initial training set"
+                value={versionName}
+                onChange={(e) => setVersionName(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Description (optional)</Label>
+              <Input
+                placeholder="e.g., First batch of shelf images"
+                value={versionDescription}
+                onChange={(e) => setVersionDescription(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-3">
+              <Label>Train/Val/Test Split</Label>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Train</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={trainSplit}
+                    onChange={(e) => setTrainSplit(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Val</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={valSplit}
+                    onChange={(e) => setValSplit(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Test</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={testSplit}
+                    onChange={(e) => setTestSplit(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+              </div>
+              {trainSplit + valSplit + testSplit !== 1 && (
+                <p className="text-xs text-amber-600">
+                  Splits should sum to 1.0 (currently {(trainSplit + valSplit + testSplit).toFixed(2)})
+                </p>
+              )}
+            </div>
+
+            <div className="bg-muted/50 rounded-lg p-4 text-sm">
+              <p className="font-medium mb-2">This will:</p>
+              <ul className="list-disc list-inside text-muted-foreground space-y-1">
+                <li>Snapshot all annotated images in the dataset</li>
+                <li>Randomly assign images to train/val/test splits</li>
+                <li>Freeze class mappings for this version</li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCreateVersionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => createVersionMutation.mutate()}
+              disabled={createVersionMutation.isPending}
+            >
+              {createVersionMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Create Version"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Images Sheet */}
       <Sheet open={isAddImagesSheetOpen} onOpenChange={setIsAddImagesSheetOpen}>

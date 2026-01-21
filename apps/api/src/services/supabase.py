@@ -170,6 +170,32 @@ class SupabaseService:
         elif has_prompt is False:
             query = query.is_("grounding_prompt", "null")
 
+        # JSONB filters - applied BEFORE pagination for correct filtering
+        # Claims filter (JSONB array) - check if claims array contains any of the selected values
+        claims_list = parse_csv(claims)
+        if claims_list:
+            # Use overlaps operator (&&) to check if arrays share any elements
+            # PostgREST: use ov (overlaps) for array containment
+            query = query.overlaps("claims", claims_list)
+
+        # Nutrition filter (JSONB object) - check if nutrition_facts is non-empty
+        if has_nutrition is True:
+            # Has nutrition = nutrition_facts is not null AND not empty object
+            query = query.not_.is_("nutrition_facts", "null")
+            query = query.neq("nutrition_facts", "{}")
+        elif has_nutrition is False:
+            # No nutrition = nutrition_facts is null OR empty object
+            query = query.or_("nutrition_facts.is.null,nutrition_facts.eq.{}")
+
+        # Issues filter (JSONB array) - check if issues_detected has items
+        if has_issues is True:
+            # Has issues = array is not null AND not empty
+            query = query.not_.is_("issues_detected", "null")
+            query = query.neq("issues_detected", "[]")
+        elif has_issues is False:
+            # No issues = array is null OR empty
+            query = query.or_("issues_detected.is.null,issues_detected.eq.[]")
+
         # Range filters
         if frame_count_min is not None:
             query = query.gte("frame_count", frame_count_min)
@@ -189,42 +215,13 @@ class SupabaseService:
         sort_column = sort_by if sort_by in valid_sort_columns else "created_at"
         sort_desc = sort_order != "asc"  # Default to desc
 
-        # Pagination
+        # Pagination - applied AFTER all filters for correct total count
         start = (page - 1) * limit
         end = start + limit - 1
         query = query.range(start, end).order(sort_column, desc=sort_desc)
 
         response = query.execute()
         items = response.data
-
-        # Client-side filters for complex JSONB queries
-        # (nutrition_facts, claims, issues_detected need post-filtering)
-        claims_list = parse_csv(claims)
-        if claims_list or has_nutrition is not None or has_issues is not None:
-            filtered_items = []
-            for item in items:
-                # Claims filter
-                if claims_list:
-                    item_claims = item.get("claims") or []
-                    if not any(c in item_claims for c in claims_list):
-                        continue
-
-                # Nutrition filter
-                if has_nutrition is not None:
-                    nutrition = item.get("nutrition_facts") or {}
-                    item_has_nutrition = len(nutrition) > 0
-                    if has_nutrition != item_has_nutrition:
-                        continue
-
-                # Issues filter
-                if has_issues is not None:
-                    issues = item.get("issues_detected") or []
-                    item_has_issues = len(issues) > 0
-                    if has_issues != item_has_issues:
-                        continue
-
-                filtered_items.append(item)
-            items = filtered_items
 
         # Optionally include frame counts for each product
         if include_frame_counts and items:
@@ -2306,10 +2303,10 @@ class SupabaseService:
 
     async def activate_embedding_model(self, model_id: str) -> Optional[dict[str, Any]]:
         """Activate a model for matching (deactivates others)."""
-        # Deactivate all
+        # Deactivate all currently active models
         self.client.table("embedding_models").update(
             {"is_matching_active": False}
-        ).execute()
+        ).eq("is_matching_active", True).execute()
 
         # Activate selected
         response = (

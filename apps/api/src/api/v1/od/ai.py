@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
+from config import settings
 from schemas.od import (
     AIPredictRequest,
     AIPredictResponse,

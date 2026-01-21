@@ -2531,6 +2531,465 @@ class ApiClient {
   }> {
     return this.request(`/api/v1/od/ai/jobs/${jobId}`);
   }
+
+  // ===========================================
+  // OD Dataset Export
+  // ===========================================
+
+  async exportODDataset(
+    datasetId: string,
+    params: {
+      format: "yolo" | "coco";
+      include_images?: boolean;
+      version_id?: string;
+      split?: string;
+      config?: {
+        train_split?: number;
+        val_split?: number;
+        test_split?: number;
+        image_size?: number;
+        include_unannotated?: boolean;
+      };
+    }
+  ): Promise<{
+    job_id: string;
+    status: string;
+    download_url?: string;
+    progress: number;
+    result?: {
+      total_images: number;
+      total_annotations: number;
+      total_classes: number;
+    };
+    error?: string;
+    created_at: string;
+    completed_at?: string;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/export`, {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // ===========================================
+  // OD Dataset Versioning
+  // ===========================================
+
+  async getODDatasetVersions(datasetId: string): Promise<
+    Array<{
+      id: string;
+      dataset_id: string;
+      version_number: number;
+      name?: string;
+      description?: string;
+      image_count: number;
+      annotation_count: number;
+      class_count: number;
+      train_count: number;
+      val_count: number;
+      test_count: number;
+      class_mapping?: Record<string, number>;
+      created_at: string;
+    }>
+  > {
+    return this.request(`/api/v1/od/datasets/${datasetId}/versions`);
+  }
+
+  async createODDatasetVersion(
+    datasetId: string,
+    params: {
+      name?: string;
+      description?: string;
+      train_split?: number;
+      val_split?: number;
+      test_split?: number;
+    }
+  ): Promise<{
+    id: string;
+    dataset_id: string;
+    version_number: number;
+    name?: string;
+    description?: string;
+    image_count: number;
+    annotation_count: number;
+    class_count: number;
+    train_count: number;
+    val_count: number;
+    test_count: number;
+    class_mapping?: Record<string, number>;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/versions`, {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getODDatasetVersion(
+    datasetId: string,
+    versionId: string
+  ): Promise<{
+    id: string;
+    dataset_id: string;
+    version_number: number;
+    name?: string;
+    description?: string;
+    image_count: number;
+    annotation_count: number;
+    class_count: number;
+    train_count: number;
+    val_count: number;
+    test_count: number;
+    class_mapping?: Record<string, number>;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/versions/${versionId}`);
+  }
+
+  async deleteODDatasetVersion(datasetId: string, versionId: string): Promise<{ status: string; id: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/versions/${versionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // ===========================================
+  // OD Training (Phase 8)
+  // ===========================================
+
+  async getODTrainingRuns(params?: {
+    dataset_id?: string;
+    status?: string;
+    limit?: number;
+  }): Promise<
+    Array<{
+      id: string;
+      name: string;
+      description?: string;
+      dataset_id: string;
+      dataset_version_id?: string;
+      model_type: string;
+      model_size: string;
+      status: string;
+      current_epoch: number;
+      total_epochs: number;
+      best_map?: number;
+      best_epoch?: number;
+      error_message?: string;
+      started_at?: string;
+      completed_at?: string;
+      created_at: string;
+      updated_at: string;
+    }>
+  > {
+    return this.request("/api/v1/od/training", { params });
+  }
+
+  async getODTrainingRun(trainingId: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    dataset_id: string;
+    dataset_version_id?: string;
+    model_type: string;
+    model_size: string;
+    config: Record<string, unknown>;
+    status: string;
+    current_epoch: number;
+    total_epochs: number;
+    best_map?: number;
+    best_epoch?: number;
+    metrics_history?: Array<{
+      epoch: number;
+      loss?: number;
+      map?: number;
+      map_50?: number;
+      timestamp: string;
+    }>;
+    logs?: string[];
+    error_message?: string;
+    runpod_job_id?: string;
+    started_at?: string;
+    completed_at?: string;
+    created_at: string;
+    updated_at: string;
+  }> {
+    return this.request(`/api/v1/od/training/${trainingId}`);
+  }
+
+  async createODTrainingRun(params: {
+    name: string;
+    description?: string;
+    dataset_id: string;
+    dataset_version_id?: string;
+    model_type: string;
+    model_size: string;
+    config?: {
+      epochs?: number;
+      batch_size?: number;
+      learning_rate?: number;
+      image_size?: number;
+      // SOTA features
+      augmentation_preset?: string;
+      use_ema?: boolean;
+      ema_decay?: number;
+      llrd_decay?: number;
+      head_lr_factor?: number;
+      warmup_epochs?: number;
+      mixed_precision?: boolean;
+      weight_decay?: number;
+      gradient_clip?: number;
+      multi_scale?: boolean;
+      patience?: number;
+      save_freq?: number;
+    };
+  }): Promise<{
+    id: string;
+    name: string;
+    dataset_id: string;
+    model_type: string;
+    model_size: string;
+    status: string;
+    created_at: string;
+  }> {
+    return this.request("/api/v1/od/training", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async cancelODTrainingRun(trainingId: string): Promise<{ status: string; id: string }> {
+    return this.request(`/api/v1/od/training/${trainingId}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  async deleteODTrainingRun(trainingId: string): Promise<{ status: string; id: string }> {
+    return this.request(`/api/v1/od/training/${trainingId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getODTrainingMetrics(trainingId: string): Promise<
+    Array<{
+      epoch: number;
+      loss?: number;
+      map?: number;
+      map_50?: number;
+      timestamp: string;
+    }>
+  > {
+    return this.request(`/api/v1/od/training/${trainingId}/metrics`);
+  }
+
+  async getODTrainingLogs(trainingId: string, limit?: number): Promise<string[]> {
+    return this.request(`/api/v1/od/training/${trainingId}/logs`, {
+      params: limit ? { limit } : undefined,
+    });
+  }
+
+  // ===========================================
+  // OD Trained Models (Phase 9)
+  // ===========================================
+
+  async getODTrainedModels(params?: {
+    is_active?: boolean;
+    model_type?: string;
+    limit?: number;
+  }): Promise<
+    Array<{
+      id: string;
+      training_run_id?: string;
+      name: string;
+      description?: string;
+      model_type: string;
+      checkpoint_url: string;
+      map?: number;
+      map_50?: number;
+      class_count: number;
+      is_active: boolean;
+      is_default: boolean;
+      created_at: string;
+    }>
+  > {
+    return this.request("/api/v1/od/models", { params });
+  }
+
+  async getODTrainedModel(modelId: string): Promise<{
+    id: string;
+    training_run_id?: string;
+    name: string;
+    description?: string;
+    model_type: string;
+    checkpoint_url: string;
+    map?: number;
+    map_50?: number;
+    class_count: number;
+    class_names?: string[];
+    is_active: boolean;
+    is_default: boolean;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/od/models/${modelId}`);
+  }
+
+  async updateODTrainedModel(
+    modelId: string,
+    data: {
+      name?: string;
+      description?: string;
+      is_active?: boolean;
+    }
+  ): Promise<{ id: string }> {
+    return this.request(`/api/v1/od/models/${modelId}`, {
+      method: "PATCH",
+      body: data,
+    });
+  }
+
+  async setDefaultODModel(modelId: string): Promise<{ id: string; is_default: boolean }> {
+    return this.request(`/api/v1/od/models/${modelId}/set-default`, {
+      method: "POST",
+    });
+  }
+
+  async deleteODTrainedModel(modelId: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/od/models/${modelId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async downloadODModel(modelId: string): Promise<Blob> {
+    return this.requestBlob(`/api/v1/od/models/${modelId}/download`);
+  }
+
+  // ===========================================
+  // Product Matcher
+  // ===========================================
+
+  async uploadProductMatcherFile(file: File): Promise<{
+    file_name: string;
+    columns: string[];
+    total_rows: number;
+    preview: Record<string, unknown>[];
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/product-matcher/upload`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Upload failed");
+    }
+
+    return response.json();
+  }
+
+  async matchProducts(
+    rows: Record<string, unknown>[],
+    matchRules: Array<{ source_column: string; target_field: string; priority: number }>
+  ): Promise<{
+    matched: Array<{
+      source_row: Record<string, unknown>;
+      product: {
+        id: string;
+        barcode: string;
+        product_name?: string;
+        brand_name?: string;
+        category?: string;
+        status: string;
+      };
+      matched_by: string;
+    }>;
+    unmatched: Array<{ source_row: Record<string, unknown> }>;
+    summary: {
+      total: number;
+      matched_count: number;
+      unmatched_count: number;
+      match_rate: number;
+    };
+  }> {
+    return this.request("/api/v1/product-matcher/match", {
+      method: "POST",
+      body: {
+        rows,
+        mapping_config: { match_rules: matchRules },
+      },
+    });
+  }
+
+  async createBulkScanRequests(params: {
+    items: Array<{ barcode: string; product_name?: string; brand_name?: string }>;
+    requester_name: string;
+    requester_email: string;
+    source_file?: string;
+    notes?: string;
+  }): Promise<{
+    created_count: number;
+    skipped_count: number;
+    skipped_barcodes: string[];
+  }> {
+    return this.request("/api/v1/product-matcher/create-scan-requests", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async exportMatchedProducts(
+    items: Array<{
+      source_row: Record<string, unknown>;
+      product: Record<string, unknown>;
+      matched_by: string;
+    }>,
+    columns: string[]
+  ): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/api/v1/product-matcher/export/matched`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ items, columns }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Export failed");
+    }
+
+    return response.blob();
+  }
+
+  async exportUnmatchedProducts(
+    items: Array<{ source_row: Record<string, unknown> }>,
+    columns: string[]
+  ): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/api/v1/product-matcher/export/unmatched`, {
+      method: "POST",
+      headers: {
+        ...getAuthHeader(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ items, columns }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Export failed");
+    }
+
+    return response.blob();
+  }
+
+  async getProductMatcherSystemFields(): Promise<
+    Array<{ value: string; label: string; description: string }>
+  > {
+    return this.request("/api/v1/product-matcher/system-fields");
+  }
 }
 
 // Custom error class for API errors

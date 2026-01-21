@@ -30,6 +30,7 @@ from services.od_import import (
     calculate_phash,
     calculate_file_hash,
     ClassMapping,
+    parallel_upload_images,
 )
 from schemas.od import (
     ODImageResponse,
@@ -362,20 +363,34 @@ async def upload_images_bulk(
     files: list[UploadFile] = File(...),
     skip_duplicates: bool = Form(False),
 ):
-    """Upload multiple images with duplicate detection."""
+    """
+    Upload multiple images with duplicate detection.
+
+    Uses SOTA batch processing with:
+    - Adaptive rate limiting
+    - Parallel uploads (2 concurrent)
+    - Batch processing (100 images per batch)
+    - Automatic retry with exponential backoff
+    """
     from PIL import Image
     import io
 
-    uploaded = []
+    # ============================================
+    # PHASE 1: Prepare all images (validation + duplicate check)
+    # ============================================
+    upload_items = []  # (filename, content, content_type)
+    upload_metadata = []  # (filename, original_filename, width, height, file_size, file_hash, phash)
     skipped = 0
 
     for file in files:
         content = await file.read()
 
+        # Validate image
         try:
             img = Image.open(io.BytesIO(content))
             width, height = img.size
         except Exception:
+            logger.warning(f"Invalid image: {file.filename}")
             continue
 
         # Calculate hashes
@@ -395,37 +410,81 @@ async def upload_images_bulk(
                     skipped += 1
                     continue
 
+        # Generate unique filename
         ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
         unique_filename = f"{uuid4()}.{ext}"
+        content_type = file.content_type or "image/jpeg"
 
-        try:
-            supabase_service.client.storage.from_("od-images").upload(
-                unique_filename,
-                content,
-                {"content-type": file.content_type or "image/jpeg"},
-            )
+        upload_items.append((unique_filename, content, content_type))
+        upload_metadata.append({
+            "filename": unique_filename,
+            "original_filename": file.filename,
+            "width": width,
+            "height": height,
+            "file_size": len(content),
+            "file_hash": file_hash,
+            "phash": phash,
+        })
 
-            image_url = supabase_service.client.storage.from_("od-images").get_public_url(unique_filename)
+    if not upload_items:
+        logger.info(f"No images to upload (skipped: {skipped})")
+        return []
 
-            image_data = {
-                "filename": unique_filename,
-                "original_filename": file.filename,
+    logger.info(f"Prepared {len(upload_items)} images for bulk upload (skipped: {skipped})")
+
+    # ============================================
+    # PHASE 2: Parallel upload to storage (SOTA)
+    # ============================================
+    successful_files, failed_uploads = await parallel_upload_images(
+        upload_items,
+        max_concurrent=2,
+        batch_size=100,
+        batch_delay=2.0,
+    )
+
+    if failed_uploads:
+        for filename, error in failed_uploads:
+            logger.warning(f"Failed to upload {filename}: {error}")
+
+    if not successful_files:
+        logger.error("All uploads failed")
+        return []
+
+    # ============================================
+    # PHASE 3: Insert to database (batch)
+    # ============================================
+    successful_set = set(successful_files)
+    images_to_insert = []
+
+    for meta in upload_metadata:
+        if meta["filename"] in successful_set:
+            image_url = supabase_service.client.storage.from_("od-images").get_public_url(meta["filename"])
+            images_to_insert.append({
+                "filename": meta["filename"],
+                "original_filename": meta["original_filename"],
                 "image_url": image_url,
-                "width": width,
-                "height": height,
-                "file_size_bytes": len(content),
+                "width": meta["width"],
+                "height": meta["height"],
+                "file_size_bytes": meta["file_size"],
                 "source": "upload",
                 "status": "pending",
-                "file_hash": file_hash,
-                "phash": phash,
-            }
+                "file_hash": meta["file_hash"],
+                "phash": meta["phash"],
+            })
 
-            result = supabase_service.client.table("od_images").insert(image_data).execute()
-            if result.data:
-                uploaded.append(result.data[0])
+    uploaded = []
+    if images_to_insert:
+        try:
+            # Batch insert (500 at a time)
+            batch_size = 500
+            for i in range(0, len(images_to_insert), batch_size):
+                batch = images_to_insert[i:i + batch_size]
+                result = supabase_service.client.table("od_images").insert(batch).execute()
+                if result.data:
+                    uploaded.extend(result.data)
+            logger.info(f"Inserted {len(uploaded)} images to database")
         except Exception as e:
-            print(f"Failed to upload {file.filename}: {e}")
-            continue
+            logger.error(f"Database insert failed: {e}")
 
     return uploaded
 
@@ -1409,14 +1468,34 @@ class RoboflowImportRequest(BaseModel):
     merge_annotations: bool = False
 
 
-async def _run_roboflow_import(job_id: str, request_data: dict):
-    """Background task to run Roboflow import with disk streaming."""
+async def _run_roboflow_import(job_id: str, request_data: dict, resume_checkpoint=None):
+    """
+    Background task to run Roboflow import with checkpoint support.
+
+    Can be called fresh or with a checkpoint to resume after API restart.
+
+    Args:
+        job_id: The job ID
+        request_data: Import configuration
+        resume_checkpoint: Optional ImportCheckpoint to resume from
+    """
     import os
     import logging
     import httpx
     from services.od_import import import_annotated_dataset_from_file, ClassMapping
+    from services.import_checkpoint import checkpoint_service, ImportCheckpoint
 
     logger = logging.getLogger(__name__)
+
+    # Initialize or use existing checkpoint
+    if resume_checkpoint:
+        checkpoint = resume_checkpoint
+        logger.info(f"Resuming job {job_id} from stage: {checkpoint.stage}")
+    else:
+        checkpoint = ImportCheckpoint(job_id=job_id, stage="downloading")
+        checkpoint_service.create_job_dir(job_id)
+
+    zip_path = str(checkpoint_service.get_zip_path(job_id))
 
     def update_job(progress: int, stage: str, message: str, status: str = "running"):
         """Helper to update job progress."""
@@ -1424,105 +1503,107 @@ async def _run_roboflow_import(job_id: str, request_data: dict):
             supabase_service.client.table("jobs").update({
                 "status": status,
                 "progress": progress,
-                "result": {"stage": stage, "message": message}
-            }).eq("id", job_id).execute()
-        except Exception:
-            pass  # Don't fail if we can't update progress
-
-    def fail_job(error: str):
-        """Helper to mark job as failed."""
-        logger.error(f"Roboflow import job {job_id} failed: {error}")
-        try:
-            supabase_service.client.table("jobs").update({
-                "status": "failed",
-                "error": error
+                "result": {
+                    "stage": stage,
+                    "message": message,
+                    "checkpoint": checkpoint.to_dict(),
+                    "can_resume": checkpoint.can_resume(),
+                }
             }).eq("id", job_id).execute()
         except Exception:
             pass
 
-    temp_file_path = None
+    def fail_job(error: str, can_resume: bool = False):
+        """Helper to mark job as failed."""
+        logger.error(f"Roboflow import job {job_id} failed: {error}")
+        checkpoint.error_message = error
+        checkpoint_service.save_checkpoint(checkpoint)
+        try:
+            supabase_service.client.table("jobs").update({
+                "status": "failed",
+                "error": error,
+                "result": {
+                    "stage": checkpoint.stage,
+                    "checkpoint": checkpoint.to_dict(),
+                    "can_resume": can_resume and checkpoint.download_complete,
+                    "error": error,
+                }
+            }).eq("id", job_id).execute()
+        except Exception:
+            pass
 
     try:
-        # Update job status to downloading
-        update_job(5, "downloading", "Starting download from Roboflow...")
+        # ========== STAGE 1: DOWNLOAD ==========
+        if not checkpoint.download_complete:
+            checkpoint.stage = "downloading"
+            update_job(5, "downloading", "Starting download from Roboflow...")
 
-        # Track progress for UI updates
-        last_progress_mb = 0
+            last_progress_mb = 0
 
-        def progress_callback(downloaded_bytes: int, total_bytes: int | None):
-            nonlocal last_progress_mb
-            mb_downloaded = downloaded_bytes // (1024 * 1024)
+            def progress_callback(downloaded_bytes: int, total_bytes: int | None):
+                nonlocal last_progress_mb
+                mb_downloaded = downloaded_bytes // (1024 * 1024)
 
-            # Update progress every 10MB
-            if mb_downloaded >= last_progress_mb + 10:
-                last_progress_mb = mb_downloaded
+                if mb_downloaded >= last_progress_mb + 10:
+                    last_progress_mb = mb_downloaded
 
-                if total_bytes:
-                    # Calculate percentage based on actual file size
-                    total_mb = total_bytes // (1024 * 1024)
-                    download_pct = min(45, 5 + int((downloaded_bytes / total_bytes) * 40))
-                    update_job(
-                        download_pct,
-                        "downloading",
-                        f"Downloaded {mb_downloaded} MB / {total_mb} MB..."
-                    )
+                    if total_bytes:
+                        total_mb = total_bytes // (1024 * 1024)
+                        download_pct = min(45, 5 + int((downloaded_bytes / total_bytes) * 40))
+                        update_job(download_pct, "downloading", f"Downloaded {mb_downloaded} MB / {total_mb} MB...")
+                    else:
+                        download_progress = min(45, 5 + int(mb_downloaded / 100))
+                        update_job(download_progress, "downloading", f"Downloaded {mb_downloaded} MB...")
+
+            try:
+                # Download to persistent path (survives restart)
+                _, total_bytes, file_hash = await roboflow_service.download_dataset_to_path(
+                    api_key=request_data["api_key"],
+                    workspace=request_data["workspace"],
+                    project=request_data["project"],
+                    version=request_data["version"],
+                    target_path=zip_path,
+                    format=request_data.get("format", "coco"),
+                    max_retries=3,
+                    progress_callback=progress_callback,
+                )
+
+                # Save download checkpoint
+                checkpoint.download_complete = True
+                checkpoint.zip_file_path = zip_path
+                checkpoint.zip_file_size = total_bytes
+                checkpoint.zip_file_hash = file_hash
+                checkpoint_service.save_checkpoint(checkpoint)
+
+            except httpx.TimeoutException as e:
+                fail_job(f"Download timed out: {str(e)}", can_resume=False)
+                return
+            except httpx.NetworkError as e:
+                fail_job(f"Network error: {str(e)}", can_resume=False)
+                return
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    fail_job("Invalid API key or unauthorized access.")
+                elif e.response.status_code == 404:
+                    fail_job("Project or version not found.")
+                elif e.response.status_code == 429:
+                    fail_job("Rate limited by Roboflow. Please wait and retry.")
                 else:
-                    # Unknown total size, just show progress
-                    download_progress = min(45, 5 + int(mb_downloaded / 100))
-                    update_job(
-                        download_progress,
-                        "downloading",
-                        f"Downloaded {mb_downloaded} MB..."
-                    )
+                    fail_job(f"HTTP error {e.response.status_code}: {str(e)}")
+                return
 
-        # Download to temporary file (memory-efficient)
-        try:
-            temp_file_path, total_bytes = await roboflow_service.download_dataset_to_file(
-                api_key=request_data["api_key"],
-                workspace=request_data["workspace"],
-                project=request_data["project"],
-                version=request_data["version"],
-                format=request_data.get("format", "coco"),
-                max_retries=3,
-                progress_callback=progress_callback,
-            )
-
-        except httpx.TimeoutException as e:
-            fail_job(
-                f"Download timed out after multiple retries. "
-                f"The dataset might be too large or the connection is slow. "
-                f"Error: {str(e)}"
-            )
-            return
-        except httpx.NetworkError as e:
-            fail_job(
-                f"Network error during download. Please check your internet connection. "
-                f"Error: {str(e)}"
-            )
-            return
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                fail_job("Invalid API key or unauthorized access to this project.")
-            elif e.response.status_code == 404:
-                fail_job("Project or version not found. Please verify the project details.")
-            elif e.response.status_code == 429:
-                fail_job("Rate limited by Roboflow. Please wait a few minutes and try again.")
-            else:
-                fail_job(f"Roboflow API error (HTTP {e.response.status_code}): {str(e)}")
+        # Verify ZIP exists and is valid
+        if not checkpoint_service.verify_zip_integrity(job_id, checkpoint.zip_file_hash):
+            fail_job("ZIP file missing or corrupted. Please retry the import.", can_resume=False)
             return
 
-        if not temp_file_path or not os.path.exists(temp_file_path):
-            fail_job("Download failed - no file was created")
-            return
-
-        # Verify file size
-        file_size = os.path.getsize(temp_file_path)
-        if file_size == 0:
-            fail_job("Download failed - empty file received from Roboflow")
-            return
-
+        file_size = os.path.getsize(zip_path)
         total_mb = file_size // (1024 * 1024)
+
+        # ========== STAGE 2: PROCESSING ==========
+        checkpoint.stage = "processing"
         update_job(50, "processing", f"Download complete ({total_mb} MB). Processing images...")
+        checkpoint_service.save_checkpoint(checkpoint)
 
         logger.info(f"Roboflow download complete for job {job_id}: {total_mb} MB")
 
@@ -1540,14 +1621,17 @@ async def _run_roboflow_import(job_id: str, request_data: dict):
 
         # Import using file-based import function
         result = await import_annotated_dataset_from_file(
-            zip_file_path=temp_file_path,
+            zip_file_path=zip_path,
             dataset_id=request_data["dataset_id"],
             class_mapping=class_mapping_list,
             skip_duplicates=request_data.get("skip_duplicates", True),
             merge_annotations=request_data.get("merge_annotations", False),
         )
 
-        # Update job with final result
+        # ========== STAGE 3: COMPLETED ==========
+        checkpoint.stage = "completed"
+        checkpoint_service.save_checkpoint(checkpoint)
+
         supabase_service.client.table("jobs").update({
             "status": "completed" if result.success else "failed",
             "progress": 100,
@@ -1568,23 +1652,14 @@ async def _run_roboflow_import(job_id: str, request_data: dict):
             f"{result.images_imported} images, {result.annotations_imported} annotations"
         )
 
+        # Clean up on successful completion
+        checkpoint_service.cleanup_job(job_id)
+
     except MemoryError:
-        fail_job(
-            "Out of memory while processing images. "
-            "The dataset might be too large. Try importing a smaller version."
-        )
+        fail_job("Out of memory. Try importing a smaller dataset.", can_resume=True)
     except Exception as e:
         logger.exception(f"Unexpected error in Roboflow import job {job_id}")
-        fail_job(f"Unexpected error: {str(e)}")
-
-    finally:
-        # Always clean up temp file after processing
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-                logger.info(f"Cleaned up temp file: {temp_file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+        fail_job(f"Unexpected error: {str(e)}", can_resume=checkpoint.download_complete)
 
 
 @router.post("/roboflow/import")
@@ -1599,7 +1674,7 @@ async def import_from_roboflow(
         if not dataset.data:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        # Create job record
+        # Create job record (store API key for resume capability)
         job_data = {
             "type": "roboflow_import",
             "status": "pending",
@@ -1610,6 +1685,19 @@ async def import_from_roboflow(
                 "version": request.version,
                 "dataset_id": request.dataset_id,
                 "format": request.format,
+                "api_key": request.api_key,  # Stored for resume
+                "skip_duplicates": request.skip_duplicates,
+                "merge_annotations": request.merge_annotations,
+                "class_mapping": [
+                    {
+                        "source_name": m.source_name,
+                        "target_class_id": m.target_class_id,
+                        "create_new": m.create_new,
+                        "skip": m.skip,
+                        "color": m.color,
+                    }
+                    for m in request.class_mapping
+                ],
             }
         }
         job_result = supabase_service.client.table("jobs").insert(job_data).execute()
@@ -1661,12 +1749,111 @@ async def get_roboflow_import_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = result.data
+
+    # Don't expose API key in response
+    job_result = job.get("result", {})
+    if job_result and "checkpoint" in job_result:
+        # Remove sensitive data from checkpoint in response
+        checkpoint = job_result.get("checkpoint", {})
+        if checkpoint:
+            checkpoint.pop("api_key", None)
+
     return {
         "job_id": job["id"],
         "status": job["status"],
         "progress": job["progress"],
-        "result": job.get("result"),
+        "result": job_result,
         "error": job.get("error"),
         "created_at": job["created_at"],
         "updated_at": job.get("updated_at"),
+        "can_resume": job_result.get("can_resume", False) if job_result else False,
     }
+
+
+@router.post("/roboflow/import/{job_id}/retry")
+async def retry_roboflow_import(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Retry a failed Roboflow import job.
+
+    If the download was complete, it will resume from the processing stage.
+    Otherwise, it will start a fresh download.
+    """
+    from services.import_checkpoint import checkpoint_service
+
+    # Get the job
+    result = supabase_service.client.table("jobs").select("*").eq("id", job_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = result.data
+
+    if job["type"] != "roboflow_import":
+        raise HTTPException(status_code=400, detail="Job is not a Roboflow import")
+
+    if job["status"] not in ["failed", "cancelled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry job with status: {job['status']}. Only failed or cancelled jobs can be retried."
+        )
+
+    # Load checkpoint
+    checkpoint = checkpoint_service.load_checkpoint(job_id)
+
+    # Get config with API key
+    config = job.get("config", {})
+    if not config.get("api_key"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot retry: API key not found in job config. Please start a new import."
+        )
+
+    # Check if we can resume (download complete and ZIP exists)
+    can_resume = (
+        checkpoint and
+        checkpoint.download_complete and
+        checkpoint_service.verify_zip_integrity(job_id, checkpoint.zip_file_hash)
+    )
+
+    # Prepare request data from stored config
+    request_data = {
+        "api_key": config.get("api_key"),
+        "workspace": config.get("workspace"),
+        "project": config.get("project"),
+        "version": config.get("version"),
+        "dataset_id": config.get("dataset_id"),
+        "format": config.get("format", "coco"),
+        "skip_duplicates": config.get("skip_duplicates", True),
+        "merge_annotations": config.get("merge_annotations", False),
+        "class_mapping": config.get("class_mapping", []),
+    }
+
+    # Update job status
+    supabase_service.client.table("jobs").update({
+        "status": "running",
+        "error": None,
+        "progress": checkpoint.download_complete * 50 if checkpoint else 0,  # Start at 50% if download complete
+    }).eq("id", job_id).execute()
+
+    # Start background task
+    if can_resume:
+        background_tasks.add_task(_run_roboflow_import, job_id, request_data, checkpoint)
+        return {
+            "job_id": job_id,
+            "status": "resumed",
+            "message": f"Resuming from stage: {checkpoint.stage}",
+            "resumed_from_checkpoint": True,
+        }
+    else:
+        # Clean up any partial files and start fresh
+        checkpoint_service.cleanup_job(job_id)
+        background_tasks.add_task(_run_roboflow_import, job_id, request_data, None)
+        return {
+            "job_id": job_id,
+            "status": "restarted",
+            "message": "Starting fresh download (no valid checkpoint found)",
+            "resumed_from_checkpoint": False,
+        }

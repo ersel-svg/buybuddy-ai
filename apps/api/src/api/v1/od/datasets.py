@@ -14,6 +14,10 @@ from schemas.od import (
     ODDatasetResponse,
     ODDatasetWithImagesResponse,
     ODAddImagesRequest,
+    ExportRequest,
+    ExportJobResponse,
+    DatasetVersionCreate,
+    DatasetVersionResponse,
 )
 
 router = APIRouter()
@@ -345,3 +349,193 @@ async def update_image_status(dataset_id: str, image_id: str, status: str):
         supabase_service.client.table("od_datasets").update({"annotated_image_count": count.count or 0}).eq("id", dataset_id).execute()
 
     return result.data[0]
+
+
+# ===========================================
+# Export Endpoints
+# ===========================================
+
+@router.post("/{dataset_id}/export", response_model=ExportJobResponse)
+async def export_dataset(dataset_id: str, data: ExportRequest):
+    """
+    Export a dataset in the specified format.
+
+    Supported formats:
+    - yolo: YOLO format with data.yaml and label files
+    - coco: COCO format with annotations JSON
+
+    Returns a job with download URL when complete.
+    """
+    from services.od_export import od_export_service
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("*").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Validate format
+    if data.format not in ["yolo", "coco"]:
+        raise HTTPException(status_code=400, detail="Invalid format. Supported: yolo, coco")
+
+    # Create and process export job
+    config = data.config.model_dump() if data.config else None
+
+    job = await od_export_service.create_export_job(
+        dataset_id=dataset_id,
+        format=data.format,
+        include_images=data.include_images,
+        version_id=data.version_id,
+        split=data.split,
+        config=config,
+    )
+
+    return ExportJobResponse(
+        job_id=job["id"],
+        status=job["status"],
+        download_url=job.get("download_url"),
+        progress=job.get("progress", 0),
+        result=job.get("result"),
+        error=job.get("error"),
+        created_at=job.get("created_at"),
+        completed_at=job.get("completed_at"),
+    )
+
+
+@router.get("/{dataset_id}/export/{job_id}")
+async def get_export_status(dataset_id: str, job_id: str):
+    """Get the status of an export job."""
+    # For now, exports are synchronous so this just returns not found
+    # In async version, this would check job status in database
+    raise HTTPException(status_code=404, detail="Export job not found or already completed")
+
+
+# ===========================================
+# Dataset Versioning Endpoints
+# ===========================================
+
+@router.get("/{dataset_id}/versions", response_model=list[DatasetVersionResponse])
+async def list_versions(dataset_id: str):
+    """List all versions of a dataset."""
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    result = supabase_service.client.table("od_dataset_versions").select("*").eq("dataset_id", dataset_id).order("version_number", desc=True).execute()
+
+    return result.data or []
+
+
+@router.post("/{dataset_id}/versions", response_model=DatasetVersionResponse)
+async def create_version(dataset_id: str, data: DatasetVersionCreate):
+    """
+    Create a new version (snapshot) of the dataset.
+
+    This creates a frozen copy of the current dataset state with
+    train/val/test split assignments.
+    """
+    import random
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("*").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Get current version number
+    latest = supabase_service.client.table("od_dataset_versions").select("version_number").eq("dataset_id", dataset_id).order("version_number", desc=True).limit(1).execute()
+    next_version = (latest.data[0]["version_number"] + 1) if latest.data else 1
+
+    # Get dataset images
+    images = supabase_service.client.table("od_dataset_images").select("id, image_id, status").eq("dataset_id", dataset_id).execute()
+    annotated_images = [img for img in (images.data or []) if img.get("status") in ["completed", "annotating"]]
+
+    if not annotated_images:
+        raise HTTPException(status_code=400, detail="No annotated images in dataset")
+
+    # Get classes
+    classes = supabase_service.client.table("od_classes").select("id, name").eq("dataset_id", dataset_id).eq("is_active", True).execute()
+    class_mapping = {cls["id"]: idx for idx, cls in enumerate(classes.data or [])}
+
+    # Get annotation count
+    ann_count = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).execute()
+
+    # Assign splits
+    random.seed(42)
+    random.shuffle(annotated_images)
+
+    total = len(annotated_images)
+    train_end = int(total * data.train_split)
+    val_end = train_end + int(total * data.val_split)
+
+    train_ids = [img["image_id"] for img in annotated_images[:train_end]]
+    val_ids = [img["image_id"] for img in annotated_images[train_end:val_end]]
+    test_ids = [img["image_id"] for img in annotated_images[val_end:]]
+
+    # Update split assignments in od_dataset_images
+    if train_ids:
+        supabase_service.client.table("od_dataset_images").update({"split": "train"}).eq("dataset_id", dataset_id).in_("image_id", train_ids).execute()
+    if val_ids:
+        supabase_service.client.table("od_dataset_images").update({"split": "val"}).eq("dataset_id", dataset_id).in_("image_id", val_ids).execute()
+    if test_ids:
+        supabase_service.client.table("od_dataset_images").update({"split": "test"}).eq("dataset_id", dataset_id).in_("image_id", test_ids).execute()
+
+    # Create version record
+    version_id = str(uuid4())
+    version_name = data.name or f"v{next_version}"
+
+    version_data = {
+        "id": version_id,
+        "dataset_id": dataset_id,
+        "version_number": next_version,
+        "name": version_name,
+        "description": data.description,
+        "image_count": len(annotated_images),
+        "annotation_count": ann_count.count or 0,
+        "class_count": len(classes.data or []),
+        "train_count": len(train_ids),
+        "val_count": len(val_ids),
+        "test_count": len(test_ids),
+        "class_mapping": class_mapping,
+        "split_config": {
+            "train_split": data.train_split,
+            "val_split": data.val_split,
+            "test_split": data.test_split,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("od_dataset_versions").insert(version_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create version")
+
+    # Update dataset version number
+    supabase_service.client.table("od_datasets").update({"version": next_version}).eq("id", dataset_id).execute()
+
+    return result.data[0]
+
+
+@router.get("/{dataset_id}/versions/{version_id}", response_model=DatasetVersionResponse)
+async def get_version(dataset_id: str, version_id: str):
+    """Get a specific version of a dataset."""
+    result = supabase_service.client.table("od_dataset_versions").select("*").eq("dataset_id", dataset_id).eq("id", version_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    return result.data
+
+
+@router.delete("/{dataset_id}/versions/{version_id}")
+async def delete_version(dataset_id: str, version_id: str):
+    """Delete a dataset version."""
+    # Verify exists
+    version = supabase_service.client.table("od_dataset_versions").select("id").eq("dataset_id", dataset_id).eq("id", version_id).single().execute()
+    if not version.data:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    supabase_service.client.table("od_dataset_versions").delete().eq("id", version_id).execute()
+
+    return {"status": "deleted", "id": version_id}

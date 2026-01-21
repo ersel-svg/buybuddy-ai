@@ -690,6 +690,141 @@ class RoboflowService:
         # Should not reach here, but just in case
         return temp_path, total_downloaded
 
+    async def download_dataset_to_path(
+        self,
+        api_key: str,
+        workspace: str,
+        project: str,
+        version: int,
+        target_path: str,
+        format: Literal["coco", "yolov8", "yolov5pytorch", "voc"] = "coco",
+        max_retries: int = 3,
+        progress_callback: Optional[callable] = None,
+    ) -> tuple[str, int, str]:
+        """
+        Download dataset to a specific path (for checkpoint/resume support).
+
+        Unlike download_dataset_to_file, this downloads to a specified path
+        that persists across API restarts.
+
+        Args:
+            api_key: Roboflow API key
+            workspace: Workspace URL/slug
+            project: Project URL/slug
+            version: Version number
+            target_path: Specific file path to download to
+            format: Export format
+            max_retries: Maximum number of retry attempts
+            progress_callback: Optional callback(downloaded_bytes, total_bytes)
+
+        Returns:
+            Tuple of (file_path, total_bytes_downloaded, file_hash)
+        """
+        import hashlib
+
+        url = await self.get_download_url(api_key, workspace, project, version, format)
+
+        timeout = httpx.Timeout(
+            connect=60.0,
+            read=600.0,
+            write=60.0,
+            pool=60.0,
+        )
+
+        # Ensure parent directory exists
+        target_dir = os.path.dirname(target_path)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+
+        download_complete = False
+        total_downloaded = 0
+        file_hash = hashlib.md5()
+
+        try:
+            last_error = None
+
+            for attempt in range(max_retries):
+                try:
+                    # Reset for retry
+                    total_downloaded = 0
+                    file_hash = hashlib.md5()
+
+                    with open(target_path, 'wb') as f:
+                        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                            # First, get the export link
+                            resp = await client.get(url)
+                            resp.raise_for_status()
+
+                            download_link = url
+                            content_length = None
+
+                            if resp.headers.get("content-type", "").startswith("application/json"):
+                                data = resp.json()
+                                if "export" in data and "link" in data["export"]:
+                                    download_link = data["export"]["link"]
+
+                            # Stream the actual download
+                            async with client.stream("GET", download_link) as response:
+                                response.raise_for_status()
+                                content_length = response.headers.get("content-length")
+                                if content_length:
+                                    content_length = int(content_length)
+
+                                async for chunk in response.aiter_bytes(chunk_size=1048576):
+                                    f.write(chunk)
+                                    file_hash.update(chunk)
+                                    total_downloaded += len(chunk)
+
+                                    if progress_callback:
+                                        try:
+                                            progress_callback(total_downloaded, content_length)
+                                        except Exception:
+                                            pass
+
+                            # Verify download completed
+                            if content_length and total_downloaded < content_length:
+                                raise httpx.NetworkError(
+                                    f"Incomplete download: {total_downloaded}/{content_length} bytes"
+                                )
+
+                            download_complete = True
+                            logger.info(f"Download complete: {total_downloaded} bytes to {target_path}")
+                            return target_path, total_downloaded, file_hash.hexdigest()
+
+                except (httpx.TimeoutException, httpx.NetworkError) as e:
+                    last_error = e
+                    logger.warning(f"Download attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if attempt < max_retries - 1:
+                        import asyncio
+                        wait_time = 5 * (2 ** attempt)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        raise
+
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"HTTP error: {e.response.status_code}")
+                    raise
+
+            if last_error:
+                raise last_error
+
+        except Exception:
+            download_complete = False
+            raise
+
+        finally:
+            # Clean up incomplete download
+            if not download_complete:
+                try:
+                    if os.path.exists(target_path):
+                        os.unlink(target_path)
+                        logger.info(f"Cleaned up incomplete download: {target_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up {target_path}: {e}")
+
+        return target_path, total_downloaded, file_hash.hexdigest()
+
     async def preview_import(
         self,
         api_key: str,

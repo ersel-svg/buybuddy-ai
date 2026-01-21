@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS od_training_runs (
 
     -- Progress
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
-        'pending', 'preparing', 'running', 'completed', 'failed', 'cancelled'
+        'pending', 'preparing', 'queued', 'training', 'running', 'completed', 'failed', 'cancelled'
     )),
     current_epoch INTEGER DEFAULT 0,
     total_epochs INTEGER NOT NULL,

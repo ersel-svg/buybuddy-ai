@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     runpod_endpoint_embedding: str = ""
     runpod_endpoint_preview: str = ""  # Segmentation preview worker
     runpod_endpoint_od_annotation: str = ""  # OD AI annotation worker
+    runpod_endpoint_od_training: str = ""  # OD model training worker
 
     # External APIs
     gemini_api_key: str = ""
@@ -59,6 +60,10 @@ class Settings(BaseSettings):
 
     # Roboflow Integration (optional - users can provide their own API key)
     roboflow_api_key: str = ""
+
+    # Roboflow Import Checkpoint Settings
+    roboflow_import_dir: str = "./data/roboflow_imports"  # Persistent storage for ZIP files
+    roboflow_import_max_age_hours: int = 48  # Cleanup completed/failed imports after this time
 
     # Processing defaults
     target_resolution: int = 518

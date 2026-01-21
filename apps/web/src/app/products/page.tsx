@@ -59,9 +59,9 @@ import {
 import {
   FilterDrawer,
   FilterTrigger,
-  useFilterState,
+  ActiveFilterChips,
+  useFilterStateWithURL,
   type FilterSection,
-  type FilterState,
 } from "@/components/filters/filter-drawer";
 import {
   Search,
@@ -146,14 +146,14 @@ function ProductsPageContent() {
     router.push(`/products?${params.toString()}`, { scroll: false });
   }, [searchParams, router]);
 
-  // Use filter state hook
+  // Use URL-synced filter state hook
   const {
     filterState,
     setFilter,
     clearSection,
     clearAll,
     getTotalCount,
-  } = useFilterState();
+  } = useFilterStateWithURL();
 
   // Convert FilterState to API parameters
   const apiFilters = useMemo(() => {
@@ -464,6 +464,31 @@ function ProductsPageContent() {
 
     return sections;
   }, [filterOptions]);
+
+  // Handler to remove a single filter value (for chips)
+  const handleRemoveFilter = useCallback((sectionId: string, value: string) => {
+    const currentValue = filterState[sectionId];
+
+    if (currentValue instanceof Set) {
+      // For checkbox filters, find the actual value (not label) and remove it
+      const section = filterSections.find(s => s.id === sectionId);
+      if (section && section.type === "checkbox") {
+        const option = section.options.find(o => o.label === value || o.value === value);
+        if (option) {
+          const newSet = new Set(currentValue);
+          newSet.delete(option.value);
+          if (newSet.size === 0) {
+            clearSection(sectionId);
+          } else {
+            setFilter(sectionId, newSet);
+          }
+        }
+      }
+    } else {
+      // For boolean and range filters, clear the entire section
+      clearSection(sectionId);
+    }
+  }, [filterState, filterSections, setFilter, clearSection]);
 
   // Convert FilterState to ExportFilters for API calls
   const buildExportFilters = (selectedProductIds?: string[]): ExportFilters => {
@@ -940,6 +965,13 @@ function ProductsPageContent() {
 
         {/* Action Buttons */}
         <div className="flex gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/products/matcher">
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Product Matcher
+            </Link>
+          </Button>
+
           <Button
             variant="outline"
             size="icon"
@@ -1040,6 +1072,14 @@ function ProductsPageContent() {
           )}
         </div>
       </div>
+
+      {/* Active Filter Chips */}
+      <ActiveFilterChips
+        filterState={filterState}
+        sections={filterSections}
+        onRemoveFilter={handleRemoveFilter}
+        onClearAll={clearAll}
+      />
 
       {/* Filter Drawer */}
       <FilterDrawer

@@ -22,10 +22,7 @@ import {
   // Object Detection icons
   Image as ImageIconOD,
   PenTool,
-  Cpu,
   FolderOpen,
-  Tags,
-  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -132,24 +129,9 @@ const navigationGroups = [
         icon: PenTool,
       },
       {
-        name: "Classes",
-        href: "/od/classes",
-        icon: Tags,
-      },
-      {
-        name: "Duplicates",
-        href: "/od/duplicates",
-        icon: Copy,
-      },
-      {
         name: "Training",
         href: "/od/training",
         icon: Brain,
-      },
-      {
-        name: "Models",
-        href: "/od/models",
-        icon: Cpu,
       },
     ],
   },

@@ -1,0 +1,19 @@
+{
+  "job_id": "8566162b-01f4-4ee8-99f9-2150028c5680",
+  "stage": "downloading",
+  "download_complete": false,
+  "zip_file_path": null,
+  "zip_file_size": 0,
+  "zip_file_hash": null,
+  "total_images_in_zip": 0,
+  "parsed_annotations": false,
+  "images_to_upload": 0,
+  "uploaded_images": [],
+  "uploaded_storage_map": {},
+  "upload_failures": [],
+  "inserted_image_ids": [],
+  "dataset_mappings_inserted": false,
+  "annotations_inserted": false,
+  "last_updated": "2026-01-20T22:11:35.202288",
+  "error_message": "Project or version not found."
+}
