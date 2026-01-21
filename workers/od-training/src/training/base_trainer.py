@@ -656,7 +656,7 @@ class SOTABaseTrainer(ABC):
                   f"mAP@75: {val_metrics['map_75']:.4f}")
 
             # Check improvement
-            is_best = current_map > self.best_map
+            is_best = current_map > self.best_map or self.best_checkpoint_path is None
             if is_best:
                 self.best_map = current_map
                 self.best_epoch = epoch

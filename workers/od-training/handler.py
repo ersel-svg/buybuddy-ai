@@ -42,59 +42,149 @@ def convert_frontend_augmentation_config(aug_config: Dict[str, Any]) -> Dict[str
 
     Frontend format:
     {
-        "mosaic": { "enabled": true, "probability": 0.5 },
-        "mixup": { "enabled": true, "probability": 0.3 },
-        "copy_paste": { "enabled": true, "probability": 0.3 },
+        "mosaic": { "enabled": true, "probability": 0.5, ... },
+        "mixup": { "enabled": true, "probability": 0.3, "alpha": 8.0 },
+        "copypaste": { "enabled": true, "probability": 0.3, "blend_ratio": 0.5 },
         ...
     }
 
     Backend format:
     {
-        "mosaic": {"enabled": True, "prob": 0.5},
-        "mixup": {"enabled": True, "prob": 0.3},
-        "copypaste": {"enabled": True, "prob": 0.3},
+        "mosaic": {"enabled": True, "prob": 0.5, "params": {...}},
+        "mixup": {"enabled": True, "prob": 0.3, "params": {"alpha": 8.0}},
+        "copypaste": {"enabled": True, "prob": 0.3, "params": {"blend_ratio": 0.5}},
         ...
     }
+
+    Supports all 40+ augmentations from the Training Wizard:
+    - Multi-image: mosaic, mosaic9, mixup, cutmix, copypaste
+    - Geometric: horizontal_flip, vertical_flip, rotate90, random_rotate,
+                 shift_scale_rotate, affine, perspective, safe_rotate,
+                 random_crop, random_scale, grid_distortion, elastic_transform,
+                 optical_distortion, piecewise_affine
+    - Color: brightness_contrast, color_jitter, hue_saturation, random_gamma,
+             rgb_shift, channel_shuffle, clahe, equalize, random_tone_curve,
+             posterize, solarize, sharpen, unsharp_mask, fancy_pca, invert_img, to_gray
+    - Blur: gaussian_blur, motion_blur, median_blur, defocus, zoom_blur,
+            glass_blur, advanced_blur
+    - Noise: gaussian_noise, iso_noise, multiplicative_noise
+    - Quality: image_compression, downscale
+    - Dropout: coarse_dropout, grid_dropout, pixel_dropout, mask_dropout
+    - Weather: random_rain, random_fog, random_shadow, random_sun_flare,
+               random_snow, spatter, plasma_brightness
     """
     if not aug_config:
         return None
 
-    # Mapping from frontend keys to backend keys
+    # Mapping from frontend keys to backend keys (most are 1:1)
     key_mapping = {
+        # Multi-image
         "mosaic": "mosaic",
+        "mosaic9": "mosaic9",
         "mixup": "mixup",
-        "copy_paste": "copypaste",
+        "cutmix": "cutmix",
+        "copypaste": "copypaste",
+        "copy_paste": "copypaste",  # Legacy alias
+
+        # Geometric
         "horizontal_flip": "horizontal_flip",
         "vertical_flip": "vertical_flip",
-        "color_jitter": "brightness_contrast",
-        "random_crop": "random_scale",
+        "rotate90": "rotate90",
+        "random_rotate": "random_rotate",
+        "shift_scale_rotate": "shift_scale_rotate",
+        "affine": "affine",
+        "perspective": "perspective",
+        "safe_rotate": "safe_rotate",
+        "random_crop": "random_crop",
+        "random_scale": "random_scale",
+        "grid_distortion": "grid_distortion",
+        "elastic_transform": "elastic_transform",
+        "optical_distortion": "optical_distortion",
+        "piecewise_affine": "piecewise_affine",
+
+        # Color
+        "brightness_contrast": "brightness_contrast",
+        "color_jitter": "color_jitter",
+        "hue_saturation": "hue_saturation",
+        "random_gamma": "random_gamma",
+        "rgb_shift": "rgb_shift",
+        "channel_shuffle": "channel_shuffle",
+        "clahe": "clahe",
+        "equalize": "equalize",
+        "random_tone_curve": "random_tone_curve",
+        "posterize": "posterize",
+        "solarize": "solarize",
+        "sharpen": "sharpen",
+        "unsharp_mask": "unsharp_mask",
+        "fancy_pca": "fancy_pca",
+        "invert_img": "invert_img",
+        "to_gray": "to_gray",
+
+        # Blur
+        "gaussian_blur": "gaussian_blur",
+        "motion_blur": "motion_blur",
+        "median_blur": "median_blur",
+        "defocus": "defocus",
+        "zoom_blur": "zoom_blur",
+        "glass_blur": "glass_blur",
+        "advanced_blur": "advanced_blur",
+
+        # Noise
+        "gaussian_noise": "gaussian_noise",
+        "iso_noise": "iso_noise",
+        "multiplicative_noise": "multiplicative_noise",
+
+        # Quality
+        "image_compression": "image_compression",
+        "downscale": "downscale",
+
+        # Dropout
+        "coarse_dropout": "coarse_dropout",
+        "grid_dropout": "grid_dropout",
+        "pixel_dropout": "pixel_dropout",
+        "mask_dropout": "mask_dropout",
+
+        # Weather
+        "random_rain": "random_rain",
+        "random_fog": "random_fog",
+        "random_shadow": "random_shadow",
+        "random_sun_flare": "random_sun_flare",
+        "random_snow": "random_snow",
+        "spatter": "spatter",
+        "plasma_brightness": "plasma_brightness",
     }
+
+    # Keys that should not be treated as params
+    reserved_keys = {"enabled", "probability", "prob"}
 
     overrides = {}
 
-    for frontend_key, backend_key in key_mapping.items():
-        if frontend_key in aug_config:
-            frontend_val = aug_config[frontend_key]
-            backend_val = {"enabled": frontend_val.get("enabled", False)}
+    for frontend_key, frontend_val in aug_config.items():
+        if not isinstance(frontend_val, dict):
+            continue
 
-            # Convert probability/strength/scale to prob
-            if "probability" in frontend_val:
-                backend_val["prob"] = frontend_val["probability"]
-            elif "strength" in frontend_val:
-                # For color_jitter -> brightness_contrast
-                backend_val["prob"] = 0.4 if frontend_val.get("enabled") else 0
-                backend_val["params"] = {
-                    "brightness_limit": frontend_val["strength"],
-                    "contrast_limit": frontend_val["strength"],
-                }
-            elif "scale" in frontend_val:
-                # For random_crop -> random_scale
-                backend_val["prob"] = 0.5 if frontend_val.get("enabled") else 0
-                backend_val["params"] = {
-                    "scale_limit": frontend_val["scale"],
-                }
+        # Get backend key (use frontend key if no mapping exists)
+        backend_key = key_mapping.get(frontend_key, frontend_key)
 
-            overrides[backend_key] = backend_val
+        # Build backend config
+        backend_val = {"enabled": frontend_val.get("enabled", False)}
+
+        # Convert probability to prob
+        if "probability" in frontend_val:
+            backend_val["prob"] = frontend_val["probability"]
+        elif "prob" in frontend_val:
+            backend_val["prob"] = frontend_val["prob"]
+
+        # Extract params (all other keys except reserved ones)
+        params = {}
+        for param_key, param_val in frontend_val.items():
+            if param_key not in reserved_keys:
+                params[param_key] = param_val
+
+        if params:
+            backend_val["params"] = params
+
+        overrides[backend_key] = backend_val
 
     return overrides if overrides else None
 

@@ -289,9 +289,30 @@ class AugmentationPipeline:
             return result['image'], transformed_target
 
         except Exception as e:
-            # Fallback: return original with basic resize
+            # Fallback: return original with basic resize and tensor conversion
             import warnings
+            import torch
+            import cv2
             warnings.warn(f"Augmentation failed: {e}. Returning original.")
+            
+            # Resize image to target size
+            h, w = image.shape[:2]
+            if h != self.img_size or w != self.img_size:
+                image = cv2.resize(image, (self.img_size, self.img_size))
+            
+            # Normalize and convert to tensor
+            image = image.astype('float32') / 255.0
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            image = (image - mean) / std
+            image = torch.from_numpy(image).permute(2, 0, 1).float()
+            
+            # Convert target boxes and labels to tensor
+            target = {
+                'boxes': torch.from_numpy(target.get('boxes', np.zeros((0, 4))).astype('float32')),
+                'labels': torch.from_numpy(target.get('labels', np.array([])).astype('int64')),
+            }
+            
             return image, target
 
     def set_sample_fn(self, sample_fn: Callable):

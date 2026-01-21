@@ -8,12 +8,13 @@ Key features:
 - BboxParams with 'pascal_voc' format (x1, y1, x2, y2)
 - Automatic filtering of invalid bboxes
 - Integration with our preset system
+- Support for 40+ augmentation types
 
 Usage:
     from augmentations.albumentations_wrapper import build_albumentations_pipeline
     from augmentations.presets import get_preset
 
-    preset = get_preset("sota")
+    preset = get_preset("sota-v2")
     transform = build_albumentations_pipeline(preset, img_size=640)
 
     # Apply to image and bboxes
@@ -30,6 +31,7 @@ Usage:
 from typing import Optional, List, Tuple, Any
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+import cv2
 
 from .presets import AugmentationPreset, AugmentationConfig
 
@@ -58,7 +60,10 @@ def build_albumentations_pipeline(
     """
     transforms = []
 
-    # ==== GEOMETRIC ====
+    # ==========================================================================
+    # GEOMETRIC AUGMENTATIONS
+    # ==========================================================================
+
     if preset.horizontal_flip.enabled:
         transforms.append(
             A.HorizontalFlip(p=preset.horizontal_flip.prob)
@@ -79,8 +84,33 @@ def build_albumentations_pipeline(
         transforms.append(
             A.Rotate(
                 limit=limit,
-                border_mode=0,  # cv2.BORDER_CONSTANT
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
                 p=preset.random_rotate.prob,
+            )
+        )
+
+    if preset.safe_rotate.enabled:
+        limit = preset.safe_rotate.params.get("limit", 15)
+        transforms.append(
+            A.SafeRotate(
+                limit=limit,
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
+                p=preset.safe_rotate.prob,
+            )
+        )
+
+    if preset.shift_scale_rotate.enabled:
+        params = preset.shift_scale_rotate.params
+        transforms.append(
+            A.ShiftScaleRotate(
+                shift_limit=params.get("shift_limit", 0.1),
+                scale_limit=params.get("scale_limit", 0.2),
+                rotate_limit=params.get("rotate_limit", 10),
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
+                p=preset.shift_scale_rotate.prob,
             )
         )
 
@@ -91,15 +121,20 @@ def build_albumentations_pipeline(
                 scale=params.get("scale", (0.9, 1.1)),
                 translate_percent=params.get("translate_percent", 0.1),
                 shear=params.get("shear", 10),
-                mode=0,  # cv2.BORDER_CONSTANT
+                mode=cv2.BORDER_CONSTANT,
+                cval=(114, 114, 114),
                 p=preset.affine.prob,
             )
         )
 
     if preset.perspective.enabled:
+        params = preset.perspective.params
+        scale = params.get("scale", (0.02, 0.05))
         transforms.append(
             A.Perspective(
-                scale=(0.05, 0.1),
+                scale=scale,
+                pad_mode=cv2.BORDER_CONSTANT,
+                pad_val=(114, 114, 114),
                 p=preset.perspective.prob,
             )
         )
@@ -114,16 +149,70 @@ def build_albumentations_pipeline(
         )
 
     if preset.random_crop.enabled:
-        # Random crop with minimum size
+        params = preset.random_crop.params
+        scale = params.get("scale", (0.8, 1.0))
         transforms.append(
-            A.RandomCrop(
-                height=int(img_size * 0.8),
-                width=int(img_size * 0.8),
+            A.RandomResizedCrop(
+                size=(img_size, img_size),
+                scale=scale,
+                ratio=params.get("ratio", (0.9, 1.1)),
                 p=preset.random_crop.prob,
             )
         )
 
-    # ==== COLOR / LIGHT ====
+    if preset.grid_distortion.enabled:
+        params = preset.grid_distortion.params
+        transforms.append(
+            A.GridDistortion(
+                num_steps=params.get("num_steps", 5),
+                distort_limit=params.get("distort_limit", 0.3),
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
+                p=preset.grid_distortion.prob,
+            )
+        )
+
+    if preset.elastic_transform.enabled:
+        params = preset.elastic_transform.params
+        transforms.append(
+            A.ElasticTransform(
+                alpha=params.get("alpha", 50),
+                sigma=params.get("sigma", 5),
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
+                p=preset.elastic_transform.prob,
+            )
+        )
+
+    if preset.optical_distortion.enabled:
+        params = preset.optical_distortion.params
+        transforms.append(
+            A.OpticalDistortion(
+                distort_limit=params.get("distort_limit", 0.3),
+                shift_limit=params.get("shift_limit", 0.1),
+                border_mode=cv2.BORDER_CONSTANT,
+                value=(114, 114, 114),
+                p=preset.optical_distortion.prob,
+            )
+        )
+
+    if preset.piecewise_affine.enabled:
+        params = preset.piecewise_affine.params
+        transforms.append(
+            A.PiecewiseAffine(
+                scale=params.get("scale", 0.03),
+                nb_rows=params.get("nb_rows", 4),
+                nb_cols=params.get("nb_cols", 4),
+                mode="constant",
+                cval=(114, 114, 114),
+                p=preset.piecewise_affine.prob,
+            )
+        )
+
+    # ==========================================================================
+    # COLOR / LIGHT AUGMENTATIONS
+    # ==========================================================================
+
     if preset.brightness_contrast.enabled:
         params = preset.brightness_contrast.params
         transforms.append(
@@ -131,6 +220,18 @@ def build_albumentations_pipeline(
                 brightness_limit=params.get("brightness_limit", 0.2),
                 contrast_limit=params.get("contrast_limit", 0.2),
                 p=preset.brightness_contrast.prob,
+            )
+        )
+
+    if preset.color_jitter.enabled:
+        params = preset.color_jitter.params
+        transforms.append(
+            A.ColorJitter(
+                brightness=params.get("brightness", 0.2),
+                contrast=params.get("contrast", 0.2),
+                saturation=params.get("saturation", 0.3),
+                hue=params.get("hue", 0.015),
+                p=preset.color_jitter.prob,
             )
         )
 
@@ -145,14 +246,23 @@ def build_albumentations_pipeline(
             )
         )
 
+    if preset.random_gamma.enabled:
+        params = preset.random_gamma.params
+        gamma_limit = params.get("gamma_limit", (80, 120))
+        transforms.append(
+            A.RandomGamma(
+                gamma_limit=gamma_limit,
+                p=preset.random_gamma.prob,
+            )
+        )
+
     if preset.rgb_shift.enabled:
         params = preset.rgb_shift.params
-        r_limit = params.get("r_shift_limit", 20)
         transforms.append(
             A.RGBShift(
-                r_shift_limit=r_limit,
-                g_shift_limit=r_limit,
-                b_shift_limit=r_limit,
+                r_shift_limit=params.get("r_shift_limit", 20),
+                g_shift_limit=params.get("g_shift_limit", 20),
+                b_shift_limit=params.get("b_shift_limit", 20),
                 p=preset.rgb_shift.prob,
             )
         )
@@ -167,6 +277,10 @@ def build_albumentations_pipeline(
         transforms.append(
             A.CLAHE(
                 clip_limit=params.get("clip_limit", 4.0),
+                tile_grid_size=(
+                    params.get("tile_grid_size", 8),
+                    params.get("tile_grid_size", 8),
+                ),
                 p=preset.clahe.prob,
             )
         )
@@ -176,17 +290,84 @@ def build_albumentations_pipeline(
             A.Equalize(p=preset.equalize.prob)
         )
 
+    if preset.random_tone_curve.enabled:
+        params = preset.random_tone_curve.params
+        transforms.append(
+            A.RandomToneCurve(
+                scale=params.get("scale", 0.1),
+                p=preset.random_tone_curve.prob,
+            )
+        )
+
+    if preset.posterize.enabled:
+        params = preset.posterize.params
+        transforms.append(
+            A.Posterize(
+                num_bits=params.get("num_bits", 4),
+                p=preset.posterize.prob,
+            )
+        )
+
+    if preset.solarize.enabled:
+        params = preset.solarize.params
+        transforms.append(
+            A.Solarize(
+                threshold=params.get("threshold", 128),
+                p=preset.solarize.prob,
+            )
+        )
+
+    if preset.sharpen.enabled:
+        params = preset.sharpen.params
+        transforms.append(
+            A.Sharpen(
+                alpha=params.get("alpha", (0.2, 0.5)),
+                lightness=params.get("lightness", (0.5, 1.0)),
+                p=preset.sharpen.prob,
+            )
+        )
+
+    if preset.unsharp_mask.enabled:
+        params = preset.unsharp_mask.params
+        transforms.append(
+            A.UnsharpMask(
+                blur_limit=params.get("blur_limit", (3, 7)),
+                alpha=params.get("alpha", (0.2, 0.5)),
+                p=preset.unsharp_mask.prob,
+            )
+        )
+
+    if preset.fancy_pca.enabled:
+        params = preset.fancy_pca.params
+        transforms.append(
+            A.FancyPCA(
+                alpha=params.get("alpha", 0.1),
+                p=preset.fancy_pca.prob,
+            )
+        )
+
+    if preset.invert_img.enabled:
+        transforms.append(
+            A.InvertImg(p=preset.invert_img.prob)
+        )
+
     if preset.to_gray.enabled:
         transforms.append(
             A.ToGray(p=preset.to_gray.prob)
         )
 
-    # ==== BLUR / NOISE ====
+    # ==========================================================================
+    # BLUR AUGMENTATIONS
+    # ==========================================================================
+
     if preset.gaussian_blur.enabled:
         params = preset.gaussian_blur.params
+        blur_limit = params.get("blur_limit", (3, 7))
+        if isinstance(blur_limit, int):
+            blur_limit = (3, blur_limit)
         transforms.append(
             A.GaussianBlur(
-                blur_limit=params.get("blur_limit", 7),
+                blur_limit=blur_limit,
                 p=preset.gaussian_blur.prob,
             )
         )
@@ -204,10 +385,53 @@ def build_albumentations_pipeline(
         params = preset.median_blur.params
         transforms.append(
             A.MedianBlur(
-                blur_limit=params.get("blur_limit", 7),
+                blur_limit=params.get("blur_limit", 5),
                 p=preset.median_blur.prob,
             )
         )
+
+    if preset.defocus.enabled:
+        params = preset.defocus.params
+        transforms.append(
+            A.Defocus(
+                radius=params.get("radius", (3, 7)),
+                alias_blur=params.get("alias_blur", (0.1, 0.3)),
+                p=preset.defocus.prob,
+            )
+        )
+
+    if preset.zoom_blur.enabled:
+        params = preset.zoom_blur.params
+        transforms.append(
+            A.ZoomBlur(
+                max_factor=params.get("max_factor", 1.1),
+                p=preset.zoom_blur.prob,
+            )
+        )
+
+    if preset.glass_blur.enabled:
+        params = preset.glass_blur.params
+        transforms.append(
+            A.GlassBlur(
+                sigma=params.get("sigma", 0.7),
+                max_delta=params.get("max_delta", 4),
+                iterations=params.get("iterations", 2),
+                p=preset.glass_blur.prob,
+            )
+        )
+
+    if preset.advanced_blur.enabled:
+        params = preset.advanced_blur.params
+        transforms.append(
+            A.AdvancedBlur(
+                blur_limit=params.get("blur_limit", (3, 7)),
+                p=preset.advanced_blur.prob,
+            )
+        )
+
+    # ==========================================================================
+    # NOISE AUGMENTATIONS
+    # ==========================================================================
 
     if preset.gaussian_noise.enabled:
         params = preset.gaussian_noise.params
@@ -220,25 +444,51 @@ def build_albumentations_pipeline(
         )
 
     if preset.iso_noise.enabled:
+        params = preset.iso_noise.params
         transforms.append(
-            A.ISONoise(p=preset.iso_noise.prob)
+            A.ISONoise(
+                color_shift=params.get("color_shift", (0.01, 0.05)),
+                intensity=params.get("intensity", (0.1, 0.5)),
+                p=preset.iso_noise.prob,
+            )
         )
 
-    # ==== WEATHER / OCCLUSION ====
-    if preset.random_rain.enabled:
+    if preset.multiplicative_noise.enabled:
+        params = preset.multiplicative_noise.params
         transforms.append(
-            A.RandomRain(p=preset.random_rain.prob)
+            A.MultiplicativeNoise(
+                multiplier=params.get("multiplier", (0.9, 1.1)),
+                p=preset.multiplicative_noise.prob,
+            )
         )
 
-    if preset.random_fog.enabled:
+    # ==========================================================================
+    # QUALITY DEGRADATION AUGMENTATIONS
+    # ==========================================================================
+
+    if preset.image_compression.enabled:
+        params = preset.image_compression.params
         transforms.append(
-            A.RandomFog(p=preset.random_fog.prob)
+            A.ImageCompression(
+                quality_lower=params.get("quality_lower", 70),
+                quality_upper=params.get("quality_upper", 95),
+                p=preset.image_compression.prob,
+            )
         )
 
-    if preset.random_shadow.enabled:
+    if preset.downscale.enabled:
+        params = preset.downscale.params
         transforms.append(
-            A.RandomShadow(p=preset.random_shadow.prob)
+            A.Downscale(
+                scale_min=params.get("scale_min", 0.5),
+                scale_max=params.get("scale_max", 0.9),
+                p=preset.downscale.prob,
+            )
         )
+
+    # ==========================================================================
+    # DROPOUT / OCCLUSION AUGMENTATIONS
+    # ==========================================================================
 
     if preset.coarse_dropout.enabled:
         params = preset.coarse_dropout.params
@@ -247,12 +497,109 @@ def build_albumentations_pipeline(
                 max_holes=params.get("max_holes", 8),
                 max_height=params.get("max_height", 32),
                 max_width=params.get("max_width", 32),
-                fill_value=114,  # Gray fill
+                fill_value=params.get("fill_value", 114),
                 p=preset.coarse_dropout.prob,
             )
         )
 
-    # ==== FINAL TRANSFORMS ====
+    if preset.grid_dropout.enabled:
+        params = preset.grid_dropout.params
+        transforms.append(
+            A.GridDropout(
+                ratio=params.get("ratio", 0.3),
+                unit_size_min=params.get("unit_size_min", 10),
+                unit_size_max=params.get("unit_size_max", 40),
+                fill_value=114,
+                p=preset.grid_dropout.prob,
+            )
+        )
+
+    if preset.pixel_dropout.enabled:
+        params = preset.pixel_dropout.params
+        transforms.append(
+            A.PixelDropout(
+                dropout_prob=params.get("dropout_prob", 0.01),
+                p=preset.pixel_dropout.prob,
+            )
+        )
+
+    # Note: mask_dropout is for instance segmentation, skipped for bbox-only
+
+    # ==========================================================================
+    # WEATHER AUGMENTATIONS
+    # ==========================================================================
+
+    if preset.random_rain.enabled:
+        params = preset.random_rain.params
+        transforms.append(
+            A.RandomRain(
+                slant_lower=params.get("slant_lower", -10),
+                slant_upper=params.get("slant_upper", 10),
+                drop_length=params.get("drop_length", 20),
+                drop_width=params.get("drop_width", 1),
+                blur_value=params.get("blur_value", 5),
+                p=preset.random_rain.prob,
+            )
+        )
+
+    if preset.random_fog.enabled:
+        params = preset.random_fog.params
+        transforms.append(
+            A.RandomFog(
+                fog_coef_lower=params.get("fog_coef_lower", 0.1),
+                fog_coef_upper=params.get("fog_coef_upper", 0.3),
+                alpha_coef=params.get("alpha_coef", 0.08),
+                p=preset.random_fog.prob,
+            )
+        )
+
+    if preset.random_shadow.enabled:
+        params = preset.random_shadow.params
+        transforms.append(
+            A.RandomShadow(
+                num_shadows_lower=params.get("num_shadows_lower", 1),
+                num_shadows_upper=params.get("num_shadows_upper", 2),
+                p=preset.random_shadow.prob,
+            )
+        )
+
+    if preset.random_sun_flare.enabled:
+        params = preset.random_sun_flare.params
+        transforms.append(
+            A.RandomSunFlare(
+                src_radius=params.get("src_radius", 100),
+                num_flare_circles_lower=params.get("num_flare_circles_lower", 3),
+                num_flare_circles_upper=params.get("num_flare_circles_upper", 7),
+                p=preset.random_sun_flare.prob,
+            )
+        )
+
+    if preset.random_snow.enabled:
+        params = preset.random_snow.params
+        transforms.append(
+            A.RandomSnow(
+                snow_point_lower=params.get("snow_point_lower", 0.1),
+                snow_point_upper=params.get("snow_point_upper", 0.3),
+                brightness_coeff=params.get("brightness_coeff", 2.5),
+                p=preset.random_snow.prob,
+            )
+        )
+
+    if preset.spatter.enabled:
+        params = preset.spatter.params
+        transforms.append(
+            A.Spatter(
+                mode=params.get("mode", "rain"),
+                p=preset.spatter.prob,
+            )
+        )
+
+    # Note: plasma_brightness is not in standard albumentations, skipped
+
+    # ==========================================================================
+    # FINAL TRANSFORMS
+    # ==========================================================================
+
     # Resize to target size (always applied)
     transforms.append(
         A.LongestMaxSize(max_size=img_size)
@@ -261,7 +608,7 @@ def build_albumentations_pipeline(
         A.PadIfNeeded(
             min_height=img_size,
             min_width=img_size,
-            border_mode=0,  # BORDER_CONSTANT
+            border_mode=cv2.BORDER_CONSTANT,
             value=(114, 114, 114),  # Gray padding
         )
     )
@@ -312,7 +659,7 @@ def build_val_pipeline(
         A.PadIfNeeded(
             min_height=img_size,
             min_width=img_size,
-            border_mode=0,
+            border_mode=cv2.BORDER_CONSTANT,
             value=(114, 114, 114),
         ),
     ]
@@ -362,6 +709,7 @@ class AlbumentationsTransform:
         """
         self.img_size = img_size
         self.is_training = is_training
+        self.preset = preset
 
         if is_training:
             self.transform = build_albumentations_pipeline(
@@ -421,6 +769,10 @@ class AlbumentationsTransform:
             'labels': transformed_labels,
         }
 
+    def get_enabled_augmentations(self) -> List[str]:
+        """Get list of enabled augmentation names."""
+        return self.preset.get_enabled_augmentations() if self.is_training else []
+
 
 def get_augmentation_list_from_preset(preset: AugmentationPreset) -> List[str]:
     """
@@ -434,14 +786,48 @@ def get_augmentation_list_from_preset(preset: AugmentationPreset) -> List[str]:
     Returns:
         List of enabled augmentation names
     """
-    enabled = []
+    return preset.get_enabled_augmentations()
 
-    # Check all attributes
-    for attr_name in dir(preset):
-        if attr_name.startswith('_'):
-            continue
-        attr = getattr(preset, attr_name)
-        if isinstance(attr, AugmentationConfig) and attr.enabled:
-            enabled.append(attr_name)
 
-    return enabled
+def build_augmentation_oneof_blocks(preset: AugmentationPreset) -> List[A.OneOf]:
+    """
+    Build grouped OneOf blocks for augmentations.
+
+    This allows mutually exclusive augmentations within categories.
+    Useful for advanced pipelines that want to limit augmentation overlap.
+
+    Args:
+        preset: AugmentationPreset
+
+    Returns:
+        List of OneOf blocks
+    """
+    blocks = []
+
+    # Blur OneOf block
+    blur_transforms = []
+    if preset.gaussian_blur.enabled:
+        blur_transforms.append(A.GaussianBlur(blur_limit=7))
+    if preset.motion_blur.enabled:
+        blur_transforms.append(A.MotionBlur(blur_limit=7))
+    if preset.median_blur.enabled:
+        blur_transforms.append(A.MedianBlur(blur_limit=5))
+    if preset.defocus.enabled:
+        blur_transforms.append(A.Defocus())
+    if blur_transforms:
+        blocks.append(A.OneOf(blur_transforms, p=0.3))
+
+    # Color OneOf block
+    color_transforms = []
+    if preset.brightness_contrast.enabled:
+        color_transforms.append(A.RandomBrightnessContrast())
+    if preset.hue_saturation.enabled:
+        color_transforms.append(A.HueSaturationValue())
+    if preset.rgb_shift.enabled:
+        color_transforms.append(A.RGBShift())
+    if preset.random_gamma.enabled:
+        color_transforms.append(A.RandomGamma())
+    if color_transforms:
+        blocks.append(A.OneOf(color_transforms, p=0.5))
+
+    return blocks
