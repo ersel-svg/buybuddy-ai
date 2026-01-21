@@ -18,6 +18,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from loguru import logger
+from scipy import ndimage
 
 from .base import BaseSegmentationModel
 
@@ -34,6 +35,11 @@ class SAM3Model(BaseSegmentationModel):
     Note: SAM3 is designed for video, so we create a 1-frame "video"
     from the input image for processing.
     """
+
+    # Minimum area threshold as fraction of image (0.001 = 0.1% of image)
+    MIN_AREA_FRACTION = 0.0005
+    # Maximum number of predictions to return
+    MAX_PREDICTIONS = 500
 
     def __init__(
         self,
@@ -107,10 +113,13 @@ class SAM3Model(BaseSegmentationModel):
         """
         Run SAM3 detection using text prompt.
 
+        Returns MULTIPLE predictions - one for each detected object instance.
+        SAM3 returns separate masks for each object with confidence scores.
+
         Args:
             image_url: URL of the image
             text_prompt: Text description of object to find (e.g., "red can", "product")
-            box_threshold: Not used (for API compatibility)
+            box_threshold: Minimum confidence threshold (0-1)
             text_threshold: Not used (for API compatibility)
 
         Returns:
@@ -123,38 +132,58 @@ class SAM3Model(BaseSegmentationModel):
         # Download image
         image = self.download_image(image_url)
         width, height = image.size
+        image_area = width * height
 
         # Create temporary video file from single image
         video_path = self._create_temp_video(image)
 
         try:
-            # Run SAM3 segmentation
-            mask = self._segment_with_text(video_path, text_prompt, width, height)
+            # Run SAM3 segmentation - get ALL masks with scores
+            masks_with_scores = self._segment_with_text_all_masks_scored(
+                video_path, text_prompt, width, height
+            )
 
-            if mask is None:
-                logger.warning(f"SAM3: No object found for prompt '{text_prompt}'")
+            if not masks_with_scores:
+                logger.warning(f"SAM3: No objects found for prompt '{text_prompt}'")
                 return []
 
-            # Convert mask to bbox
-            bbox_abs = self.mask_to_bbox(mask)
+            predictions = []
+            min_area = int(image_area * self.MIN_AREA_FRACTION)
 
-            if bbox_abs is None:
-                return []
+            # Process each mask (SAM3 returns one mask per detected object)
+            for mask, confidence in masks_with_scores:
+                # Skip if below threshold
+                if confidence < box_threshold:
+                    continue
 
-            x1, y1, x2, y2 = bbox_abs
+                # Get bounding box from mask
+                bbox_abs = self.mask_to_bbox(mask)
+                if bbox_abs is None:
+                    continue
 
-            predictions = [{
-                "bbox": {
-                    "x": x1 / width,
-                    "y": y1 / height,
-                    "width": (x2 - x1) / width,
-                    "height": (y2 - y1) / height,
-                },
-                "label": text_prompt,
-                "confidence": 1.0,  # SAM3 doesn't provide confidence
-            }]
+                x1, y1, x2, y2 = bbox_abs
 
-            logger.debug(f"SAM3 found object for prompt '{text_prompt}'")
+                # Check minimum area
+                area = np.sum(mask)
+                if area < min_area:
+                    continue
+
+                predictions.append({
+                    "bbox": {
+                        "x": x1 / width,
+                        "y": y1 / height,
+                        "width": (x2 - x1) / width,
+                        "height": (y2 - y1) / height,
+                    },
+                    "label": text_prompt,
+                    "confidence": round(confidence, 3),
+                })
+
+            # Sort by confidence (highest first) and limit
+            predictions.sort(key=lambda p: p["confidence"], reverse=True)
+            predictions = predictions[:self.MAX_PREDICTIONS]
+
+            logger.info(f"SAM3 found {len(predictions)} objects for prompt '{text_prompt}'")
             return predictions
 
         finally:
@@ -355,14 +384,61 @@ class SAM3Model(BaseSegmentationModel):
         except Exception as e:
             logger.warning(f"Failed to cleanup temp video: {e}")
 
-    def _segment_with_text(
+    def _find_connected_components(
+        self,
+        mask: np.ndarray,
+        min_area: int,
+    ) -> list[tuple[tuple[int, int, int, int], int, np.ndarray]]:
+        """
+        Find connected components in a binary mask.
+
+        Args:
+            mask: Binary mask array (H, W)
+            min_area: Minimum area in pixels for a component
+
+        Returns:
+            List of (bbox, area, component_mask) tuples
+            bbox is (x1, y1, x2, y2) in absolute pixels
+        """
+        # Label connected components
+        labeled_array, num_features = ndimage.label(mask)
+
+        components = []
+        for label_id in range(1, num_features + 1):
+            # Extract this component's mask
+            component_mask = (labeled_array == label_id).astype(np.uint8)
+
+            # Calculate area
+            area = np.sum(component_mask)
+            if area < min_area:
+                continue
+
+            # Get bounding box
+            rows = np.any(component_mask, axis=1)
+            cols = np.any(component_mask, axis=0)
+
+            if not np.any(rows) or not np.any(cols):
+                continue
+
+            y1, y2 = np.where(rows)[0][[0, -1]]
+            x1, x2 = np.where(cols)[0][[0, -1]]
+
+            bbox = (int(x1), int(y1), int(x2), int(y2))
+            components.append((bbox, area, component_mask))
+
+        # Sort by area (largest first)
+        components.sort(key=lambda x: x[1], reverse=True)
+
+        return components
+
+    def _segment_with_text_all_masks_scored(
         self,
         video_path: Path,
         text_prompt: str,
         width: int,
         height: int,
-    ) -> Optional[np.ndarray]:
-        """Run SAM3 segmentation with text prompt."""
+    ) -> list[tuple[np.ndarray, float]]:
+        """Run SAM3 segmentation with text prompt - returns ALL masks with confidence scores."""
         # Start session
         response = self.video_predictor.handle_request(
             request=dict(
@@ -391,8 +467,8 @@ class SAM3Model(BaseSegmentationModel):
                 max_frame_num_to_track=1,
             )
 
-            # Extract mask
-            return self._extract_mask_from_result(propagate_result)
+            # Extract ALL masks with their confidence scores
+            return self._extract_all_masks_with_scores(propagate_result)
 
         finally:
             # Close session
@@ -404,6 +480,28 @@ class SAM3Model(BaseSegmentationModel):
             )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+    def _segment_with_text_all_masks(
+        self,
+        video_path: Path,
+        text_prompt: str,
+        width: int,
+        height: int,
+    ) -> list[np.ndarray]:
+        """Run SAM3 segmentation with text prompt - returns ALL masks (without scores)."""
+        results = self._segment_with_text_all_masks_scored(video_path, text_prompt, width, height)
+        return [mask for mask, _ in results]
+
+    def _segment_with_text(
+        self,
+        video_path: Path,
+        text_prompt: str,
+        width: int,
+        height: int,
+    ) -> Optional[np.ndarray]:
+        """Run SAM3 segmentation with text prompt (legacy - returns single mask)."""
+        masks = self._segment_with_text_all_masks(video_path, text_prompt, width, height)
+        return masks[0] if masks else None
 
     def _segment_with_point(
         self,
@@ -553,29 +651,67 @@ class SAM3Model(BaseSegmentationModel):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _extract_mask_from_result(self, propagate_result) -> Optional[np.ndarray]:
-        """Extract mask from SAM3 propagation result."""
-        mask = None
+    def _extract_all_masks_with_scores(self, propagate_result) -> list[tuple[np.ndarray, float]]:
+        """
+        Extract ALL masks with their confidence scores from SAM3 propagation result.
+
+        SAM3 returns separate masks for each detected object, along with probability scores.
+
+        Returns:
+            List of (mask, confidence) tuples
+        """
+        results = []
 
         if hasattr(propagate_result, "__iter__") and not isinstance(propagate_result, (dict, str)):
             for item in propagate_result:
+                outputs = None
+
                 if isinstance(item, dict):
                     outputs = item.get("outputs", item)
-                    masks = outputs.get("out_binary_masks")
-                    if masks is not None and hasattr(masks, 'shape') and masks.shape[0] > 0:
-                        mask = masks[0]
-                        break
                 elif isinstance(item, tuple) and len(item) > 1:
-                    outputs = item[1]
-                    if isinstance(outputs, dict):
-                        masks = outputs.get("out_binary_masks")
-                        if masks is not None and hasattr(masks, 'shape') and masks.shape[0] > 0:
-                            mask = masks[0]
-                            break
+                    outputs = item[1] if isinstance(item[1], dict) else None
 
-        if mask is not None:
-            if hasattr(mask, "cpu"):
-                mask = mask.cpu().numpy()
-            mask = mask.squeeze().astype(np.uint8)
+                if outputs is None:
+                    continue
 
-        return mask
+                masks_tensor = outputs.get("out_binary_masks")
+                probs = outputs.get("out_probs")
+
+                if masks_tensor is None or not hasattr(masks_tensor, 'shape'):
+                    continue
+
+                # Convert to numpy if tensor
+                if hasattr(masks_tensor, "cpu"):
+                    masks_tensor = masks_tensor.cpu().numpy()
+                if probs is not None and hasattr(probs, "cpu"):
+                    probs = probs.cpu().numpy()
+
+                # Handle different shapes: (N, H, W) or (N, 1, H, W)
+                if len(masks_tensor.shape) == 4:
+                    masks_tensor = masks_tensor.squeeze(1)
+
+                num_masks = masks_tensor.shape[0]
+                logger.debug(f"SAM3 returned {num_masks} masks")
+
+                # Extract each mask with its confidence
+                for i in range(num_masks):
+                    mask = masks_tensor[i].squeeze().astype(np.uint8)
+                    if not np.any(mask):  # Skip empty masks
+                        continue
+
+                    # Get confidence from probs array
+                    confidence = float(probs[i]) if probs is not None and i < len(probs) else 1.0
+                    results.append((mask, confidence))
+
+        logger.debug(f"Extracted {len(results)} masks with scores from SAM3 result")
+        return results
+
+    def _extract_all_masks_from_result(self, propagate_result) -> list[np.ndarray]:
+        """Extract ALL masks from SAM3 propagation result (without scores)."""
+        results = self._extract_all_masks_with_scores(propagate_result)
+        return [mask for mask, _ in results]
+
+    def _extract_mask_from_result(self, propagate_result) -> Optional[np.ndarray]:
+        """Extract single mask from SAM3 propagation result (legacy)."""
+        masks = self._extract_all_masks_from_result(propagate_result)
+        return masks[0] if masks else None
