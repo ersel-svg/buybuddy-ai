@@ -86,6 +86,7 @@ def validate_input(job_input: dict) -> tuple[bool, str | None]:
 def handle_detect(job_input: dict) -> dict[str, Any]:
     """Handle single image detection."""
     model_name = job_input.get("model", "grounding_dino")
+    model_config = job_input.get("model_config")  # For Roboflow models
     image_url = job_input["image_url"]
     text_prompt = job_input.get("text_prompt", "")
     box_threshold = job_input.get("box_threshold", config.default_box_threshold)
@@ -93,10 +94,14 @@ def handle_detect(job_input: dict) -> dict[str, Any]:
     use_nms = job_input.get("use_nms", False)
     nms_threshold = job_input.get("nms_threshold", 0.5)
 
-    logger.info(f"Detection request: model={model_name}, prompt='{text_prompt}', nms={use_nms}")
+    # Log request details
+    if model_name == "roboflow" and model_config:
+        logger.info(f"Detection request: model=roboflow ({model_config.get('architecture')}), nms={use_nms}")
+    else:
+        logger.info(f"Detection request: model={model_name}, prompt='{text_prompt}', nms={use_nms}")
 
-    # Get model (cached)
-    model = get_model(model_name, MODEL_CACHE)
+    # Get model (cached) - pass model_config for Roboflow models
+    model = get_model(model_name, MODEL_CACHE, model_config=model_config)
 
     # Run inference (with or without NMS)
     if use_nms and hasattr(model, "predict_with_nms"):

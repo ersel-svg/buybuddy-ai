@@ -1947,6 +1947,21 @@ class ApiClient {
     return this.request(`/api/v1/od/datasets/${datasetId}/images/${imageId}/status`, { method: "PATCH", params: { status } });
   }
 
+  async updateODDatasetImageStatusBulk(datasetId: string, imageIds: string[], status: string): Promise<{ updated: number; status: string; message: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-status`, { method: "POST", body: imageIds, params: { status } });
+  }
+
+  async updateODDatasetImageStatusByFilter(
+    datasetId: string,
+    newStatus: string,
+    options?: { currentStatus?: string; hasAnnotations?: boolean }
+  ): Promise<{ updated: number; status: string; message: string }> {
+    const params: Record<string, string | boolean> = { new_status: newStatus };
+    if (options?.currentStatus) params.current_status = options.currentStatus;
+    if (options?.hasAnnotations !== undefined) params.has_annotations = options.hasAnnotations;
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-status-by-filter`, { method: "POST", params });
+  }
+
   async getODDatasetStats(datasetId: string): Promise<{
     dataset: { id: string; name: string };
     images_by_status: Record<string, number>;
@@ -2451,6 +2466,9 @@ class ApiClient {
       description: string;
       tasks: string[];
       requires_prompt: boolean;
+      model_type?: "open_vocab" | "closed_vocab";
+      classes?: string[];  // For closed-vocab Roboflow models
+      architecture?: string;  // e.g., "yolov8m", "rf-detr"
     }>;
     segmentation_models: Array<{
       id: string;
@@ -2466,7 +2484,7 @@ class ApiClient {
   async predictODAI(params: {
     image_id: string;
     model: string;
-    text_prompt: string;
+    text_prompt?: string;  // Optional - not needed for Roboflow closed-vocab models
     box_threshold?: number;
     text_threshold?: number;
     use_nms?: boolean;
@@ -2999,6 +3017,70 @@ class ApiClient {
     Array<{ value: string; label: string; description: string }>
   > {
     return this.request("/api/v1/product-matcher/system-fields");
+  }
+
+  // ===========================================
+  // Bulk Update API
+  // ===========================================
+
+  async getBulkUpdateSystemFields(): Promise<
+    Array<{ id: string; label: string; group: string; editable: boolean }>
+  > {
+    return this.request("/api/v1/products/bulk-update/system-fields");
+  }
+
+  async previewBulkUpdate(params: {
+    rows: Record<string, unknown>[];
+    identifier_column: string;
+    field_mappings: Array<{ source_column: string; target_field: string }>;
+  }): Promise<{
+    matches: Array<{
+      row_index: number;
+      product_id: string;
+      barcode: string;
+      current_values: Record<string, unknown>;
+      new_values: Record<string, unknown>;
+      product_field_changes: string[];
+      identifier_field_changes: string[];
+    }>;
+    not_found: Array<{
+      row_index: number;
+      identifier_value: string;
+      source_row: Record<string, unknown>;
+    }>;
+    validation_errors: Array<{
+      row_index: number;
+      field: string;
+      value: unknown;
+      error: string;
+    }>;
+    summary: {
+      total_rows: number;
+      matched: number;
+      not_found: number;
+      validation_errors: number;
+      will_update: number;
+    };
+  }> {
+    return this.request("/api/v1/products/bulk-update/preview", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+  }
+
+  async executeBulkUpdate(params: {
+    updates: Array<{ product_id: string; fields: Record<string, unknown> }>;
+    mode: "strict" | "lenient";
+  }): Promise<{
+    success: boolean;
+    updated_count: number;
+    failed: Array<{ product_id: string; error: string }>;
+    execution_time_ms: number;
+  }> {
+    return this.request("/api/v1/products/bulk-update/execute", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
   }
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -60,26 +60,36 @@ interface AIPanelProps {
   isLoading?: boolean;
 }
 
-const AI_MODELS = [
+// Fallback models when API is unavailable
+const FALLBACK_MODELS = [
   {
     id: "grounding_dino",
     name: "Grounding DINO",
     description: "SOTA text→bbox detection",
-    icon: "🎯",
+    requires_prompt: true,
   },
   {
     id: "sam3",
     name: "SAM 3",
     description: "Text→mask→bbox with grounding",
-    icon: "✨",
+    requires_prompt: true,
   },
   {
     id: "florence2",
     name: "Florence-2",
     description: "Microsoft's versatile vision model",
-    icon: "🔮",
+    requires_prompt: false,
   },
 ];
+
+// Model icon mapping
+const MODEL_ICONS: Record<string, string> = {
+  grounding_dino: "🎯",
+  sam3: "✨",
+  florence2: "🔮",
+  // Roboflow models get a robot icon
+  default: "🤖",
+};
 
 export function AIPanel({
   imageId,
@@ -103,6 +113,24 @@ export function AIPanel({
   const [textThreshold, setTextThreshold] = useState(0.25);
   const [useNms, setUseNms] = useState(true); // NMS enabled by default
   const [nmsThreshold, setNmsThreshold] = useState(0.5);
+
+  // Fetch available models from API
+  const { data: modelsData } = useQuery({
+    queryKey: ["ai-models"],
+    queryFn: () => apiClient.getODAIModels(),
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  // Use API models or fallback
+  const aiModels = modelsData?.detection_models || FALLBACK_MODELS;
+
+  // Get selected model info
+  const selectedModelInfo = useMemo(() => {
+    return aiModels.find((m: any) => m.id === selectedModel);
+  }, [aiModels, selectedModel]);
+
+  // Check if selected model requires text prompt
+  const requiresPrompt = selectedModelInfo?.requires_prompt ?? true;
 
   // Selection state (internal if not controlled externally)
   const [internalSelectedIndices, setInternalSelectedIndices] = useState<Set<number>>(new Set());
@@ -131,14 +159,15 @@ export function AIPanel({
 
   const predictMutation = useMutation({
     mutationFn: async () => {
-      if (!textPrompt.trim()) {
+      // Only require text prompt for open-vocab models
+      if (requiresPrompt && !textPrompt.trim()) {
         throw new Error("Please enter a text prompt");
       }
 
       return apiClient.predictODAI({
         image_id: imageId,
         model: selectedModel,
-        text_prompt: textPrompt.trim(),
+        text_prompt: requiresPrompt ? textPrompt.trim() : undefined,
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
         use_nms: useNms,
@@ -167,7 +196,8 @@ export function AIPanel({
   const isLoading = externalLoading || predictMutation.isPending;
 
   const handleDetect = () => {
-    if (!textPrompt.trim()) {
+    // Only require text prompt for open-vocab models
+    if (requiresPrompt && !textPrompt.trim()) {
       toast.error("Please enter a text prompt");
       return;
     }
@@ -218,7 +248,6 @@ export function AIPanel({
     setSelectedIndices(new Set());
   };
 
-  const selectedModelInfo = AI_MODELS.find((m) => m.id === selectedModel);
   const selectedCount = selectedIndices.size;
   const allSelected = predictions.length > 0 && selectedCount === predictions.length;
   const targetClass = classes.find(c => c.id === targetClassId);
@@ -254,10 +283,10 @@ export function AIPanel({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {AI_MODELS.map((model) => (
+                {aiModels.map((model: any) => (
                   <SelectItem key={model.id} value={model.id}>
                     <div className="flex items-center gap-2">
-                      <span>{model.icon}</span>
+                      <span>{MODEL_ICONS[model.id] || MODEL_ICONS.default}</span>
                       <span>{model.name}</span>
                     </div>
                   </SelectItem>
@@ -272,23 +301,41 @@ export function AIPanel({
             )}
           </div>
 
-          {/* Text prompt */}
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">
-              Detection prompt
-            </Label>
-            <Input
-              value={textPrompt}
-              onChange={(e) => setTextPrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="shelf . product . price tag"
-              className="h-8 text-sm"
-              disabled={isLoading}
-            />
-            <p className="text-xs text-muted-foreground">
-              Separate classes with &quot; . &quot; (space dot space)
-            </p>
-          </div>
+          {/* Text prompt - only for open-vocab models */}
+          {requiresPrompt ? (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">
+                Detection prompt
+              </Label>
+              <Input
+                value={textPrompt}
+                onChange={(e) => setTextPrompt(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="shelf . product . price tag"
+                className="h-8 text-sm"
+                disabled={isLoading}
+              />
+              <p className="text-xs text-muted-foreground">
+                Separate classes with &quot; . &quot; (space dot space)
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">
+                Fixed Classes
+              </Label>
+              <div className="flex flex-wrap gap-1">
+                {(selectedModelInfo?.classes || []).map((cls: string) => (
+                  <Badge key={cls} variant="secondary" className="text-xs">
+                    {cls}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                This model detects these specific classes
+              </p>
+            </div>
+          )}
 
           {/* Confidence threshold */}
           <div className="space-y-1.5">

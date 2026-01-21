@@ -28,6 +28,9 @@ huggingface_hub>=0.20.0
 # Grounding DINO dependencies
 supervision>=0.18.0
 
+# Ultralytics (YOLOv8, RT-DETR) for Roboflow trained models
+ultralytics>=8.1.0
+
 # ONNX for custom model support
 onnx>=1.15.0
 onnxruntime-gpu>=1.16.0

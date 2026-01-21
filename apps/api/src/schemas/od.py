@@ -462,11 +462,11 @@ class AIPredictRequest(BaseModel):
     image_id: str
     model: str = Field(
         default="grounding_dino",
-        description="AI model to use: grounding_dino, sam3, florence2"
+        description="AI model to use: grounding_dino, sam3, florence2, or rf:{model_id} for Roboflow models"
     )
-    text_prompt: str = Field(
-        ...,
-        description="Text prompt for detection (e.g., 'shelf . product . price tag')"
+    text_prompt: Optional[str] = Field(
+        default=None,
+        description="Text prompt for detection (e.g., 'shelf . product . price tag'). Required for open-vocab models, ignored for Roboflow models."
     )
     box_threshold: float = Field(default=0.3, ge=0, le=1)
     text_threshold: float = Field(default=0.25, ge=0, le=1)
@@ -551,6 +551,7 @@ class AIPredictResponse(BaseModel):
     predictions: list[AIPrediction]
     model: str
     processing_time_ms: Optional[int] = None
+    nms_applied: Optional[bool] = None
 
 
 class AISegmentResponse(BaseModel):

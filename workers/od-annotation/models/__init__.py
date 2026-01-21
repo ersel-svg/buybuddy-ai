@@ -10,20 +10,32 @@ from loguru import logger
 from config import config
 
 
-def get_model(model_name: str, cache: dict[str, Any]) -> Any:
+def get_model(
+    model_name: str,
+    cache: dict[str, Any],
+    model_config: dict[str, Any] | None = None,
+) -> Any:
     """
     Get a model instance, using cache if available.
 
     Args:
         model_name: Name of the model to load
         cache: Dict to store loaded models
+        model_config: Additional config for dynamic models (Roboflow)
+                     Required keys for "roboflow": checkpoint_url, architecture, classes
 
     Returns:
         Model instance
     """
-    if model_name in cache:
-        logger.debug(f"Using cached model: {model_name}")
-        return cache[model_name]
+    # For Roboflow models, use checkpoint_url as cache key for uniqueness
+    if model_name == "roboflow" and model_config:
+        cache_key = f"roboflow:{model_config.get('checkpoint_url', '')}"
+    else:
+        cache_key = model_name
+
+    if cache_key in cache:
+        logger.debug(f"Using cached model: {cache_key}")
+        return cache[cache_key]
 
     logger.info(f"Loading model: {model_name}")
 
@@ -63,10 +75,29 @@ def get_model(model_name: str, cache: dict[str, Any]) -> Any:
         # Custom model needs model_path from job input
         raise ValueError("Custom model requires model_path in job input")
 
+    elif model_name == "roboflow":
+        # Roboflow trained models (YOLOv8, RF-DETR, etc.)
+        # Requires model_config with checkpoint_url, architecture, classes
+        if not model_config:
+            raise ValueError("model_config required for Roboflow models")
+
+        required_keys = ["checkpoint_url", "architecture", "classes"]
+        missing = [k for k in required_keys if k not in model_config]
+        if missing:
+            raise ValueError(f"model_config missing required keys: {missing}")
+
+        from .roboflow_model import RoboflowModel
+        model = RoboflowModel(
+            checkpoint_url=model_config["checkpoint_url"],
+            architecture=model_config["architecture"],
+            classes=model_config["classes"],
+            device=config.device,
+        )
+
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
-    cache[model_name] = model
+    cache[cache_key] = model
     logger.info(f"Model loaded: {model_name}")
 
     return model
