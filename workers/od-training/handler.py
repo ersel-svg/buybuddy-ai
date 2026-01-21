@@ -210,6 +210,18 @@ def download_dataset(dataset_url: str, output_path: str) -> str:
         zf.extractall(extract_path)
 
     os.remove(zip_path)
+
+    # Handle nested folder case: if there's a single subfolder, use it as root
+    contents = os.listdir(extract_path)
+    if len(contents) == 1:
+        potential_root = os.path.join(extract_path, contents[0])
+        if os.path.isdir(potential_root):
+            # Check if this subfolder contains the expected structure
+            if os.path.exists(os.path.join(potential_root, "annotations")) or \
+               os.path.exists(os.path.join(potential_root, "images")):
+                print(f"Found nested dataset folder: {contents[0]}")
+                extract_path = potential_root
+
     print(f"Dataset extracted to {extract_path}")
 
     return extract_path
