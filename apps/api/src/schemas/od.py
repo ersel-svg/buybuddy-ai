@@ -480,6 +480,10 @@ class AIPredictRequest(BaseModel):
         le=1,
         description="NMS IoU threshold (lower = more aggressive filtering)"
     )
+    filter_classes: Optional[list[str]] = Field(
+        default=None,
+        description="Filter predictions to only include these classes. None = return all classes. Example: ['void', 'object']"
+    )
 
 
 class AISegmentRequest(BaseModel):

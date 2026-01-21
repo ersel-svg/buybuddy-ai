@@ -274,6 +274,15 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
                 mask=pred.get("mask"),
             ))
 
+        # Apply class filter if specified
+        if request.filter_classes:
+            filter_set = set(request.filter_classes)
+            original_count = len(predictions)
+            predictions = [p for p in predictions if p.label in filter_set]
+            filtered_count = original_count - len(predictions)
+            if filtered_count > 0:
+                print(f"[AI Predict] Class filter removed {filtered_count} predictions (keeping: {request.filter_classes})")
+
         # Apply class-agnostic NMS to remove duplicate/overlapping boxes
         # This runs regardless of model - ensures consistent deduplication
         original_count = len(predictions)
