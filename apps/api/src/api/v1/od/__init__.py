@@ -49,7 +49,30 @@ async def od_health_check() -> dict[str, str]:
 # Stats endpoint for OD dashboard
 @router.get("/stats")
 async def get_od_stats() -> dict:
-    """Get Object Detection dashboard statistics."""
+    """Get Object Detection dashboard statistics.
+    
+    Uses optimized RPC function for performance (single query instead of 6+).
+    Falls back to multiple queries if RPC not available.
+    """
+    try:
+        # Try optimized RPC first (single query)
+        result = supabase_service.client.rpc("get_od_stats").execute()
+        
+        if result.data:
+            stats = result.data
+            # Ensure images_by_status has all expected keys
+            images_by_status = stats.get("images_by_status", {})
+            for key in ["pending", "annotating", "completed", "skipped"]:
+                if key not in images_by_status:
+                    images_by_status[key] = 0
+            stats["images_by_status"] = images_by_status
+            return stats
+            
+    except Exception as rpc_error:
+        # RPC not available, fall back to multiple queries
+        print(f"OD Stats RPC failed, using fallback: {rpc_error}")
+    
+    # Fallback: multiple queries (slower but always works)
     try:
         # Get total images
         images_result = supabase_service.client.table("od_images").select("id, status", count="exact").execute()

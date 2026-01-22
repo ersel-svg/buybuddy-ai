@@ -416,6 +416,166 @@ async def update_image_status(dataset_id: str, image_id: str, status: str):
     return result.data[0]
 
 
+@router.post("/{dataset_id}/images/bulk-status")
+async def update_images_status_bulk(dataset_id: str, image_ids: list[str], status: str):
+    """
+    Update the status of multiple images in a dataset at once.
+
+    Args:
+        dataset_id: The dataset ID
+        image_ids: List of image IDs to update
+        status: New status (pending, annotating, completed, skipped)
+
+    Returns:
+        Count of updated images
+    """
+    from datetime import datetime, timezone
+
+    valid_statuses = ["pending", "annotating", "completed", "skipped"]
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    if not image_ids:
+        return {"updated": 0, "message": "No image IDs provided"}
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    update_data = {"status": status}
+    if status == "completed":
+        update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Bulk update all images in a single query
+    result = supabase_service.client.table("od_dataset_images").update(
+        update_data
+    ).eq("dataset_id", dataset_id).in_("image_id", image_ids).execute()
+
+    updated_count = len(result.data) if result.data else 0
+
+    # Update dataset annotated_image_count
+    count = supabase_service.client.table("od_dataset_images").select(
+        "id", count="exact"
+    ).eq("dataset_id", dataset_id).eq("status", "completed").execute()
+    supabase_service.client.table("od_datasets").update({
+        "annotated_image_count": count.count or 0
+    }).eq("id", dataset_id).execute()
+
+    return {
+        "updated": updated_count,
+        "status": status,
+        "message": f"Updated {updated_count} images to '{status}'"
+    }
+
+
+@router.post("/{dataset_id}/images/bulk-status-by-filter")
+async def update_images_status_by_filter(
+    dataset_id: str,
+    new_status: str,
+    current_status: Optional[str] = None,
+    has_annotations: Optional[bool] = None,
+):
+    """
+    Update status of images matching filter criteria.
+
+    This is useful for bulk operations like:
+    - Mark all images with annotations as "completed"
+    - Mark all "pending" images as "skipped"
+
+    Args:
+        dataset_id: The dataset ID
+        new_status: New status to set (pending, annotating, completed, skipped)
+        current_status: Only update images with this current status
+        has_annotations: If True, only update images that have annotations; if False, only without
+
+    Returns:
+        Count of updated images
+    """
+    from datetime import datetime, timezone
+
+    valid_statuses = ["pending", "annotating", "completed", "skipped"]
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Build query to find matching images
+    query = supabase_service.client.table("od_dataset_images").select("image_id, annotation_count").eq("dataset_id", dataset_id)
+
+    if current_status:
+        query = query.eq("status", current_status)
+
+    result = query.execute()
+    all_images = result.data or []
+
+    # Filter by has_annotations if specified
+    if has_annotations is not None:
+        if has_annotations:
+            # Images with annotation_count > 0
+            all_images = [img for img in all_images if (img.get("annotation_count") or 0) > 0]
+        else:
+            # Images with annotation_count == 0 or None
+            all_images = [img for img in all_images if (img.get("annotation_count") or 0) == 0]
+
+    if not all_images:
+        return {"updated": 0, "message": "No images match the filter criteria"}
+
+    image_ids = [img["image_id"] for img in all_images]
+
+    # Prepare update data
+    update_data = {"status": new_status}
+    if new_status == "completed":
+        update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Bulk update
+    supabase_service.client.table("od_dataset_images").update(
+        update_data
+    ).eq("dataset_id", dataset_id).in_("image_id", image_ids).execute()
+
+    # Update dataset annotated_image_count
+    count = supabase_service.client.table("od_dataset_images").select(
+        "id", count="exact"
+    ).eq("dataset_id", dataset_id).eq("status", "completed").execute()
+    supabase_service.client.table("od_datasets").update({
+        "annotated_image_count": count.count or 0
+    }).eq("id", dataset_id).execute()
+
+    return {
+        "updated": len(image_ids),
+        "status": new_status,
+        "message": f"Updated {len(image_ids)} images to '{new_status}'"
+    }
+
+
+@router.post("/{dataset_id}/recalculate-counts")
+async def recalculate_dataset_counts_endpoint(dataset_id: str):
+    """
+    Recalculate all denormalized counts for a dataset.
+
+    This fixes counts that may be out of sync after imports or other operations.
+    Updates: image_count, annotation_count, annotated_image_count
+    """
+    from services.roboflow_streaming import recalculate_dataset_counts
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id, name").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    counts = recalculate_dataset_counts(dataset_id)
+
+    return {
+        "success": True,
+        "dataset_id": dataset_id,
+        "dataset_name": dataset.data.get("name"),
+        "counts": counts,
+    }
+
+
 # ===========================================
 # Export Endpoints
 # ===========================================

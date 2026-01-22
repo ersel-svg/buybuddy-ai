@@ -39,6 +39,8 @@ function ODAnnotateContent() {
   const { data: datasets, isLoading: datasetsLoading } = useQuery({
     queryKey: ["od-datasets"],
     queryFn: () => apiClient.getODDatasets(),
+    staleTime: 60000, // 1 minute - datasets don't change often
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Fetch images for selected dataset
@@ -51,6 +53,8 @@ function ODAnnotateContent() {
         status: "pending",
       }),
     enabled: !!selectedDatasetId,
+    staleTime: 10000, // 10 seconds - images can change during annotation
+    gcTime: 60000, // 1 minute
   });
 
   // If dataset is preselected and has images, redirect to first image

@@ -69,6 +69,59 @@ class ImportCheckpoint:
         return self.download_complete and self.zip_file_path is not None
 
 
+@dataclass
+class StreamingCheckpoint:
+    """Checkpoint for streaming imports (image-level granularity).
+
+    Unlike ZIP imports, streaming imports process images one by one,
+    so we track progress at the individual image level.
+    """
+
+    job_id: str
+    total_images: int = 0
+
+    # Progress tracking (per-image)
+    processed_ids: set[str] = field(default_factory=set)  # Roboflow image IDs
+    failed_ids: dict[str, str] = field(default_factory=dict)  # {rf_id: error}
+
+    # Mapping data (needed for resume to avoid duplicates)
+    storage_map: dict[str, str] = field(default_factory=dict)  # {rf_id: storage_filename}
+    db_image_ids: dict[str, str] = field(default_factory=dict)  # {rf_id: db_image_id}
+
+    # Metadata
+    last_updated: str = ""
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict."""
+        return {
+            "job_id": self.job_id,
+            "total_images": self.total_images,
+            "processed_ids": list(self.processed_ids),  # set -> list for JSON
+            "failed_ids": self.failed_ids,
+            "storage_map": self.storage_map,
+            "db_image_ids": self.db_image_ids,
+            "last_updated": self.last_updated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StreamingCheckpoint":
+        """Create from dict (e.g., loaded from DB)."""
+        cp = cls(
+            job_id=data.get("job_id", ""),
+            total_images=data.get("total_images", 0),
+            failed_ids=data.get("failed_ids", {}),
+            storage_map=data.get("storage_map", {}),
+            db_image_ids=data.get("db_image_ids", {}),
+            last_updated=data.get("last_updated", ""),
+        )
+        cp.processed_ids = set(data.get("processed_ids", []))  # list -> set
+        return cp
+
+    def can_resume(self) -> bool:
+        """Streaming can always resume as long as we have total_images."""
+        return self.total_images > 0
+
+
 class ImportCheckpointService:
     """Manages import checkpoints with persistent storage."""
 
@@ -159,6 +212,63 @@ class ImportCheckpointService:
                 return ImportCheckpoint.from_dict(result.data["result"]["checkpoint"])
         except Exception as e:
             logger.warning(f"Failed to load checkpoint from DB: {e}")
+
+        return None
+
+    def save_streaming_checkpoint(self, checkpoint: StreamingCheckpoint) -> None:
+        """Save streaming checkpoint to DB (no file needed - no large download).
+
+        IMPORTANT: This merges with existing result data to preserve progress stats
+        that are updated by update_job() in the streaming import.
+        """
+        from services.supabase import supabase_service
+
+        checkpoint.last_updated = datetime.utcnow().isoformat()
+        print(f"[CHECKPOINT] Saving streaming checkpoint: {len(checkpoint.processed_ids)}/{checkpoint.total_images} images")
+
+        try:
+            # First, get existing result to preserve other fields (images_processed, etc.)
+            existing_result = {}
+            try:
+                existing = supabase_service.client.table("jobs").select("result").eq("id", checkpoint.job_id).single().execute()
+                if existing.data and existing.data.get("result"):
+                    existing_result = existing.data["result"]
+            except Exception:
+                pass
+
+            # Merge checkpoint data with existing result
+            merged_result = {
+                **existing_result,  # Preserve existing fields (images_processed, images_total, etc.)
+                "stage": "streaming",
+                "checkpoint": checkpoint.to_dict(),
+                "can_resume": True,
+                "processed_count": len(checkpoint.processed_ids),
+                "failed_count": len(checkpoint.failed_ids),
+            }
+
+            supabase_service.client.table("jobs").update({
+                "result": merged_result
+            }).eq("id", checkpoint.job_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to save streaming checkpoint to DB: {e}")
+
+    def load_streaming_checkpoint(self, job_id: str) -> Optional[StreamingCheckpoint]:
+        """Load streaming checkpoint from DB."""
+        from services.supabase import supabase_service
+
+        try:
+            result = (
+                supabase_service.client.table("jobs")
+                .select("result")
+                .eq("id", job_id)
+                .single()
+                .execute()
+            )
+
+            if result.data and result.data.get("result", {}).get("checkpoint"):
+                return StreamingCheckpoint.from_dict(result.data["result"]["checkpoint"])
+        except Exception as e:
+            logger.warning(f"Failed to load streaming checkpoint from DB: {e}")
 
         return None
 

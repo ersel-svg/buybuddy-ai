@@ -457,6 +457,37 @@ export default function ODDatasetDetailPage({
     },
   });
 
+  // Bulk status update mutation
+  const bulkStatusMutation = useMutation({
+    mutationFn: async ({ imageIds, status }: { imageIds: string[]; status: string }) => {
+      return apiClient.updateODDatasetImageStatusBulk(datasetId, imageIds, status);
+    },
+    onSuccess: (data) => {
+      toast.success(data.message);
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+      setSelectedImages(new Set());
+    },
+    onError: (error) => {
+      toast.error(`Failed to update status: ${error.message}`);
+    },
+  });
+
+  // Bulk status update by filter (for "Mark all with annotations as completed")
+  const bulkStatusByFilterMutation = useMutation({
+    mutationFn: async ({ newStatus, currentStatus, hasAnnotations }: { newStatus: string; currentStatus?: string; hasAnnotations?: boolean }) => {
+      return apiClient.updateODDatasetImageStatusByFilter(datasetId, newStatus, { currentStatus, hasAnnotations });
+    },
+    onSuccess: (data) => {
+      toast.success(data.message);
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+    },
+    onError: (error) => {
+      toast.error(`Failed to update status: ${error.message}`);
+    },
+  });
+
   // ============ Versions Tab Queries & Mutations ============
 
   // Fetch versions
@@ -658,16 +689,14 @@ export default function ODDatasetDetailPage({
   };
 
   const handleDeleteClass = (cls: ODClass) => {
-    const warning = cls.is_system ? " (System Class)" : "";
+    // Annotation varsa uyarı göster
     if (cls.annotation_count > 0) {
-      if (!confirm(`This class${warning} has ${cls.annotation_count} annotations. Delete anyway?`)) {
-        return;
-      }
-    } else {
-      if (!confirm(`Delete class "${cls.name}"${warning}?`)) {
+      const warning = cls.is_system ? " (System Class)" : "";
+      if (!confirm(`This will delete ${cls.annotation_count} annotation(s) associated with "${cls.name}"${warning}. Continue?`)) {
         return;
       }
     }
+    // Annotation yoksa direkt sil (uyarı yok)
     deleteClassMutation.mutate(cls.id);
   };
 
@@ -861,8 +890,8 @@ export default function ODDatasetDetailPage({
         );
       default:
         return (
-          <Badge variant="outline">
-            <AlertCircle className="h-3 w-3 mr-1" />
+          <Badge variant="default" className="bg-yellow-500 text-yellow-950">
+            <Clock className="h-3 w-3 mr-1" />
             Pending
           </Badge>
         );
@@ -1057,6 +1086,15 @@ export default function ODDatasetDetailPage({
                   {selectedImages.size} selected
                 </span>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => bulkStatusMutation.mutate({ imageIds: Array.from(selectedImages), status: "completed" })}
+                  disabled={bulkStatusMutation.isPending}
+                >
+                  <CheckCircle className="h-4 w-4 mr-1" />
+                  Mark Completed
+                </Button>
+                <Button
                   variant="destructive"
                   size="sm"
                   onClick={handleBulkRemove}
@@ -1111,6 +1149,30 @@ export default function ODDatasetDetailPage({
               </div>
             )}
           </div>
+
+          {/* Quick Actions - Mark annotated images as completed */}
+          {dataset && dataset.image_count > 0 && dataset.annotated_image_count < dataset.image_count && (
+            <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+              <CheckCircle className="h-4 w-4 text-blue-600" />
+              <span className="text-sm text-blue-700 dark:text-blue-300">
+                {dataset.image_count - dataset.annotated_image_count} images with annotations are still pending
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto"
+                onClick={() => bulkStatusByFilterMutation.mutate({ newStatus: "completed", currentStatus: "pending", hasAnnotations: true })}
+                disabled={bulkStatusByFilterMutation.isPending}
+              >
+                {bulkStatusByFilterMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <CheckCircle className="h-4 w-4 mr-1" />
+                )}
+                Mark All as Completed
+              </Button>
+            </div>
+          )}
 
           {/* Image Grid */}
           {imagesLoading ? (

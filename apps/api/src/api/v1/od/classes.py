@@ -258,7 +258,11 @@ async def delete_class(class_id: str, force: bool = False):
         "affected_annotation_count": annotation_count,
     }).execute()
 
-    # Delete the class (will fail if annotations exist due to RESTRICT)
+    # If force=true and annotations exist, delete them first
+    if annotation_count > 0 and force:
+        supabase_service.client.table("od_annotations").delete().eq("class_id", class_id).execute()
+
+    # Delete the class
     try:
         supabase_service.client.table("od_classes").delete().eq("id", class_id).execute()
     except Exception as e:

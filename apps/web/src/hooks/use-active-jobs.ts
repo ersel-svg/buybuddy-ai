@@ -16,10 +16,15 @@ export interface Job {
     can_resume?: boolean;
     images_imported?: number;
     annotations_imported?: number;
+    processed_count?: number;
+    total_images?: number;
+    failed_count?: number;
     checkpoint?: {
-      stage: string;
+      stage?: string;
       error_message?: string;
       download_complete?: boolean;
+      processed_ids?: string[];
+      total_images?: number;
     };
     [key: string]: unknown;
   } | null;
@@ -28,6 +33,7 @@ export interface Job {
     project?: string;
     version?: number;
     dataset_id?: string;
+    use_streaming?: boolean;
     [key: string]: unknown;
   } | null;
   created_at: string;
@@ -111,12 +117,23 @@ export function getJobDisplayInfo(job: Job): {
   icon: "import" | "training" | "export" | "ai" | "sync" | "default";
   canRetry: boolean;
   canCancel: boolean;
+  checkpointInfo?: string;
 } {
   const status = job.status;
   const canCancel = status === "running" || status === "pending" || status === "queued";
 
   switch (job.type) {
-    case "roboflow_import":
+    case "roboflow_import": {
+      // Get checkpoint progress info
+      const processedCount = job.result?.processed_count ||
+        job.result?.checkpoint?.processed_ids?.length || 0;
+      const totalImages = job.result?.total_images ||
+        job.result?.checkpoint?.total_images || 0;
+
+      const checkpointInfo = totalImages > 0
+        ? `${processedCount}/${totalImages} images`
+        : undefined;
+
       return {
         title: "Roboflow Import",
         subtitle: job.config?.project
@@ -125,7 +142,9 @@ export function getJobDisplayInfo(job: Job): {
         icon: "import",
         canRetry: status === "failed" && job.result?.can_resume !== false,
         canCancel,
+        checkpointInfo,
       };
+    }
     case "od_training":
       return {
         title: "OD Training",

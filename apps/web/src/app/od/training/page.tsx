@@ -568,10 +568,7 @@ export default function ODTrainingPage() {
             Train object detection models with RT-DETR or D-FINE
           </p>
         </div>
-        <Button onClick={() => {
-          resetForm();
-          setIsNewTrainingOpen(true);
-        }}>
+        <Button onClick={() => router.push("/od/training/new")}>
           <Plus className="h-4 w-4 mr-2" />
           New Training Run
         </Button>

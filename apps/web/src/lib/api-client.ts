@@ -1894,6 +1894,7 @@ class ApiClient {
     name: string;
     description?: string;
     image_count: number;
+    annotated_image_count: number;
     annotation_count: number;
     created_at: string;
   }> {
@@ -3081,6 +3082,828 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(params),
     });
+  }
+
+  // ===========================================
+  // Classification Module
+  // ===========================================
+
+  async getCLSHealth(): Promise<{ status: string; module: string; version: string }> {
+    return this.request("/api/v1/classification/health");
+  }
+
+  async getCLSStats(): Promise<{
+    total_images: number;
+    total_datasets: number;
+    total_labels: number;
+    total_classes: number;
+    total_models: number;
+    active_training_runs: number;
+    images_by_status: Record<string, number>;
+    recent_datasets: Array<{ id: string; name: string; image_count: number; created_at: string }>;
+  }> {
+    return this.request("/api/v1/classification/stats");
+  }
+
+  // CLS Images
+  async getCLSImages(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    source?: string;
+    folder?: string;
+    search?: string;
+    dataset_id?: string;
+  }): Promise<{
+    images: Array<{
+      id: string;
+      filename: string;
+      image_url: string;
+      thumbnail_url?: string;
+      width?: number;
+      height?: number;
+      status: string;
+      source: string;
+      folder?: string;
+      tags?: string[];
+      created_at: string;
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    return this.request("/api/v1/classification/images", { params });
+  }
+
+  async getCLSImageFilterOptions(): Promise<{
+    status: Array<{ value: string; label: string; count: number }>;
+    source: Array<{ value: string; label: string; count: number }>;
+    folder: Array<{ value: string; label: string; count: number }>;
+    dataset: Array<{ value: string; label: string; count: number }>;
+  }> {
+    return this.request("/api/v1/classification/images/filters/options");
+  }
+
+  async getCLSImage(id: string): Promise<{
+    id: string;
+    filename: string;
+    image_url: string;
+    thumbnail_url?: string;
+    width?: number;
+    height?: number;
+    status: string;
+    source: string;
+    folder?: string;
+    tags?: string[];
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/classification/images/${id}`);
+  }
+
+  async uploadCLSImage(file: File, folder?: string): Promise<{
+    id: string;
+    filename: string;
+    image_url: string;
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (folder) formData.append("folder", folder);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/classification/images`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Upload failed");
+    }
+
+    return response.json();
+  }
+
+  async uploadCLSImagesBulk(files: File[]): Promise<Array<{ id: string; filename: string; image_url: string }>> {
+    const formData = new FormData();
+    files.forEach((file) => formData.append("files", file));
+
+    const response = await fetch(`${this.baseUrl}/api/v1/classification/images/bulk`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Upload failed");
+    }
+
+    return response.json();
+  }
+
+  async deleteCLSImage(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/classification/images/${id}`, { method: "DELETE" });
+  }
+
+  async deleteCLSImagesBulk(imageIds: string[]): Promise<{ deleted: number; errors: string[] }> {
+    return this.request("/api/v1/classification/images/bulk", { method: "DELETE", body: { image_ids: imageIds } });
+  }
+
+  // CLS Classes
+  async getCLSClasses(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    is_active?: boolean;
+  }): Promise<Array<{
+    id: string;
+    name: string;
+    display_name?: string;
+    description?: string;
+    color: string;
+    image_count: number;
+    is_active: boolean;
+    created_at: string;
+  }>> {
+    return this.request("/api/v1/classification/classes", { params });
+  }
+
+  async getCLSClass(id: string): Promise<{
+    id: string;
+    name: string;
+    display_name?: string;
+    description?: string;
+    color: string;
+    image_count: number;
+    is_active: boolean;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/classification/classes/${id}`);
+  }
+
+  async createCLSClass(data: {
+    name: string;
+    display_name?: string;
+    description?: string;
+    color?: string;
+  }): Promise<{ id: string; name: string }> {
+    return this.request("/api/v1/classification/classes", { method: "POST", body: data });
+  }
+
+  async updateCLSClass(id: string, data: {
+    name?: string;
+    display_name?: string;
+    description?: string;
+    color?: string;
+    is_active?: boolean;
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/classification/classes/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteCLSClass(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/classification/classes/${id}`, { method: "DELETE" });
+  }
+
+  async createCLSClassesBulk(classes: Array<{
+    name: string;
+    display_name?: string;
+    description?: string;
+    color?: string;
+  }>): Promise<{ created: number; classes: Array<{ id: string; name: string }> }> {
+    return this.request("/api/v1/classification/classes/bulk", { method: "POST", body: { classes } });
+  }
+
+  // CLS Datasets
+  async getCLSDatasets(): Promise<Array<{
+    id: string;
+    name: string;
+    description?: string;
+    task_type: string;
+    image_count: number;
+    labeled_image_count: number;
+    class_count: number;
+    version: number;
+    created_at: string;
+  }>> {
+    return this.request("/api/v1/classification/datasets");
+  }
+
+  async getCLSDataset(id: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    task_type: string;
+    image_count: number;
+    labeled_image_count: number;
+    class_count: number;
+    split_ratios: { train: number; val: number; test: number };
+    preprocessing: Record<string, unknown>;
+    version: number;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${id}`);
+  }
+
+  async createCLSDataset(data: {
+    name: string;
+    description?: string;
+    task_type?: "single_label" | "multi_label";
+    split_ratios?: { train: number; val: number; test: number };
+  }): Promise<{ id: string; name: string }> {
+    return this.request("/api/v1/classification/datasets", { method: "POST", body: data });
+  }
+
+  async updateCLSDataset(id: string, data: {
+    name?: string;
+    description?: string;
+    split_ratios?: { train: number; val: number; test: number };
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/classification/datasets/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteCLSDataset(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/classification/datasets/${id}`, { method: "DELETE" });
+  }
+
+  async getCLSDatasetImages(datasetId: string, params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    split?: string;
+    class_id?: string;
+    has_label?: boolean;
+  }): Promise<{
+    images: Array<{
+      id: string;
+      dataset_id: string;
+      image_id: string;
+      status: string;
+      split?: string;
+      added_at: string;
+      image: {
+        id: string;
+        filename: string;
+        image_url: string;
+        thumbnail_url?: string;
+      };
+      labels?: Array<{
+        id: string;
+        class_id: string;
+        class_name?: string;
+        class_color?: string;
+        confidence?: number;
+      }>;
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/images`, { params });
+  }
+
+  async addImagesToCLSDataset(datasetId: string, imageIds: string[]): Promise<{
+    added: number;
+    skipped: number;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/images`, {
+      method: "POST",
+      body: { image_ids: imageIds },
+    });
+  }
+
+  async removeImagesFromCLSDataset(datasetId: string, imageIds: string[]): Promise<{
+    removed: number;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/images`, {
+      method: "DELETE",
+      body: { image_ids: imageIds },
+    });
+  }
+
+  async autoSplitCLSDataset(datasetId: string, params: {
+    train_ratio?: number;
+    val_ratio?: number;
+    test_ratio?: number;
+    stratified?: boolean;
+    seed?: number;
+  }): Promise<{
+    train_count: number;
+    val_count: number;
+    test_count: number;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/auto-split`, {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getCLSDatasetSplitStats(datasetId: string): Promise<{
+    train_count: number;
+    val_count: number;
+    test_count: number;
+    unassigned_count: number;
+    class_distribution: Record<string, { train: number; val: number; test: number }>;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/split-stats`);
+  }
+
+  async getCLSDatasetClasses(datasetId: string): Promise<Array<{
+    id: string;
+    name: string;
+    display_name?: string;
+    color: string;
+    image_count: number;
+    is_active: boolean;
+  }>> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/classes`);
+  }
+
+  async getCLSDatasetVersions(datasetId: string): Promise<Array<{
+    id: string;
+    version_number: number;
+    name?: string;
+    image_count: number;
+    labeled_image_count: number;
+    class_count: number;
+    created_at: string;
+  }>> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/versions`);
+  }
+
+  async createCLSDatasetVersion(datasetId: string, data?: {
+    name?: string;
+    description?: string;
+  }): Promise<{
+    id: string;
+    version_number: number;
+  }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/versions`, {
+      method: "POST",
+      body: data || {},
+    });
+  }
+
+  // CLS Labels
+  async setCLSLabel(datasetId: string, imageId: string, data: {
+    class_id: string;
+    confidence?: number;
+    is_ai_generated?: boolean;
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/classification/labels/${datasetId}/${imageId}`, {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async clearCLSLabels(datasetId: string, imageId: string): Promise<{ cleared: number }> {
+    return this.request(`/api/v1/classification/labels/${datasetId}/${imageId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async bulkSetCLSLabels(datasetId: string, imageIds: string[], classId: string): Promise<{
+    labeled: number;
+  }> {
+    return this.request(`/api/v1/classification/labels/${datasetId}/bulk`, {
+      method: "POST",
+      body: { image_ids: imageIds, class_id: classId },
+    });
+  }
+
+  async bulkClearCLSLabels(datasetId: string, imageIds: string[]): Promise<{
+    cleared: number;
+  }> {
+    return this.request(`/api/v1/classification/labels/${datasetId}/bulk`, {
+      method: "DELETE",
+      body: { image_ids: imageIds },
+    });
+  }
+
+  // CLS Labeling Workflow
+  async getCLSLabelingQueue(datasetId: string, params?: {
+    mode?: "all" | "unlabeled" | "review" | "random" | "low_confidence";
+    split?: string;
+    class_id?: string;
+    limit?: number;
+  }): Promise<{
+    image_ids: string[];
+    total: number;
+    mode: string;
+  }> {
+    return this.request(`/api/v1/classification/labeling/${datasetId}/queue`, { params });
+  }
+
+  async getCLSLabelingImage(datasetId: string, imageId: string): Promise<{
+    image: {
+      id: string;
+      filename: string;
+      image_url: string;
+      thumbnail_url?: string;
+      width?: number;
+      height?: number;
+    };
+    current_labels: Array<{
+      id: string;
+      class_id: string;
+      class_name?: string;
+      class_color?: string;
+      confidence?: number;
+    }>;
+    dataset_image_status: string;
+    position: number;
+    total: number;
+    prev_image_id?: string;
+    next_image_id?: string;
+  }> {
+    return this.request(`/api/v1/classification/labeling/${datasetId}/image/${imageId}`);
+  }
+
+  async submitCLSLabeling(datasetId: string, imageId: string, data: {
+    class_id?: string;
+    class_ids?: string[];
+    action: "label" | "skip" | "review";
+    confidence?: number;
+  }): Promise<{
+    success: boolean;
+    next_image_id?: string;
+  }> {
+    return this.request(`/api/v1/classification/labeling/${datasetId}/image/${imageId}`, {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async getCLSLabelingProgress(datasetId: string): Promise<{
+    total: number;
+    labeled: number;
+    pending: number;
+    review: number;
+    completed: number;
+    skipped: number;
+    progress_pct: number;
+  }> {
+    return this.request(`/api/v1/classification/labeling/${datasetId}/progress`);
+  }
+
+  // CLS Training
+  async getCLSTrainingRuns(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    dataset_id?: string;
+  }): Promise<Array<{
+    id: string;
+    name: string;
+    status: string;
+    dataset_id: string;
+    model_type: string;
+    model_size: string;
+    current_epoch: number;
+    total_epochs: number;
+    best_accuracy?: number;
+    best_f1?: number;
+    created_at: string;
+    started_at?: string;
+    completed_at?: string;
+  }>> {
+    return this.request("/api/v1/classification/training", { params });
+  }
+
+  async getCLSTrainingRun(id: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    status: string;
+    dataset_id: string;
+    dataset_version_id?: string;
+    task_type: string;
+    num_classes: number;
+    model_type: string;
+    model_size: string;
+    config: Record<string, unknown>;
+    current_epoch: number;
+    total_epochs: number;
+    best_accuracy?: number;
+    best_f1?: number;
+    best_top5_accuracy?: number;
+    best_epoch?: number;
+    metrics_history?: Array<Record<string, unknown>>;
+    runpod_job_id?: string;
+    error_message?: string;
+    started_at?: string;
+    completed_at?: string;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/classification/training/${id}`);
+  }
+
+  async createCLSTrainingRun(data: {
+    name: string;
+    description?: string;
+    dataset_id: string;
+    dataset_version_id?: string;
+    config: {
+      model_type: "vit" | "convnext" | "efficientnet" | "swin" | "dinov2" | "clip";
+      model_size: string;
+      epochs?: number;
+      batch_size?: number;
+      learning_rate?: number;
+      use_ema?: boolean;
+      mixed_precision?: boolean;
+      augmentation_preset?: "sota" | "heavy" | "medium" | "light" | "none";
+      image_size?: number;
+      early_stopping?: boolean;
+      [key: string]: unknown;
+    };
+  }): Promise<{ id: string; name: string; status: string }> {
+    return this.request("/api/v1/classification/training", { method: "POST", body: data });
+  }
+
+  async cancelCLSTrainingRun(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/classification/training/${id}/cancel`, { method: "POST" });
+  }
+
+  async deleteCLSTrainingRun(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/classification/training/${id}`, { method: "DELETE" });
+  }
+
+  async getCLSAugmentationPresets(): Promise<Record<string, {
+    name: string;
+    description: string;
+    transforms: Record<string, unknown>;
+  }>> {
+    return this.request("/api/v1/classification/training/augmentation-presets");
+  }
+
+  async getCLSModelConfigs(): Promise<Record<string, {
+    name: string;
+    description: string;
+    sizes: Record<string, { name: string; params: string; default_image_size: number }>;
+  }>> {
+    return this.request("/api/v1/classification/training/model-configs");
+  }
+
+  // CLS Models
+  async getCLSModels(params?: {
+    page?: number;
+    limit?: number;
+    model_type?: string;
+    is_active?: boolean;
+  }): Promise<Array<{
+    id: string;
+    name: string;
+    model_type: string;
+    model_size?: string;
+    task_type: string;
+    accuracy?: number;
+    f1_score?: number;
+    num_classes: number;
+    is_active: boolean;
+    is_default: boolean;
+    created_at: string;
+  }>> {
+    return this.request("/api/v1/classification/models", { params });
+  }
+
+  async getCLSModel(id: string): Promise<{
+    id: string;
+    training_run_id?: string;
+    name: string;
+    description?: string;
+    model_type: string;
+    model_size?: string;
+    task_type: string;
+    checkpoint_url: string;
+    onnx_url?: string;
+    num_classes: number;
+    class_names: string[];
+    class_mapping: Record<string, number>;
+    accuracy?: number;
+    f1_score?: number;
+    top5_accuracy?: number;
+    precision_macro?: number;
+    recall_macro?: number;
+    confusion_matrix?: number[][];
+    per_class_metrics?: Record<string, { precision: number; recall: number; f1: number }>;
+    is_active: boolean;
+    is_default: boolean;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/classification/models/${id}`);
+  }
+
+  async updateCLSModel(id: string, data: {
+    name?: string;
+    description?: string;
+    is_active?: boolean;
+  }): Promise<{ id: string }> {
+    return this.request(`/api/v1/classification/models/${id}`, { method: "PATCH", body: data });
+  }
+
+  async deleteCLSModel(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/v1/classification/models/${id}`, { method: "DELETE" });
+  }
+
+  async activateCLSModel(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/v1/classification/models/${id}/activate`, { method: "POST" });
+  }
+
+  async deactivateCLSModel(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/v1/classification/models/${id}/deactivate`, { method: "POST" });
+  }
+
+  async setDefaultCLSModel(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/v1/classification/models/${id}/set-default`, { method: "POST" });
+  }
+
+  async getCLSModelMetrics(id: string): Promise<{
+    overall: {
+      accuracy?: number;
+      f1_score?: number;
+      top5_accuracy?: number;
+      precision_macro?: number;
+      recall_macro?: number;
+    };
+    confusion_matrix?: number[][];
+    per_class_metrics?: Record<string, { precision: number; recall: number; f1: number }>;
+    class_names?: string[];
+  }> {
+    return this.request(`/api/v1/classification/models/${id}/metrics`);
+  }
+
+  async getCLSModelDownloadUrls(id: string): Promise<{
+    name: string;
+    checkpoint_url?: string;
+    onnx_url?: string;
+    torchscript_url?: string;
+  }> {
+    return this.request(`/api/v1/classification/models/${id}/download`);
+  }
+
+  async getDefaultCLSModel(modelType: string): Promise<{
+    id: string;
+    name: string;
+    model_type: string;
+    accuracy?: number;
+    is_default: boolean;
+  }> {
+    return this.request(`/api/v1/classification/models/default/${modelType}`);
+  }
+
+  // CLS Import
+  async importCLSImagesFromURLs(params: {
+    urls: string[];
+    folder?: string;
+    skip_duplicates?: boolean;
+    dataset_id?: string;
+  }): Promise<{
+    success: boolean;
+    images_imported: number;
+    images_skipped: number;
+    duplicates_found: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/classification/images/import/urls", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async importCLSImagesFromProducts(params: {
+    product_ids?: string[];
+    label_source?: "category" | "brand" | "product_name" | "manual";
+    image_types?: string[];
+    max_frames_per_product?: number;
+    skip_duplicates?: boolean;
+    dataset_id?: string;
+    status?: string;
+    category?: string;
+    brand?: string;
+  }): Promise<{
+    success: boolean;
+    images_imported: number;
+    labels_created: number;
+    classes_created: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/classification/images/import/products", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async importCLSImagesFromCutouts(params: {
+    cutout_ids?: string[];
+    label_source?: "matched_product_category" | "matched_product_brand" | "manual";
+    only_matched?: boolean;
+    skip_duplicates?: boolean;
+    dataset_id?: string;
+  }): Promise<{
+    success: boolean;
+    images_imported: number;
+    labels_created: number;
+    classes_created: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/classification/images/import/cutouts", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async importCLSImagesFromOD(params: {
+    od_image_ids?: string[];
+    skip_duplicates?: boolean;
+    dataset_id?: string;
+  }): Promise<{
+    success: boolean;
+    images_imported: number;
+    images_skipped: number;
+    errors: string[];
+  }> {
+    return this.request("/api/v1/classification/images/import/od", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  // ===========================================
+  // Classification AI Labeling
+  // ===========================================
+
+  async getCLSAIModels(): Promise<{
+    zero_shot_models: Array<{
+      id: string;
+      name: string;
+      description: string;
+      model_type: string;
+      requires_classes: boolean;
+    }>;
+    trained_models: Array<{
+      id: string;
+      name: string;
+      description: string;
+      model_type: string;
+      requires_classes: boolean;
+      num_classes?: number;
+    }>;
+  }> {
+    return this.request("/api/v1/classification/ai/models");
+  }
+
+  async predictCLSAI(params: {
+    image_id: string;
+    dataset_id: string;
+    model?: string;
+    top_k?: number;
+    threshold?: number;
+  }): Promise<{
+    predictions: Array<{
+      class_id: string;
+      class_name: string;
+      confidence: number;
+    }>;
+    model: string;
+    processing_time_ms: number;
+  }> {
+    return this.request("/api/v1/classification/ai/predict", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async batchClassifyCLSAI(params: {
+    dataset_id: string;
+    image_ids?: string[];
+    model?: string;
+    top_k?: number;
+    threshold?: number;
+    auto_accept?: boolean;
+    overwrite_existing?: boolean;
+  }): Promise<{
+    job_id: string;
+    status: string;
+    total_images: number;
+    message: string;
+  }> {
+    return this.request("/api/v1/classification/ai/batch", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getCLSAIJobStatus(jobId: string): Promise<{
+    job_id: string;
+    status: string;
+    progress: number;
+    total_images: number;
+    predictions_generated: number;
+    labels_created: number;
+    error_message?: string;
+    started_at?: string;
+    completed_at?: string;
+  }> {
+    return this.request(`/api/v1/classification/ai/jobs/${jobId}`);
   }
 }
 

@@ -3,6 +3,8 @@
 import io
 import csv
 import uuid
+import logging
+import httpx
 from typing import Optional, List, Any
 from datetime import datetime
 
@@ -13,6 +15,9 @@ from pydantic import BaseModel
 from services.supabase import supabase_service
 from auth.dependencies import get_current_user
 from fastapi import Depends
+from config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -195,6 +200,117 @@ def parse_excel_file(content: bytes, filename: str) -> ParsedFileResponse:
         raise HTTPException(status_code=500, detail="openpyxl library not installed for Excel support")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {str(e)}")
+
+
+async def send_bulk_scan_request_slack_notification(
+    created_count: int,
+    skipped_count: int,
+    requester_name: str,
+    requester_email: str,
+    source_file: Optional[str] = None,
+    sample_barcodes: Optional[List[str]] = None
+) -> bool:
+    """Send a single Slack notification for bulk scan request creation."""
+    if not settings.slack_webhook_url:
+        logger.warning("Slack webhook URL not configured, skipping notification")
+        return False
+
+    if created_count == 0:
+        return False
+
+    try:
+        # Build sample barcodes text
+        sample_text = ""
+        if sample_barcodes and len(sample_barcodes) > 0:
+            shown = sample_barcodes[:5]
+            sample_text = ", ".join(f"`{b}`" for b in shown)
+            if len(sample_barcodes) > 5:
+                sample_text += f" ... and {len(sample_barcodes) - 5} more"
+
+        # Build source file text
+        source_text = f"from _{source_file}_" if source_file else ""
+
+        message = {
+            "username": "BuyBuddy AI",
+            "icon_url": "https://qvyxpfcwfktxnaeavkxx.supabase.co/storage/v1/object/public/scan-request-images/branding/bb-logomark.png",
+            "attachments": [
+                {
+                    "color": "#8b5cf6",  # Purple color for bulk
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*:package: Bulk Scan Requests Created*\n\n*{created_count}* new scan requests created {source_text}"
+                            }
+                        },
+                        {
+                            "type": "divider"
+                        },
+                        {
+                            "type": "section",
+                            "fields": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"*Requested by:*\n{requester_name}"
+                                },
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"*Email:*\n{requester_email}"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
+        # Add sample barcodes if available
+        if sample_text:
+            message["attachments"][0]["blocks"].append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Sample barcodes:*\n{sample_text}"
+                }
+            })
+
+        # Add skipped info if any
+        if skipped_count > 0:
+            message["attachments"][0]["blocks"].append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f":warning: {skipped_count} duplicates skipped (already have pending requests)"
+                    }
+                ]
+            })
+
+        # Add timestamp
+        message["attachments"][0]["blocks"].append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":clock1: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                }
+            ]
+        })
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                settings.slack_webhook_url,
+                json=message,
+                timeout=10.0
+            )
+            if response.status_code != 200:
+                logger.error(f"Slack error response: {response.text}")
+            return response.status_code == 200
+
+    except Exception as e:
+        logger.error(f"Failed to send Slack notification: {e}", exc_info=True)
+        return False
 
 
 async def get_all_products_for_matching() -> dict:
@@ -458,6 +574,17 @@ async def create_bulk_scan_requests(request: BulkScanRequestCreate) -> BulkScanR
     if records_to_insert:
         result = supabase_service.client.table("scan_requests").insert(records_to_insert).execute()
         created_count = len(result.data) if result.data else 0
+
+        # Send single Slack notification for bulk creation
+        sample_barcodes = [r["barcode"] for r in records_to_insert[:10]]
+        await send_bulk_scan_request_slack_notification(
+            created_count=created_count,
+            skipped_count=len(skipped_barcodes),
+            requester_name=request.requester_name,
+            requester_email=request.requester_email,
+            source_file=request.source_file,
+            sample_barcodes=sample_barcodes
+        )
 
     return BulkScanRequestResponse(
         created_count=created_count,

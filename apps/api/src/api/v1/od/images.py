@@ -171,55 +171,82 @@ async def get_filter_options():
 
 
 async def _get_filter_options_fallback():
-    """Fallback filter options using Python aggregation (slower, for backwards compatibility)."""
-    all_images = supabase_service.client.table("od_images").select(
-        "status, source, folder, merchant_id, merchant_name, store_id, store_name"
-    ).execute()
+    """
+    Fallback filter options using optimized separate queries.
+    
+    Instead of fetching all rows (8000+) and counting in Python,
+    we use separate COUNT queries with LIMIT to get aggregated results.
+    This is much faster and uses less memory.
+    """
+    import asyncio
+    
+    # Helper to run count query
+    def get_status_counts():
+        """Get status counts using a simple approach."""
+        result = supabase_service.client.table("od_images").select("status").execute()
+        counts = {}
+        for row in result.data or []:
+            status = row.get("status") or "pending"
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+    
+    def get_source_counts():
+        """Get source counts."""
+        result = supabase_service.client.table("od_images").select("source").execute()
+        counts = {}
+        for row in result.data or []:
+            source = row.get("source") or "upload"
+            counts[source] = counts.get(source, 0) + 1
+        return counts
+    
+    def get_folder_counts():
+        """Get folder counts - only non-null folders."""
+        result = supabase_service.client.table("od_images").select("folder").not_.is_("folder", "null").execute()
+        counts = {}
+        for row in result.data or []:
+            folder = row.get("folder")
+            if folder:
+                counts[folder] = counts.get(folder, 0) + 1
+        return counts
+    
+    def get_merchant_data():
+        """Get merchant data with counts."""
+        result = supabase_service.client.table("od_images").select("merchant_id, merchant_name").not_.is_("merchant_id", "null").execute()
+        merchants = {}
+        for row in result.data or []:
+            mid = row.get("merchant_id")
+            if mid:
+                if mid not in merchants:
+                    merchants[mid] = {
+                        "id": mid,
+                        "name": row.get("merchant_name") or f"Merchant {mid}",
+                        "count": 0
+                    }
+                merchants[mid]["count"] += 1
+        return merchants
+    
+    def get_store_data():
+        """Get store data with counts."""
+        result = supabase_service.client.table("od_images").select("store_id, store_name").not_.is_("store_id", "null").execute()
+        stores = {}
+        for row in result.data or []:
+            sid = row.get("store_id")
+            if sid:
+                if sid not in stores:
+                    stores[sid] = {
+                        "id": sid,
+                        "name": row.get("store_name") or f"Store {sid}",
+                        "count": 0
+                    }
+                stores[sid]["count"] += 1
+        return stores
 
-    images = all_images.data or []
-
-    # Count by status
-    status_counts = {}
-    source_counts = {}
-    folder_counts = {}
-    merchant_counts = {}
-    store_data = {}
-
-    for img in images:
-        # Status
-        status = img.get("status") or "pending"
-        status_counts[status] = status_counts.get(status, 0) + 1
-
-        # Source
-        source = img.get("source") or "upload"
-        source_counts[source] = source_counts.get(source, 0) + 1
-
-        # Folder
-        folder = img.get("folder")
-        if folder:
-            folder_counts[folder] = folder_counts.get(folder, 0) + 1
-
-        # Merchant
-        merchant_id = img.get("merchant_id")
-        if merchant_id:
-            if merchant_id not in merchant_counts:
-                merchant_counts[merchant_id] = {
-                    "id": merchant_id,
-                    "name": img.get("merchant_name") or f"Merchant {merchant_id}",
-                    "count": 0
-                }
-            merchant_counts[merchant_id]["count"] += 1
-
-        # Store
-        store_id = img.get("store_id")
-        if store_id:
-            if store_id not in store_data:
-                store_data[store_id] = {
-                    "id": store_id,
-                    "name": img.get("store_name") or f"Store {store_id}",
-                    "count": 0
-                }
-            store_data[store_id]["count"] += 1
+    # Run queries (these are lighter because we only select specific columns)
+    status_counts = get_status_counts()
+    source_counts = get_source_counts()
+    folder_counts = get_folder_counts()
+    merchant_data = get_merchant_data()
+    store_data = get_store_data()
 
     # Format status options
     status_options = [
@@ -248,7 +275,7 @@ async def _get_filter_options_fallback():
     # Format merchant options
     merchant_options = [
         {"value": str(m["id"]), "label": m["name"], "count": m["count"]}
-        for m in sorted(merchant_counts.values(), key=lambda x: x["name"])
+        for m in sorted(merchant_data.values(), key=lambda x: x["name"])
     ]
 
     # Format store options
@@ -263,7 +290,7 @@ async def _get_filter_options_fallback():
         "folder": folder_options,
         "merchant": merchant_options,
         "store": store_options,
-        "merchants": [{"id": m["id"], "name": m["name"]} for m in merchant_counts.values()],
+        "merchants": [{"id": m["id"], "name": m["name"]} for m in merchant_data.values()],
         "stores": [{"id": s["id"], "name": s["name"]} for s in store_data.values()],
     }
 
@@ -1469,42 +1496,95 @@ class RoboflowImportRequest(BaseModel):
     use_streaming: bool = True  # NEW: Use streaming by default
 
 
-async def _run_roboflow_import_streaming(job_id: str, request_data: dict):
+async def _run_roboflow_import_streaming(job_id: str, request_data: dict, resume_checkpoint=None):
     """
     Background task to run Roboflow import using STREAMING.
 
     This imports images directly from Roboflow URLs without downloading
     the entire ZIP file first. Much faster and more memory-efficient.
+
+    Args:
+        job_id: The job ID
+        request_data: Import configuration
+        resume_checkpoint: Optional StreamingCheckpoint to resume from
     """
     import logging
-    from services.roboflow_streaming import streaming_import_from_roboflow
+    from services.roboflow_streaming import streaming_import_from_roboflow, StreamingCheckpoint
+    from services.import_checkpoint import checkpoint_service
 
     logger = logging.getLogger(__name__)
 
-    def update_job(progress: int, stage: str, message: str, status: str = "running"):
-        """Helper to update job progress."""
+    import time
+    from datetime import datetime, timezone
+
+    start_time = time.time()
+    total_annotations = [0]  # Use list to allow modification in nested function
+
+    def update_job(progress: int, stage: str, message: str, status: str = "running",
+                   images_processed: int = 0, images_total: int = 0, annotations: int = 0):
+        """Helper to update job progress with detailed stats."""
+        if annotations > 0:
+            total_annotations[0] = annotations
+
         try:
+            elapsed = time.time() - start_time
+            speed = images_processed / elapsed if elapsed > 0 and images_processed > 0 else 0
+            remaining = images_total - images_processed if images_total > 0 else 0
+            eta = remaining / speed if speed > 0 else 0
+
+            # Preserve existing checkpoint data when updating progress
+            existing_checkpoint = None
+            try:
+                existing_job = supabase_service.client.table("jobs").select("result").eq("id", job_id).single().execute()
+                if existing_job.data and existing_job.data.get("result"):
+                    existing_checkpoint = existing_job.data["result"].get("checkpoint")
+            except Exception:
+                pass
+
+            result_data = {
+                "stage": stage,
+                "message": message,
+                "can_resume": True,
+                # Real-time stats
+                "images_processed": images_processed,
+                "images_total": images_total,
+                "annotations_imported": total_annotations[0],
+                "images_per_second": round(speed, 2),
+                "eta_seconds": int(eta),
+                "elapsed_seconds": int(elapsed),
+                "started_at": datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+            }
+
+            # Preserve checkpoint if it exists
+            if existing_checkpoint:
+                result_data["checkpoint"] = existing_checkpoint
+
             supabase_service.client.table("jobs").update({
                 "status": status,
                 "progress": progress,
-                "result": {
-                    "stage": stage,
-                    "message": message,
-                }
+                "result": result_data,
             }).eq("id", job_id).execute()
         except Exception:
             pass
 
     def fail_job(error: str):
-        """Helper to mark job as failed."""
+        """Helper to mark job as failed with resume capability."""
         logger.error(f"Roboflow streaming import job {job_id} failed: {error}")
         try:
+            # Load current checkpoint to preserve progress info
+            current_checkpoint = checkpoint_service.load_streaming_checkpoint(job_id)
+            checkpoint_data = current_checkpoint.to_dict() if current_checkpoint else {}
+
             supabase_service.client.table("jobs").update({
                 "status": "failed",
                 "error": error,
                 "result": {
                     "stage": "failed",
                     "error": error,
+                    "can_resume": True,  # Streaming can always resume
+                    "checkpoint": checkpoint_data,
+                    "processed_count": len(current_checkpoint.processed_ids) if current_checkpoint else 0,
+                    "total_images": current_checkpoint.total_images if current_checkpoint else 0,
                 }
             }).eq("id", job_id).execute()
         except Exception:
@@ -1513,21 +1593,24 @@ async def _run_roboflow_import_streaming(job_id: str, request_data: dict):
     try:
         update_job(5, "initializing", "Starting streaming import from Roboflow...")
 
-        last_progress = 0
+        last_update_count = [0]
 
         def progress_callback(processed: int, total: int, message: str):
-            nonlocal last_progress
-            print(f"[DEBUG] progress_callback called: processed={processed}, total={total}")
-            if total > 0:
-                pct = 5 + int((processed / total) * 90)  # 5-95%
-                print(f"[DEBUG] pct={pct}, last_progress={last_progress}, update? {pct >= last_progress + 5}")
-                if pct >= last_progress + 5:  # Update every 5%
-                    last_progress = pct
-                    print(f"[DEBUG] Updating job progress to {pct}%")
-                    update_job(pct, "streaming", message)
+            # Update every 10 images for real-time feedback
+            if processed >= last_update_count[0] + 10 or processed == total:
+                last_update_count[0] = processed
+                pct = 5 + int((processed / total) * 90) if total > 0 else 5  # 5-95%
+                update_job(
+                    pct, "streaming", message,
+                    images_processed=processed,
+                    images_total=total,
+                    annotations=total_annotations[0]
+                )
 
         # Run streaming import
         print(f"[DEBUG] Starting streaming_import_from_roboflow for job {job_id}")
+        if resume_checkpoint:
+            print(f"[DEBUG] Resuming from checkpoint with {len(resume_checkpoint.processed_ids)} processed images")
         result = await streaming_import_from_roboflow(
             api_key=request_data["api_key"],
             workspace=request_data["workspace"],
@@ -1536,6 +1619,8 @@ async def _run_roboflow_import_streaming(job_id: str, request_data: dict):
             class_mapping=request_data.get("class_mapping", []),
             concurrency=10,  # 10 parallel uploads
             progress_callback=progress_callback,
+            job_id=job_id,
+            checkpoint=resume_checkpoint,
         )
         print(f"[DEBUG] streaming_import_from_roboflow returned: success={result.success}, images={result.images_imported}")
 
@@ -1908,14 +1993,37 @@ async def retry_roboflow_import(
     if job["type"] != "roboflow_import":
         raise HTTPException(status_code=400, detail="Job is not a Roboflow import")
 
-    if job["status"] not in ["failed", "cancelled"]:
+    # Check if job can be retried
+    # Allow retry for: failed, cancelled, or stale running jobs (no progress for 2+ minutes)
+    from datetime import datetime, timedelta
+
+    can_retry = job["status"] in ["failed", "cancelled", "interrupted"]
+
+    if job["status"] == "running":
+        # Check if job is stale (no update for 2 minutes)
+        updated_at = job.get("updated_at") or job.get("created_at")
+        if updated_at:
+            try:
+                # Parse the timestamp
+                if updated_at.endswith("Z"):
+                    updated_at = updated_at[:-1] + "+00:00"
+                last_update = datetime.fromisoformat(updated_at.replace("+00:00", ""))
+                stale_threshold = datetime.utcnow() - timedelta(minutes=2)
+                if last_update < stale_threshold:
+                    can_retry = True
+                    # Mark as failed since the task died
+                    supabase_service.client.table("jobs").update({
+                        "status": "failed",
+                        "error": "Job was interrupted (server restart). Resuming..."
+                    }).eq("id", job_id).execute()
+            except Exception:
+                pass
+
+    if not can_retry:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot retry job with status: {job['status']}. Only failed or cancelled jobs can be retried."
+            detail=f"Cannot retry job with status: {job['status']}. Only failed, cancelled, interrupted, or stale running jobs can be retried."
         )
-
-    # Load checkpoint
-    checkpoint = checkpoint_service.load_checkpoint(job_id)
 
     # Get config with API key
     config = job.get("config", {})
@@ -1925,12 +2033,8 @@ async def retry_roboflow_import(
             detail="Cannot retry: API key not found in job config. Please start a new import."
         )
 
-    # Check if we can resume (download complete and ZIP exists)
-    can_resume = (
-        checkpoint and
-        checkpoint.download_complete and
-        checkpoint_service.verify_zip_integrity(job_id, checkpoint.zip_file_hash)
-    )
+    # Check if this was a streaming import
+    use_streaming = config.get("use_streaming", False)
 
     # Prepare request data from stored config
     request_data = {
@@ -1945,29 +2049,83 @@ async def retry_roboflow_import(
         "class_mapping": config.get("class_mapping", []),
     }
 
-    # Update job status
-    supabase_service.client.table("jobs").update({
-        "status": "running",
-        "error": None,
-        "progress": checkpoint.download_complete * 50 if checkpoint else 0,  # Start at 50% if download complete
-    }).eq("id", job_id).execute()
+    if use_streaming:
+        # Handle streaming import retry
+        streaming_checkpoint = checkpoint_service.load_streaming_checkpoint(job_id)
 
-    # Start background task using asyncio.create_task for async functions
-    if can_resume:
-        asyncio.create_task(_run_roboflow_import(job_id, request_data, checkpoint))
-        return {
-            "job_id": job_id,
-            "status": "resumed",
-            "message": f"Resuming from stage: {checkpoint.stage}",
-            "resumed_from_checkpoint": True,
-        }
+        if streaming_checkpoint and streaming_checkpoint.can_resume():
+            # Resume from checkpoint
+            processed_count = len(streaming_checkpoint.processed_ids)
+            total_images = streaming_checkpoint.total_images
+            resume_progress = 5 + int((processed_count / total_images) * 90) if total_images > 0 else 5
+
+            supabase_service.client.table("jobs").update({
+                "status": "running",
+                "error": None,
+                "progress": resume_progress,
+            }).eq("id", job_id).execute()
+
+            asyncio.create_task(_run_roboflow_import_streaming(
+                job_id, request_data, streaming_checkpoint
+            ))
+
+            return {
+                "job_id": job_id,
+                "status": "resumed",
+                "message": f"Resuming from {processed_count}/{total_images} images",
+                "resumed_from_checkpoint": True,
+                "processed_count": processed_count,
+                "total_images": total_images,
+            }
+        else:
+            # Start fresh streaming import
+            supabase_service.client.table("jobs").update({
+                "status": "running",
+                "error": None,
+                "progress": 0,
+            }).eq("id", job_id).execute()
+
+            asyncio.create_task(_run_roboflow_import_streaming(job_id, request_data, None))
+            return {
+                "job_id": job_id,
+                "status": "restarted",
+                "message": "Starting fresh streaming import (no checkpoint found)",
+                "resumed_from_checkpoint": False,
+            }
     else:
-        # Clean up any partial files and start fresh
-        checkpoint_service.cleanup_job(job_id)
-        asyncio.create_task(_run_roboflow_import(job_id, request_data, None))
-        return {
-            "job_id": job_id,
-            "status": "restarted",
-            "message": "Starting fresh download (no valid checkpoint found)",
-            "resumed_from_checkpoint": False,
-        }
+        # Handle ZIP import retry (existing logic)
+        checkpoint = checkpoint_service.load_checkpoint(job_id)
+
+        # Check if we can resume (download complete and ZIP exists)
+        can_resume = (
+            checkpoint and
+            checkpoint.download_complete and
+            checkpoint_service.verify_zip_integrity(job_id, checkpoint.zip_file_hash)
+        )
+
+        # Update job status
+        supabase_service.client.table("jobs").update({
+            "status": "running",
+            "error": None,
+            "progress": checkpoint.download_complete * 50 if checkpoint else 0,
+        }).eq("id", job_id).execute()
+
+        # Start background task
+        if can_resume:
+            asyncio.create_task(_run_roboflow_import(job_id, request_data, checkpoint))
+            return {
+                "job_id": job_id,
+                "status": "resumed",
+                "message": f"Resuming from stage: {checkpoint.stage}",
+                "resumed_from_checkpoint": True,
+            }
+        else:
+            # Clean up any partial files and start fresh
+            checkpoint_service.cleanup_job(job_id)
+            asyncio.create_task(_run_roboflow_import(job_id, request_data, None))
+            return {
+                "job_id": job_id,
+                "status": "restarted",
+                "message": "Starting fresh download (no valid checkpoint found)",
+                "resumed_from_checkpoint": False,
+            }

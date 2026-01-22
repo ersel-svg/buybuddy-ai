@@ -20,8 +20,120 @@ from typing import Optional, Callable, Any
 
 from services.roboflow import roboflow_service
 from services.supabase import supabase_service
+from services.import_checkpoint import checkpoint_service, StreamingCheckpoint
 
 logger = logging.getLogger(__name__)
+
+
+def recalculate_dataset_counts(dataset_id: str) -> dict:
+    """
+    Recalculate all denormalized counts for a dataset.
+
+    This updates:
+    - od_datasets.image_count
+    - od_datasets.annotation_count
+    - od_datasets.annotated_image_count
+    - od_dataset_images.annotation_count (for each image)
+
+    Returns dict with the updated counts.
+    """
+    try:
+        # 1. Count total images in dataset
+        image_count_result = (
+            supabase_service.client.table("od_dataset_images")
+            .select("id", count="exact")
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+        image_count = image_count_result.count or 0
+
+        # 2. Count total annotations in dataset
+        annotation_count_result = (
+            supabase_service.client.table("od_annotations")
+            .select("id", count="exact")
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+        annotation_count = annotation_count_result.count or 0
+
+        # 3. Get all images in dataset
+        all_images = (
+            supabase_service.client.table("od_dataset_images")
+            .select("image_id")
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+
+        # 4. Update each image's annotation_count
+        annotated_image_count = 0
+        if all_images.data:
+            for row in all_images.data:
+                img_id = row.get("image_id")
+                # Count annotations for this image
+                img_ann_count = (
+                    supabase_service.client.table("od_annotations")
+                    .select("id", count="exact")
+                    .eq("dataset_id", dataset_id)
+                    .eq("image_id", img_id)
+                    .execute()
+                ).count or 0
+
+                if img_ann_count > 0:
+                    annotated_image_count += 1
+
+                supabase_service.client.table("od_dataset_images").update({
+                    "annotation_count": img_ann_count
+                }).eq("dataset_id", dataset_id).eq("image_id", img_id).execute()
+
+        # 5. Update dataset counts
+        supabase_service.client.table("od_datasets").update({
+            "image_count": image_count,
+            "annotation_count": annotation_count,
+            "annotated_image_count": annotated_image_count,
+        }).eq("id", dataset_id).execute()
+
+        logger.info(
+            f"Updated dataset {dataset_id} counts: "
+            f"{image_count} images, {annotation_count} annotations, "
+            f"{annotated_image_count} annotated"
+        )
+
+        return {
+            "image_count": image_count,
+            "annotation_count": annotation_count,
+            "annotated_image_count": annotated_image_count,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to recalculate dataset counts: {e}")
+        # Fallback: just count images and annotations directly
+        try:
+            image_count = (
+                supabase_service.client.table("od_dataset_images")
+                .select("id", count="exact")
+                .eq("dataset_id", dataset_id)
+                .execute()
+            ).count or 0
+
+            annotation_count = (
+                supabase_service.client.table("od_annotations")
+                .select("id", count="exact")
+                .eq("dataset_id", dataset_id)
+                .execute()
+            ).count or 0
+
+            supabase_service.client.table("od_datasets").update({
+                "image_count": image_count,
+                "annotation_count": annotation_count,
+            }).eq("id", dataset_id).execute()
+
+            return {
+                "image_count": image_count,
+                "annotation_count": annotation_count,
+            }
+        except Exception as e2:
+            logger.error(f"Fallback count update also failed: {e2}")
+            return {}
 
 
 @dataclass
@@ -33,25 +145,6 @@ class StreamingImportResult:
     images_skipped: int = 0
     images_failed: int = 0
     errors: list[str] = field(default_factory=list)
-
-
-@dataclass
-class StreamingCheckpoint:
-    """Checkpoint data for resumable streaming imports."""
-    job_id: str
-    total_images: int = 0
-    processed_ids: set = field(default_factory=set)
-    failed_ids: dict = field(default_factory=dict)  # {id: error_message}
-    storage_map: dict = field(default_factory=dict)  # {roboflow_id: storage_filename}
-    db_image_ids: dict = field(default_factory=dict)  # {roboflow_id: db_image_id}
-
-    def to_dict(self) -> dict:
-        return {
-            "job_id": self.job_id,
-            "total_images": self.total_images,
-            "processed_count": len(self.processed_ids),
-            "failed_count": len(self.failed_ids),
-        }
 
 
 class RoboflowStreamingImporter:
@@ -78,12 +171,14 @@ class RoboflowStreamingImporter:
         project: str,
         dataset_id: str,
         class_mapping: list[dict],
+        job_id: str = "",
     ):
         self.api_key = api_key
         self.workspace = workspace
         self.project = project
         self.dataset_id = dataset_id
         self.class_mapping = {m["source_name"]: m for m in class_mapping}
+        self.job_id = job_id
 
         # Build class name to ID map
         self.class_id_map: dict[str, str] = {}
@@ -270,14 +365,15 @@ class RoboflowStreamingImporter:
                     return (False, 0, "Failed to insert image to database")
                 db_image_id = db_result.data[0]["id"]
 
-                # 5. Link image to dataset
+                # 5. Link image to dataset (initialize annotation_count to 0)
                 supabase_service.client.table("od_dataset_images").insert({
                     "dataset_id": self.dataset_id,
                     "image_id": db_image_id,
+                    "annotation_count": 0,
                 }).execute()
 
-                # 6. Insert annotations
-                annotations_count = 0
+                # 6. Insert annotations (BATCH for performance)
+                annotations_batch = []
                 boxes = annotation_data.get("boxes", [])
 
                 for box in boxes:
@@ -315,7 +411,7 @@ class RoboflowStreamingImporter:
                     except (ValueError, TypeError):
                         continue
 
-                    annotation_record = {
+                    annotations_batch.append({
                         "dataset_id": self.dataset_id,
                         "image_id": db_image_id,
                         "class_id": class_id,
@@ -324,15 +420,51 @@ class RoboflowStreamingImporter:
                         "bbox_width": bbox_w,
                         "bbox_height": bbox_h,
                         "is_ai_generated": False,
-                    }
+                    })
 
-                    supabase_service.client.table("od_annotations").insert(annotation_record).execute()
-                    annotations_count += 1
+                # Batch insert all annotations at once (much faster than N individual inserts)
+                annotations_count = 0
+                if annotations_batch:
+                    supabase_service.client.table("od_annotations").insert(annotations_batch).execute()
+                    annotations_count = len(annotations_batch)
+
+                    # Update od_dataset_images.annotation_count so UI shows annotations immediately
+                    try:
+                        update_result = supabase_service.client.table("od_dataset_images").update({
+                            "annotation_count": annotations_count
+                        }).eq("dataset_id", self.dataset_id).eq("image_id", db_image_id).execute()
+
+                        if not update_result.data:
+                            logger.warning(f"annotation_count update returned no data for image {db_image_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to update annotation_count for image {db_image_id}: {e}")
 
                 # Update checkpoint
                 checkpoint.processed_ids.add(roboflow_id)
                 checkpoint.storage_map[roboflow_id] = storage_filename
                 checkpoint.db_image_ids[roboflow_id] = db_image_id
+
+                # Save checkpoint periodically (every 10 images) for resume capability
+                if self.job_id and len(checkpoint.processed_ids) % 10 == 0:
+                    checkpoint_service.save_streaming_checkpoint(checkpoint)
+
+                # Update dataset counts periodically (every 50 images) so UI reflects progress
+                if len(checkpoint.processed_ids) % 50 == 0:
+                    try:
+                        # Quick count update - just image_count and annotation_count
+                        img_count = len(checkpoint.processed_ids)
+                        ann_count = (
+                            supabase_service.client.table("od_annotations")
+                            .select("id", count="exact")
+                            .eq("dataset_id", self.dataset_id)
+                            .execute()
+                        ).count or 0
+                        supabase_service.client.table("od_datasets").update({
+                            "image_count": img_count,
+                            "annotation_count": ann_count,
+                        }).eq("id", self.dataset_id).execute()
+                    except Exception:
+                        pass  # Don't fail import if count update fails
 
                 return (True, annotations_count, "")
 
@@ -342,7 +474,7 @@ class RoboflowStreamingImporter:
 
     async def import_dataset(
         self,
-        concurrency: int = 10,
+        concurrency: int = 25,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         checkpoint: Optional[StreamingCheckpoint] = None,
     ) -> StreamingImportResult:
@@ -381,8 +513,16 @@ class RoboflowStreamingImporter:
 
             # Initialize or use checkpoint
             if checkpoint is None:
-                checkpoint = StreamingCheckpoint(job_id="", total_images=total_images)
+                checkpoint = StreamingCheckpoint(job_id=self.job_id, total_images=total_images)
+            else:
+                logger.info(f"Resuming from {len(checkpoint.processed_ids)} processed images")
+
+            checkpoint.job_id = self.job_id
             checkpoint.total_images = total_images
+
+            # Save initial checkpoint if we have a job_id
+            if self.job_id:
+                checkpoint_service.save_streaming_checkpoint(checkpoint)
 
             if progress_callback:
                 progress_callback(0, total_images, f"Found {total_images} images. Starting import...")
@@ -403,7 +543,7 @@ class RoboflowStreamingImporter:
             logger.info(f"Processing {len(pending_images)} pending images ({processed} already done)")
 
             # Process in batches for better progress reporting
-            batch_size = 50
+            batch_size = 100
             print(f"[DEBUG] Starting batch loop with batch_size={batch_size}, total batches={len(pending_images) // batch_size + 1}")
 
             for batch_start in range(0, len(pending_images), batch_size):
@@ -489,6 +629,12 @@ class RoboflowStreamingImporter:
                 f"{result.images_failed} failed"
             )
 
+            # Update denormalized dataset counts
+            if result.images_imported > 0:
+                print(f"[DEBUG] Recalculating dataset counts for {self.dataset_id}...")
+                counts = recalculate_dataset_counts(self.dataset_id)
+                print(f"[DEBUG] Dataset counts updated: {counts}")
+
             return result
 
         except Exception as e:
@@ -510,8 +656,10 @@ async def streaming_import_from_roboflow(
     project: str,
     dataset_id: str,
     class_mapping: list[dict],
-    concurrency: int = 10,
+    concurrency: int = 25,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    job_id: str = "",
+    checkpoint: Optional[StreamingCheckpoint] = None,
 ) -> StreamingImportResult:
     """
     Import a Roboflow dataset using streaming (no ZIP download).
@@ -524,6 +672,8 @@ async def streaming_import_from_roboflow(
         class_mapping: List of class mapping configs
         concurrency: Max parallel processing
         progress_callback: Optional progress callback
+        job_id: Job ID for checkpoint persistence
+        checkpoint: Optional checkpoint to resume from
 
     Returns:
         StreamingImportResult
@@ -534,9 +684,11 @@ async def streaming_import_from_roboflow(
         project=project,
         dataset_id=dataset_id,
         class_mapping=class_mapping,
+        job_id=job_id,
     )
 
     return await importer.import_dataset(
         concurrency=concurrency,
         progress_callback=progress_callback,
+        checkpoint=checkpoint,
     )

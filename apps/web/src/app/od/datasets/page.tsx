@@ -88,12 +88,16 @@ export default function ODDatasetsPage() {
   const { data: stats } = useQuery({
     queryKey: ["od-stats"],
     queryFn: () => apiClient.getODStats(),
+    staleTime: 30000, // 30 seconds
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Fetch datasets
   const { data: datasets, isLoading, isFetching } = useQuery({
     queryKey: ["od-datasets"],
     queryFn: () => apiClient.getODDatasets(),
+    staleTime: 60000, // 1 minute - datasets don't change often
+    gcTime: 5 * 60 * 1000, // 5 minutes
   });
 
   // Create mutation

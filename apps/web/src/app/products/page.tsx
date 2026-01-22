@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, Suspense } from "react";
+import { useState, useMemo, useEffect, useCallback, Suspense, useDeferredValue } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -107,6 +107,8 @@ function ProductsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [search, setSearch] = useState("");
+  // Deferred search value for performance - delays API calls while typing
+  const deferredSearch = useDeferredValue(search);
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectAllFilteredMode, setSelectAllFilteredMode] = useState(false);
@@ -228,13 +230,14 @@ function ProductsPageContent() {
   }, [sortColumn]);
 
   // Fetch products with server-side filtering and sorting
+  // Uses deferredSearch to avoid API calls on every keystroke
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ["products", { page, search, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection, include_frame_counts: true }],
+    queryKey: ["products", { page, search: deferredSearch, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection, include_frame_counts: true }],
     queryFn: () =>
       apiClient.getProducts({
         page,
         limit: 100,
-        search: search || undefined,
+        search: deferredSearch || undefined,
         sort_by: serverSortColumn,
         sort_order: sortDirection,
         include_frame_counts: true,
@@ -242,17 +245,24 @@ function ProductsPageContent() {
       }),
   });
 
-  // Reset page and selection mode when filters or sorting changes
+  // Stable key for apiFilters to prevent useEffect dependency array size changes
+  const apiFiltersKey = JSON.stringify(apiFilters);
+
+  // Reset page and selection mode when filters, search, or sorting changes
   useEffect(() => {
     setPage(1);
     setSelectAllFilteredMode(false);
-  }, [apiFilters, serverSortColumn, sortDirection]);
+  }, [apiFiltersKey, serverSortColumn, sortDirection, deferredSearch]);
 
   // Fetch filter options - cascading based on current filters
+  // Performance optimized: longer stale time + no refetch on window focus
   const { data: filterOptions, isLoading: isLoadingFilters } = useQuery({
     queryKey: ["filter-options", apiFilters],
     queryFn: () => apiClient.getFilterOptions(apiFilters),
-    staleTime: 30000, // Cache for 30 seconds
+    staleTime: 60000, // Cache for 60 seconds (increased from 30s)
+    gcTime: 300000, // Keep in cache for 5 minutes
+    refetchOnWindowFocus: false, // Don't refetch when window regains focus
+    refetchOnReconnect: false, // Don't refetch on network reconnect
     placeholderData: (previousData) => previousData, // Keep previous data while loading
   });
 
@@ -972,6 +982,13 @@ function ProductsPageContent() {
             </Link>
           </Button>
 
+          <Button variant="outline" asChild>
+            <Link href="/products/bulk-update">
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Bulk Update
+            </Link>
+          </Button>
+
           <Button
             variant="outline"
             size="icon"
@@ -1047,10 +1064,7 @@ function ProductsPageContent() {
           <Input
             placeholder="Search by barcode, name, or brand..."
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setSearch(e.target.value)}
             className="pl-10"
           />
         </div>

@@ -19,6 +19,7 @@ import {
   ImageIcon,
   Triangle,
   ScanLine,
+  Tags,
   // Object Detection icons
   Image as ImageIconOD,
   PenTool,
@@ -131,6 +132,36 @@ const navigationGroups = [
       {
         name: "Training",
         href: "/od/training",
+        icon: Brain,
+      },
+    ],
+  },
+  {
+    title: "Classification",
+    items: [
+      {
+        name: "Images",
+        href: "/classification/images",
+        icon: ImageIconOD,
+      },
+      {
+        name: "Classes",
+        href: "/classification/classes",
+        icon: Tags,
+      },
+      {
+        name: "Datasets",
+        href: "/classification/datasets",
+        icon: FolderOpen,
+      },
+      {
+        name: "Labeling",
+        href: "/classification/labeling",
+        icon: PenTool,
+      },
+      {
+        name: "Training",
+        href: "/classification/training",
         icon: Brain,
       },
     ],

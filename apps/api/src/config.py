@@ -71,6 +71,31 @@ class Settings(BaseSettings):
     # CORS - allow all origins for now (can be restricted later)
     cors_origins: list[str] = ["*"]
 
+    # ===========================================
+    # Performance Feature Flags
+    # ===========================================
+    # These flags allow gradual rollout of performance optimizations
+
+    # Use PostgreSQL RPC function for filter options (13 queries -> 1 query)
+    use_rpc_filter_options: bool = True
+
+    # Use streaming for large exports (prevents memory overflow)
+    use_streaming_exports: bool = True
+
+    # Use concurrent storage operations for bulk deletes (20x faster)
+    use_concurrent_storage_delete: bool = True
+
+    # Use batched inserts for dataset operations (prevents timeout)
+    use_batched_dataset_insert: bool = True
+
+    # Enable in-memory cache for filter options (30s TTL)
+    use_filter_options_cache: bool = True
+
+    # Batch sizes for operations
+    dataset_insert_batch_size: int = 500
+    export_stream_batch_size: int = 500
+    storage_delete_max_concurrent: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:

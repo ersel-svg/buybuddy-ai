@@ -60,8 +60,17 @@ interface AIPanelProps {
   isLoading?: boolean;
 }
 
+// Model type for detection models
+interface DetectionModel {
+  id: string;
+  name: string;
+  description: string;
+  requires_prompt: boolean;
+  classes?: string[];
+}
+
 // Fallback models when API is unavailable
-const FALLBACK_MODELS = [
+const FALLBACK_MODELS: DetectionModel[] = [
   {
     id: "grounding_dino",
     name: "Grounding DINO",
@@ -122,11 +131,11 @@ export function AIPanel({
   });
 
   // Use API models or fallback
-  const aiModels = modelsData?.detection_models || FALLBACK_MODELS;
+  const aiModels: DetectionModel[] = modelsData?.detection_models || FALLBACK_MODELS;
 
   // Get selected model info
   const selectedModelInfo = useMemo(() => {
-    return aiModels.find((m: any) => m.id === selectedModel);
+    return aiModels.find((m) => m.id === selectedModel);
   }, [aiModels, selectedModel]);
 
   // Check if selected model requires text prompt

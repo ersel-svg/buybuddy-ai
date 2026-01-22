@@ -1099,7 +1099,7 @@ class RoboflowService:
         workspace: str,
         project: str,
         image_ids: list[str],
-        concurrency: int = 20,
+        concurrency: int = 30,
     ) -> list[tuple[str, dict | None, str | None]]:
         """
         Fetch image details for given IDs using asyncio.gather.

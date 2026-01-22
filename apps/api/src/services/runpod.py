@@ -17,6 +17,8 @@ class EndpointType(str, Enum):
     PREVIEW = "preview"  # Segmentation preview (single frame)
     OD_ANNOTATION = "od_annotation"  # OD AI annotation (Grounding DINO, SAM, Florence)
     OD_TRAINING = "od_training"  # OD model training (RF-DETR, RT-DETR, YOLO-NAS)
+    CLS_ANNOTATION = "cls_annotation"  # Classification AI annotation (CLIP, DINOv2)
+    CLS_TRAINING = "cls_training"  # Classification model training
 
 
 class RunpodService:
@@ -34,6 +36,8 @@ class RunpodService:
             EndpointType.PREVIEW: settings.runpod_endpoint_preview,
             EndpointType.OD_ANNOTATION: settings.runpod_endpoint_od_annotation,
             EndpointType.OD_TRAINING: settings.runpod_endpoint_od_training,
+            EndpointType.CLS_ANNOTATION: getattr(settings, 'runpod_endpoint_cls_annotation', None),
+            EndpointType.CLS_TRAINING: getattr(settings, 'runpod_endpoint_cls_training', None),
         }
 
     def _get_headers(self) -> dict[str, str]:

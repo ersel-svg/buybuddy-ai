@@ -80,6 +80,11 @@ function JobCard({ job }: { job: Job }) {
             </div>
           )}
           {job.status === "failed" && job.error && <p className="text-xs text-red-600 mt-1 line-clamp-2">{job.error}</p>}
+          {job.status === "failed" && displayInfo.checkpointInfo && (
+            <p className="text-xs text-amber-600 mt-1">
+              Progress saved: {displayInfo.checkpointInfo}
+            </p>
+          )}
           {job.status === "completed" && job.result && (
             <p className="text-xs text-green-700 mt-1">
               {job.result.images_imported !== undefined && <span>{job.result.images_imported} images imported</span>}
@@ -91,7 +96,7 @@ function JobCard({ job }: { job: Job }) {
             <div className="flex gap-1">
               {displayInfo.canRetry && (
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => retryImport.mutate(job.id)} disabled={retryImport.isPending}>
-                  {retryImport.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <><RefreshCw className="h-3 w-3 mr-1" />Retry</>}
+                  {retryImport.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <><RefreshCw className="h-3 w-3 mr-1" />{displayInfo.checkpointInfo ? "Resume" : "Retry"}</>}
                 </Button>
               )}
               {displayInfo.canCancel && (

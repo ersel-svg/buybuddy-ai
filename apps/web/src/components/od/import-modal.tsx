@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { useRetryRoboflowImport, type Job } from "@/hooks/use-active-jobs";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -149,6 +150,32 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
   const [rfImportProgress, setRfImportProgress] = useState(0);
   const [rfImportStatus, setRfImportStatus] = useState<string | null>(null);
   const [rfImportMessage, setRfImportMessage] = useState<string | null>(null);
+  const [rfResumableJob, setRfResumableJob] = useState<Job | null>(null);
+
+  // Hook for retrying/resuming roboflow imports
+  const retryImport = useRetryRoboflowImport();
+
+  // Check for resumable jobs when modal opens on Roboflow tab
+  useEffect(() => {
+    if (open && activeTab === "roboflow" && datasetId) {
+      const checkResumable = async () => {
+        try {
+          const jobs = await apiClient.getJobs("roboflow_import");
+          const resumable = jobs.find(
+            (j: Job) =>
+              j.type === "roboflow_import" &&
+              j.status === "failed" &&
+              j.config?.dataset_id === datasetId &&
+              j.result?.can_resume === true
+          );
+          setRfResumableJob(resumable || null);
+        } catch (error) {
+          console.error("Failed to check resumable jobs:", error);
+        }
+      };
+      checkResumable();
+    }
+  }, [open, activeTab, datasetId]);
 
   // Fetch existing classes for mapping
   const { data: existingClasses } = useQuery({
@@ -1390,6 +1417,52 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                           </div>
                         </div>
 
+                        {/* Resume Banner for Interrupted Import */}
+                        {rfResumableJob && !rfImportMutation.isPending && (
+                          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1">
+                                <p className="font-medium text-amber-800 flex items-center gap-2">
+                                  <AlertTriangle className="h-4 w-4" />
+                                  Interrupted import found
+                                </p>
+                                <p className="text-sm text-amber-700 mt-1">
+                                  {rfResumableJob.result?.processed_count || 0}/
+                                  {rfResumableJob.result?.total_images || "?"} images were imported from{" "}
+                                  {rfResumableJob.config?.project}
+                                </p>
+                              </div>
+                              <div className="flex gap-2 flex-shrink-0">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setRfResumableJob(null)}
+                                >
+                                  Start Fresh
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    retryImport.mutate(rfResumableJob.id);
+                                    setRfResumableJob(null);
+                                    handleOpenChange(false);
+                                  }}
+                                  disabled={retryImport.isPending}
+                                >
+                                  {retryImport.isPending ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <>
+                                      <RefreshCw className="h-4 w-4 mr-1" />
+                                      Resume Import
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Import Progress */}
                         {rfImportMutation.isPending && (
                           <div className="space-y-2 bg-muted/50 rounded-lg p-4">
@@ -1400,6 +1473,7 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                                     {rfImportStatus === "downloading" && "Downloading from Roboflow..."}
                                     {rfImportStatus === "processing" && "Processing images..."}
                                     {rfImportStatus === "running" && "Importing..."}
+                                    {rfImportStatus === "streaming" && "Streaming images..."}
                                     {!rfImportStatus && "Starting import..."}
                                   </>
                                 )}
