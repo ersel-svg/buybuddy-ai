@@ -273,32 +273,79 @@ def upload_model_to_supabase(
     model_path: str,
     training_run_id: str,
     model_type: str,
+    max_retries: int = 3,
+    timeout_seconds: int = 300,
 ) -> str:
-    """Upload trained model to Supabase storage."""
+    """
+    Upload trained model to Supabase storage with retry logic.
+
+    Args:
+        model_path: Path to the model file
+        training_run_id: Training run ID for organizing uploads
+        model_type: Type of model (e.g., 'rt-detr', 'd-fine')
+        max_retries: Maximum number of upload attempts
+        timeout_seconds: Timeout for upload in seconds (default 5 min)
+
+    Returns:
+        Public URL of uploaded model
+    """
+    import time
     from supabase import create_client
 
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         raise ValueError("Supabase credentials not configured")
 
+    # Get file size for logging
+    file_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+    print(f"[INFO] Uploading model: {model_path} ({file_size_mb:.2f} MB)")
+
+    # Create client
     client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+    # Extend storage client timeout for large files (default is 20s)
+    try:
+        client.storage._client.timeout = httpx.Timeout(float(timeout_seconds))
+        print(f"[INFO] Storage timeout set to {timeout_seconds}s")
+    except Exception as e:
+        print(f"[WARNING] Could not set storage timeout: {e}")
 
     # Generate unique filename
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"{training_run_id}/{model_type}_{timestamp}.pt"
 
-    # Upload
-    with open(model_path, "rb") as f:
-        client.storage.from_("od-models").upload(
-            filename,
-            f.read(),
-            {"content-type": "application/octet-stream"},
-        )
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[INFO] Upload attempt {attempt}/{max_retries}...")
 
-    # Get public URL
-    url = client.storage.from_("od-models").get_public_url(filename)
-    print(f"Model uploaded to {url}")
+            # Read file content
+            with open(model_path, "rb") as f:
+                file_content = f.read()
 
-    return url
+            # Upload with retry
+            client.storage.from_("od-models").upload(
+                filename,
+                file_content,
+                {"content-type": "application/octet-stream"},
+            )
+
+            # Get public URL
+            url = client.storage.from_("od-models").get_public_url(filename)
+            print(f"[SUCCESS] Model uploaded to {url}")
+            return url
+
+        except Exception as e:
+            last_error = e
+            print(f"[WARNING] Upload attempt {attempt} failed: {type(e).__name__}: {e}")
+
+            if attempt < max_retries:
+                # Exponential backoff: 5s, 10s, 20s
+                wait_time = 5 * (2 ** (attempt - 1))
+                print(f"[INFO] Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+
+    # All retries failed
+    raise RuntimeError(f"Failed to upload model after {max_retries} attempts: {last_error}")
 
 
 def train_sota(
