@@ -145,11 +145,6 @@ const navigationGroups = [
         icon: ImageIconOD,
       },
       {
-        name: "Classes",
-        href: "/classification/classes",
-        icon: Tags,
-      },
-      {
         name: "Datasets",
         href: "/classification/datasets",
         icon: FolderOpen,
