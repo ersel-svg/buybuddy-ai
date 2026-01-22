@@ -1310,12 +1310,16 @@ async def sync_from_buybuddy(
                 "message": "No images found matching criteria"
             }
 
-        # Get all existing buybuddy_image_ids in one query (much faster)
+        # Get all existing buybuddy_image_ids in batches (Supabase has URL length limits)
         bb_ids = [img["buybuddy_image_id"] for img in images]
-        existing_result = supabase.client.table("od_images").select("buybuddy_image_id").in_(
-            "buybuddy_image_id", bb_ids
-        ).execute()
-        existing_ids = {r["buybuddy_image_id"] for r in (existing_result.data or [])}
+        existing_ids = set()
+        BATCH_SIZE = 100
+        for i in range(0, len(bb_ids), BATCH_SIZE):
+            batch = bb_ids[i:i + BATCH_SIZE]
+            existing_result = supabase.client.table("od_images").select("buybuddy_image_id").in_(
+                "buybuddy_image_id", batch
+            ).execute()
+            existing_ids.update(r["buybuddy_image_id"] for r in (existing_result.data or []))
 
         # Prepare batch insert data
         new_images = []
@@ -1380,15 +1384,20 @@ async def sync_from_buybuddy(
         # Add to dataset if specified
         if request.dataset_id and synced > 0:
             try:
-                # Get IDs of newly inserted images
-                new_ids_result = supabase.client.table("od_images").select("id").in_(
-                    "buybuddy_image_id", [img["buybuddy_image_id"] for img in new_images[:synced]]
-                ).execute()
+                # Get IDs of newly inserted images (batch to avoid URL length limits)
+                synced_bb_ids = [img["buybuddy_image_id"] for img in new_images[:synced]]
+                new_ids_data = []
+                for i in range(0, len(synced_bb_ids), BATCH_SIZE):
+                    batch = synced_bb_ids[i:i + BATCH_SIZE]
+                    batch_result = supabase.client.table("od_images").select("id").in_(
+                        "buybuddy_image_id", batch
+                    ).execute()
+                    new_ids_data.extend(batch_result.data or [])
 
-                if new_ids_result.data:
+                if new_ids_data:
                     dataset_links = [
                         {"dataset_id": request.dataset_id, "image_id": r["id"], "status": "pending"}
-                        for r in new_ids_result.data
+                        for r in new_ids_data
                     ]
                     # Batch insert dataset links
                     for i in range(0, len(dataset_links), BATCH_SIZE):
