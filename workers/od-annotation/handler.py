@@ -178,15 +178,21 @@ def handle_segment(job_input: dict) -> dict[str, Any]:
 def handle_batch(job_input: dict) -> dict[str, Any]:
     """Handle batch detection for multiple images."""
     model_name = job_input.get("model", "grounding_dino")
+    model_config = job_input.get("model_config")  # For Roboflow models
     images = job_input["images"]  # List of {"id": str, "url": str}
     text_prompt = job_input.get("text_prompt", "")
     box_threshold = job_input.get("box_threshold", config.default_box_threshold)
     text_threshold = job_input.get("text_threshold", config.default_text_threshold)
+    filter_classes = job_input.get("filter_classes")  # Optional class filter
 
-    logger.info(f"Batch request: {len(images)} images, model={model_name}")
+    # Log request details
+    if model_name == "roboflow" and model_config:
+        logger.info(f"Batch request: {len(images)} images, model=roboflow ({model_config.get('architecture')})")
+    else:
+        logger.info(f"Batch request: {len(images)} images, model={model_name}")
 
-    # Get model (cached)
-    model = get_model(model_name, MODEL_CACHE)
+    # Get model (cached) - pass model_config for Roboflow models
+    model = get_model(model_name, MODEL_CACHE, model_config=model_config)
 
     results = []
     errors = []
@@ -206,6 +212,13 @@ def handle_batch(job_input: dict) -> dict[str, Any]:
                 box_threshold=box_threshold,
                 text_threshold=text_threshold,
             )
+
+            # Apply class filter if specified (for Roboflow models)
+            if filter_classes:
+                original_count = len(predictions)
+                predictions = [p for p in predictions if p.get("label") in filter_classes]
+                if len(predictions) < original_count:
+                    logger.debug(f"Class filter: {original_count} -> {len(predictions)} predictions")
 
             results.append({
                 "id": image_id,

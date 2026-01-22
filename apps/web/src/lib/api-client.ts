@@ -2292,15 +2292,46 @@ class ApiClient {
     dataset_id?: string;
     tags?: string[];
   }): Promise<{
-    synced: number;
-    skipped: number;
-    total_found: number;
-    errors: string[];
+    job_id: string;
+    status: string;
     message: string;
   }> {
     return this.request("/api/v1/od/images/buybuddy/sync", {
       method: "POST",
       body: options,
+    });
+  }
+
+  async getBuyBuddySyncStatus(jobId: string): Promise<{
+    job_id: string;
+    status: string;
+    progress: number;
+    result?: {
+      stage?: string;
+      message?: string;
+      can_resume?: boolean;
+      synced?: number;
+      skipped?: number;
+      total_found?: number;
+      errors?: string[];
+      images_per_second?: number;
+      eta_seconds?: number;
+    };
+    error?: string;
+    created_at: string;
+    can_resume: boolean;
+  }> {
+    return this.request(`/api/v1/od/images/buybuddy/sync/${jobId}`);
+  }
+
+  async retryBuyBuddySync(jobId: string): Promise<{
+    job_id: string;
+    status: string;
+    message: string;
+    resumed_from_checkpoint: boolean;
+  }> {
+    return this.request(`/api/v1/od/images/buybuddy/sync/${jobId}/retry`, {
+      method: "POST",
     });
   }
 
@@ -2490,6 +2521,7 @@ class ApiClient {
     text_threshold?: number;
     use_nms?: boolean;
     nms_threshold?: number;
+    filter_classes?: string[];  // Filter to only include these classes (useful for Roboflow models)
   }): Promise<{
     predictions: Array<{
       bbox: { x: number; y: number; width: number; height: number };
@@ -2531,11 +2563,12 @@ class ApiClient {
     dataset_id: string;
     image_ids?: string[];
     model: string;
-    text_prompt: string;
+    text_prompt?: string;  // Required for open-vocab models, optional for Roboflow models
     box_threshold?: number;
     text_threshold?: number;
     auto_accept?: boolean;
     class_mapping?: Record<string, string>;
+    filter_classes?: string[];  // Filter to only include these classes (for Roboflow models)
   }): Promise<{
     job_id: string;
     status: string;

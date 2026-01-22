@@ -524,11 +524,11 @@ class AIBatchAnnotateRequest(BaseModel):
     )
     model: str = Field(
         default="grounding_dino",
-        description="AI model to use"
+        description="AI model to use: grounding_dino, sam3, florence2, or rf:{model_id} for Roboflow models"
     )
-    text_prompt: str = Field(
-        ...,
-        description="Detection prompt"
+    text_prompt: Optional[str] = Field(
+        default=None,
+        description="Detection prompt. Required for open-vocab models (grounding_dino, sam3, florence2), ignored for Roboflow models."
     )
     box_threshold: float = Field(default=0.3, ge=0, le=1)
     text_threshold: float = Field(default=0.25, ge=0, le=1)
@@ -538,7 +538,11 @@ class AIBatchAnnotateRequest(BaseModel):
     )
     class_mapping: Optional[dict[str, str]] = Field(
         None,
-        description="Map detected labels to class IDs: {'detected_label': 'class_id'}"
+        description="Map detected labels to class IDs: {'detected_label': 'class_id'} or {'detected_label': '__new__:classname'} to create new class"
+    )
+    filter_classes: Optional[list[str]] = Field(
+        default=None,
+        description="Filter predictions to only include these classes. Useful for Roboflow models with fixed class sets. None = return all classes."
     )
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
@@ -68,6 +68,13 @@ interface ClassMapping {
   createNew: boolean;
 }
 
+// Roboflow model class configuration
+interface RoboflowClassConfig {
+  className: string;
+  enabled: boolean;  // Include this class in predictions
+  targetClassId: string | null;  // Map to existing class ID, or null for create new
+}
+
 type ImageSelectionMode = "unannotated" | "selected" | "all";
 type JobStatus = "idle" | "running" | "completed" | "failed";
 
@@ -89,6 +96,9 @@ export function BulkAnnotateModal({
   const [autoAccept, setAutoAccept] = useState(false);
   const [enableClassMapping, setEnableClassMapping] = useState(true);
   const [classMappings, setClassMappings] = useState<ClassMapping[]>([]);
+  
+  // Roboflow model class configuration
+  const [rfClassConfigs, setRfClassConfigs] = useState<RoboflowClassConfig[]>([]);
 
   // Job state
   const [jobStatus, setJobStatus] = useState<JobStatus>("idle");
@@ -167,12 +177,95 @@ export function BulkAnnotateModal({
     }
   }, [selectionMode, unannotatedCount, selectedImageIds.length, totalImages]);
 
+  // Detection models and selected model info - memoized to prevent infinite loops
+  const detectionModels = useMemo(() => {
+    return modelsData?.detection_models || [];
+  }, [modelsData?.detection_models]);
+  
+  const selectedModelInfo = useMemo(() => {
+    return detectionModels.find((m) => m.id === selectedModel);
+  }, [detectionModels, selectedModel]);
+  
+  // Check if selected model is a Roboflow model (closed-vocabulary)
+  const isRoboflowModel = selectedModel.startsWith("rf:");
+  
+  // Memoize modelClasses to prevent infinite useEffect loops
+  const modelClasses = useMemo(() => {
+    return selectedModelInfo?.classes || [];
+  }, [selectedModelInfo]);
+  
+  // Initialize Roboflow class configs when model changes
+  useEffect(() => {
+    const isRF = selectedModel.startsWith("rf:");
+    
+    if (isRF) {
+      // Find the model info for this model
+      const modelInfo = detectionModels.find((m) => m.id === selectedModel);
+      const classes = modelInfo?.classes || [];
+      
+      if (classes.length > 0) {
+        // Create new configs for this model
+        const newConfigs: RoboflowClassConfig[] = classes.map((cls) => {
+          // Try to find matching existing class in dataset
+          const matchingClass = existingClasses.find(
+            (c) =>
+              c.name.toLowerCase() === cls.toLowerCase() ||
+              c.display_name?.toLowerCase() === cls.toLowerCase()
+          );
+          
+          return {
+            className: cls,
+            enabled: true,  // Include by default
+            targetClassId: matchingClass?.id || null,  // Auto-map if found, otherwise create new
+          };
+        });
+        setRfClassConfigs(newConfigs);
+      } else {
+        setRfClassConfigs([]);
+      }
+    } else {
+      // Clear Roboflow configs when switching to open-vocab model
+      setRfClassConfigs([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModel]);
+  // Note: detectionModels and existingClasses intentionally excluded - we only want to initialize once when model changes
+  
+  // Update Roboflow class config
+  const updateRfClassConfig = (className: string, updates: Partial<RoboflowClassConfig>) => {
+    setRfClassConfigs((prev) =>
+      prev.map((config) =>
+        config.className === className ? { ...config, ...updates } : config
+      )
+    );
+  };
+
   // Start batch annotation mutation
   const startBatchMutation = useMutation({
     mutationFn: async () => {
-      // Build class mapping for API
+      // Build class mapping and filter_classes based on model type
       const classMapping: Record<string, string> = {};
-      if (enableClassMapping) {
+      let filterClasses: string[] | undefined;
+      
+      if (isRoboflowModel) {
+        // Roboflow model: use rfClassConfigs for filtering and mapping
+        const enabledConfigs = rfClassConfigs.filter((c) => c.enabled);
+        
+        // Set filter_classes to only include enabled classes
+        filterClasses = enabledConfigs.map((c) => c.className);
+        
+        // Build class mapping from enabled configs
+        enabledConfigs.forEach((config) => {
+          if (config.targetClassId) {
+            // Map to existing class
+            classMapping[config.className] = config.targetClassId;
+          } else {
+            // Create new class with same name
+            classMapping[config.className] = `__new__:${config.className}`;
+          }
+        });
+      } else if (enableClassMapping) {
+        // Open-vocab model: use text prompt based class mappings
         classMappings.forEach((m) => {
           if (m.targetClassId) {
             classMapping[m.detected] = m.targetClassId;
@@ -194,10 +287,11 @@ export function BulkAnnotateModal({
         dataset_id: datasetId,
         image_ids: imageIds,
         model: selectedModel,
-        text_prompt: textPrompt,
+        text_prompt: isRoboflowModel ? undefined : textPrompt,  // Not needed for Roboflow
         box_threshold: confidence,
         auto_accept: autoAccept,
         class_mapping: Object.keys(classMapping).length > 0 ? classMapping : undefined,
+        filter_classes: filterClasses,  // For Roboflow models
       });
     },
     onSuccess: (data) => {
@@ -246,9 +340,20 @@ export function BulkAnnotateModal({
 
   // Handle form submission
   const handleSubmit = () => {
-    if (!textPrompt.trim()) {
-      toast.error("Please enter a detection prompt");
-      return;
+    // Validation based on model type
+    if (isRoboflowModel) {
+      // Roboflow model: check if at least one class is enabled
+      const enabledCount = rfClassConfigs.filter((c) => c.enabled).length;
+      if (enabledCount === 0) {
+        toast.error("Please enable at least one class to detect");
+        return;
+      }
+    } else {
+      // Open-vocab model: require text prompt
+      if (!textPrompt.trim()) {
+        toast.error("Please enter a detection prompt");
+        return;
+      }
     }
 
     const imageCount = getImageCount();
@@ -268,9 +373,6 @@ export function BulkAnnotateModal({
       return updated;
     });
   };
-
-  const detectionModels = modelsData?.detection_models || [];
-  const selectedModelInfo = detectionModels.find((m) => m.id === selectedModel);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -378,34 +480,122 @@ export function BulkAnnotateModal({
               )}
             </div>
 
-            {/* Text Prompt */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="prompt">Detection Prompt</Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger>
-                      <Info className="h-4 w-4 text-muted-foreground" />
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs">
-                      <p>
-                        Separate class names with &quot; . &quot; (space dot space).
-                        Example: &quot;shelf . product . price tag&quot;
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+            {/* Text Prompt - Only for open-vocab models */}
+            {!isRoboflowModel && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="prompt">Detection Prompt</Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">
+                        <p>
+                          Separate class names with &quot; . &quot; (space dot space).
+                          Example: &quot;shelf . product . price tag&quot;
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+                <Input
+                  id="prompt"
+                  placeholder="shelf . product . price tag . promotional material"
+                  value={textPrompt}
+                  onChange={(e) => setTextPrompt(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Separate class names with &quot; . &quot; (space dot space)
+                </p>
               </div>
-              <Input
-                id="prompt"
-                placeholder="shelf . product . price tag . promotional material"
-                value={textPrompt}
-                onChange={(e) => setTextPrompt(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Separate class names with &quot; . &quot; (space dot space)
-              </p>
-            </div>
+            )}
+
+            {/* Roboflow Model Class Configuration */}
+            {isRoboflowModel && rfClassConfigs.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Label>Model Classes</Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">
+                        <p>
+                          Select which classes to detect and map them to your dataset classes.
+                          Uncheck a class to exclude it from detection.
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+                <Card>
+                  <CardContent className="p-3 space-y-3">
+                    <div className="grid grid-cols-[auto,1fr,auto,1fr] gap-2 text-xs font-medium text-muted-foreground pb-2 border-b">
+                      <span></span>
+                      <span>Model Class</span>
+                      <span></span>
+                      <span>Map to Dataset Class</span>
+                    </div>
+                    {rfClassConfigs.map((config) => (
+                      <div
+                        key={config.className}
+                        className={`grid grid-cols-[auto,1fr,auto,1fr] gap-2 items-center ${
+                          !config.enabled ? "opacity-50" : ""
+                        }`}
+                      >
+                        <Checkbox
+                          checked={config.enabled}
+                          onCheckedChange={(checked) =>
+                            updateRfClassConfig(config.className, { enabled: !!checked })
+                          }
+                        />
+                        <Badge
+                          variant={config.enabled ? "secondary" : "outline"}
+                          className="justify-start"
+                        >
+                          {config.className}
+                        </Badge>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                        <Select
+                          value={config.targetClassId || "__new__"}
+                          onValueChange={(value) =>
+                            updateRfClassConfig(config.className, {
+                              targetClassId: value === "__new__" ? null : value,
+                            })
+                          }
+                          disabled={!config.enabled}
+                        >
+                          <SelectTrigger className="h-8">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__new__">
+                              <span className="text-purple-600">+ Create &quot;{config.className}&quot;</span>
+                            </SelectItem>
+                            {existingClasses.map((cls) => (
+                              <SelectItem key={cls.id} value={cls.id}>
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    className="w-3 h-3 rounded"
+                                    style={{ backgroundColor: cls.color }}
+                                  />
+                                  {cls.display_name || cls.name}
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ))}
+                    <p className="text-xs text-muted-foreground pt-2 border-t">
+                      {rfClassConfigs.filter((c) => c.enabled).length} of {rfClassConfigs.length} classes enabled
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
 
             {/* Confidence Threshold */}
             <div className="space-y-3">
@@ -443,8 +633,8 @@ export function BulkAnnotateModal({
               </div>
             </div>
 
-            {/* Class Mapping */}
-            {classMappings.length > 0 && (
+            {/* Class Mapping - Only for open-vocab models */}
+            {!isRoboflowModel && classMappings.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
                   <Checkbox
@@ -617,7 +807,9 @@ export function BulkAnnotateModal({
               <Button
                 onClick={handleSubmit}
                 disabled={
-                  !textPrompt.trim() ||
+                  (isRoboflowModel
+                    ? rfClassConfigs.filter((c) => c.enabled).length === 0
+                    : !textPrompt.trim()) ||
                   getImageCount() === 0 ||
                   startBatchMutation.isPending
                 }

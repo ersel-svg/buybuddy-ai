@@ -423,13 +423,39 @@ async def batch_annotate(
 
     Processes multiple images and optionally saves predictions as annotations.
     Use /jobs/{job_id} to check progress.
+    
+    Supports both open-vocabulary models (require text_prompt) and 
+    Roboflow closed-vocabulary models (rf:{model_id}).
     """
-    # Validate model
-    if request.model not in DETECT_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid model '{request.model}'. Supported: {DETECT_MODELS}"
-        )
+    # Check if this is a Roboflow model
+    is_rf_model = is_roboflow_model(request.model)
+    rf_model_data = None
+    
+    if is_rf_model:
+        # Extract Roboflow model ID and fetch from database
+        rf_id = request.model.replace("rf:", "")
+        rf_model_data = await get_roboflow_model(rf_id)
+        
+        if not rf_model_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Roboflow model '{rf_id}' not found or not active"
+            )
+    else:
+        # Validate open-vocab model
+        all_models = await get_all_detect_models()
+        if request.model not in all_models:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model '{request.model}'. Supported: {all_models}"
+            )
+        
+        # Open-vocab models require text_prompt
+        if not request.text_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail=f"text_prompt is required for open-vocabulary model '{request.model}'"
+            )
 
     # Check endpoint configuration
     if not runpod_service.is_configured(EndpointType.OD_ANNOTATION):
@@ -482,6 +508,7 @@ async def batch_annotate(
             "text_threshold": request.text_threshold,
             "auto_accept": request.auto_accept,
             "class_mapping": request.class_mapping,
+            "filter_classes": request.filter_classes,  # For Roboflow models
             "total_images": len(images),
             "image_ids": [img["image_id"] for img in images],
         },
@@ -503,17 +530,35 @@ async def batch_annotate(
                     "url": image_url,        # Worker expects "url"
                 })
 
-    # Prepare RunPod input
-    runpod_input = {
-        "task": "batch",
-        "model": request.model,
-        "images": image_data,
-        "text_prompt": request.text_prompt,
-        "box_threshold": request.box_threshold,
-        "text_threshold": request.text_threshold,
-        "job_id": job_id,
-        "hf_token": settings.hf_token,  # For SAM3 model access
-    }
+    # Prepare RunPod input based on model type
+    if is_rf_model and rf_model_data:
+        # Roboflow model - send model_config for dynamic loading
+        runpod_input = {
+            "task": "batch",
+            "model": "roboflow",  # Generic handler in worker
+            "model_config": {
+                "checkpoint_url": rf_model_data["checkpoint_url"],
+                "architecture": rf_model_data["architecture"],
+                "classes": rf_model_data["classes"],
+            },
+            "images": image_data,
+            "box_threshold": request.box_threshold,
+            "filter_classes": request.filter_classes,  # Filter specific classes
+            "job_id": job_id,
+        }
+    else:
+        # Open-vocab model
+        runpod_input = {
+            "task": "batch",
+            "model": request.model,
+            "images": image_data,
+            "text_prompt": request.text_prompt,
+            "box_threshold": request.box_threshold,
+            "text_threshold": request.text_threshold,
+            "filter_classes": request.filter_classes,  # Optional filter
+            "job_id": job_id,
+            "hf_token": settings.hf_token,  # For SAM3 model access
+        }
 
     # TODO: Add webhook URL for production
     # webhook_url = f"{settings.api_base_url}/api/v1/od/ai/webhook"
@@ -596,6 +641,7 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
                         predictions_by_image=predictions_by_image,
                         class_mapping=config.get("class_mapping"),
                         model=config.get("model"),
+                        filter_classes=config.get("filter_classes"),
                     )
 
                 # Store predictions count in result for status response
@@ -686,6 +732,7 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
                 predictions_by_image=predictions_by_image,
                 class_mapping=config.get("class_mapping"),
                 model=config.get("model"),
+                filter_classes=config.get("filter_classes"),
             )
 
         # Update job status
@@ -716,10 +763,18 @@ async def _save_predictions_as_annotations(
     predictions_by_image: dict,
     class_mapping: Optional[dict],
     model: str,
+    filter_classes: Optional[list[str]] = None,
 ) -> int:
     """
     Save AI predictions as annotations in the database.
     Auto-creates classes for labels that don't exist.
+    
+    Args:
+        dataset_id: Target dataset ID
+        predictions_by_image: Dict of image_id -> list of predictions
+        class_mapping: Dict mapping detected labels to class IDs or '__new__:classname'
+        model: Model name used for predictions
+        filter_classes: Optional list of classes to include. If set, other classes are skipped.
 
     Returns number of annotations created.
     """
@@ -736,6 +791,10 @@ async def _save_predictions_as_annotations(
             confidence = pred.get("confidence", 0)
 
             if not label:
+                continue
+            
+            # Apply class filter if specified (for Roboflow models)
+            if filter_classes and label not in filter_classes:
                 continue
 
             # Check cache first
