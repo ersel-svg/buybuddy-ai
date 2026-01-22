@@ -298,17 +298,27 @@ class ODExportService:
 
         os.makedirs(os.path.join(export_dir, "annotations"), exist_ok=True)
 
-        # Group images by split
+        # Group images by split with automatic train/val assignment
         images_by_split = {"train": [], "val": [], "test": []}
 
         import random
         random.seed(42)
 
+        # Default split ratios
+        train_ratio = 0.8
+        val_ratio = 0.2
+
         for img_data in images:
-            existing_split = img_data.get("split", "train")
-            if existing_split not in images_by_split:
-                existing_split = "train"
-            images_by_split[existing_split].append(img_data)
+            existing_split = img_data.get("split")
+            if existing_split and existing_split in images_by_split:
+                images_by_split[existing_split].append(img_data)
+            else:
+                # Auto-assign split based on ratios
+                r = random.random()
+                if r < train_ratio:
+                    images_by_split["train"].append(img_data)
+                else:
+                    images_by_split["val"].append(img_data)
 
         # Generate COCO JSON for each split
         for split_name, split_images in images_by_split.items():

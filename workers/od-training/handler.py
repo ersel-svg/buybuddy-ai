@@ -494,6 +494,12 @@ def handler(job: dict) -> dict:
                 dataset_config.train_ann_file = os.path.join(dataset_path, "annotations", "instances_train.json")
             if not os.path.exists(dataset_config.val_ann_file):
                 dataset_config.val_ann_file = os.path.join(dataset_path, "annotations", "instances_val.json")
+
+            # Fallback: if val doesn't exist, use train for validation (with a warning)
+            if not os.path.exists(dataset_config.val_ann_file):
+                print(f"[WARNING] No validation annotations found, using train data for validation")
+                dataset_config.val_ann_file = dataset_config.train_ann_file
+                dataset_config.val_path = dataset_config.train_path
         else:
             # YOLO format - convert to COCO
             from src.data import convert_yolo_to_coco, get_yolo_class_names
