@@ -188,6 +188,14 @@ class CLSLabelCreate(CLSLabelBase):
     pass
 
 
+class CLSLabelingSubmit(BaseModel):
+    """Schema for labeling workflow submission."""
+    action: str = Field(..., description="Action: label, skip, or review")
+    class_id: Optional[str] = Field(None, description="Class ID for label action")
+    class_ids: Optional[list[str]] = Field(None, description="Multiple class IDs for multi-label")
+    confidence: Optional[float] = Field(None, ge=0, le=1)
+
+
 class CLSLabelUpdate(BaseModel):
     class_id: Optional[str] = None
     is_reviewed: Optional[bool] = None

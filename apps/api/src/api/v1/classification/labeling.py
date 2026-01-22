@@ -17,12 +17,13 @@ from schemas.classification import (
     LabelingImageResponse,
     LabelingProgressResponse,
     CLSLabelCreate,
+    CLSLabelingSubmit,
 )
 
 router = APIRouter()
 
 
-@router.get("/queue/{dataset_id}", response_model=LabelingQueueResponse)
+@router.get("/{dataset_id}/queue", response_model=LabelingQueueResponse)
 async def get_labeling_queue(
     dataset_id: str,
     mode: str = "unlabeled",
@@ -85,7 +86,7 @@ async def get_labeling_queue(
     )
 
 
-@router.get("/image/{dataset_id}/{image_id}", response_model=LabelingImageResponse)
+@router.get("/{dataset_id}/image/{image_id}", response_model=LabelingImageResponse)
 async def get_labeling_image(dataset_id: str, image_id: str):
     """Get a single image for labeling with context."""
     # Get image details
@@ -136,50 +137,102 @@ async def get_labeling_image(dataset_id: str, image_id: str):
     )
 
 
-@router.post("/image/{dataset_id}/{image_id}")
-async def save_label(dataset_id: str, image_id: str, data: CLSLabelCreate):
-    """Save label for an image during labeling workflow."""
-    # Get dataset task type
-    dataset = supabase_service.client.table("cls_datasets").select("task_type").eq("id", dataset_id).single().execute()
-    task_type = dataset.data.get("task_type", "single_label") if dataset.data else "single_label"
+@router.post("/{dataset_id}/image/{image_id}")
+async def submit_labeling(dataset_id: str, image_id: str, data: CLSLabelingSubmit):
+    """Submit labeling action for an image.
+    
+    Actions:
+    - label: Save a class label for the image
+    - skip: Skip this image
+    - review: Mark image for review
+    """
+    action = data.action.lower()
+    
+    # Handle skip action
+    if action == "skip":
+        supabase_service.client.table("cls_dataset_images").update({
+            "status": "skipped",
+        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+        
+        # Get next image
+        all_images = supabase_service.client.table("cls_dataset_images").select("image_id").eq("dataset_id", dataset_id).order("added_at").execute()
+        image_ids = [item["image_id"] for item in all_images.data or []]
+        idx = image_ids.index(image_id) if image_id in image_ids else -1
+        next_id = image_ids[idx + 1] if idx >= 0 and idx < len(image_ids) - 1 else None
+        
+        return {"success": True, "next_image_id": next_id}
+    
+    # Handle review action
+    if action == "review":
+        supabase_service.client.table("cls_dataset_images").update({
+            "status": "review",
+        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+        
+        # Get next image
+        all_images = supabase_service.client.table("cls_dataset_images").select("image_id").eq("dataset_id", dataset_id).order("added_at").execute()
+        image_ids = [item["image_id"] for item in all_images.data or []]
+        idx = image_ids.index(image_id) if image_id in image_ids else -1
+        next_id = image_ids[idx + 1] if idx >= 0 and idx < len(image_ids) - 1 else None
+        
+        return {"success": True, "next_image_id": next_id}
+    
+    # Handle label action
+    if action == "label":
+        if not data.class_id and not data.class_ids:
+            raise HTTPException(status_code=400, detail="class_id is required for label action")
+        
+        # Get dataset task type
+        dataset = supabase_service.client.table("cls_datasets").select("task_type").eq("id", dataset_id).single().execute()
+        task_type = dataset.data.get("task_type", "single_label") if dataset.data else "single_label"
 
-    # For single-label, delete existing labels first
-    if task_type == "single_label":
-        supabase_service.client.table("cls_labels").delete().eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+        # For single-label, delete existing labels first
+        if task_type == "single_label":
+            supabase_service.client.table("cls_labels").delete().eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
-    # Create label
-    label_data = {
-        "dataset_id": dataset_id,
-        "image_id": image_id,
-        **data.model_dump(),
-    }
+        # Create label(s)
+        class_ids = data.class_ids if data.class_ids else [data.class_id]
+        label_id = None
+        
+        for class_id in class_ids:
+            label_data = {
+                "dataset_id": dataset_id,
+                "image_id": image_id,
+                "class_id": class_id,
+                "confidence": data.confidence,
+            }
+            result = supabase_service.client.table("cls_labels").insert(label_data).execute()
+            if result.data:
+                label_id = result.data[0]["id"]
 
-    result = supabase_service.client.table("cls_labels").insert(label_data).execute()
+        # Update dataset image status
+        supabase_service.client.table("cls_dataset_images").update({
+            "status": "labeled",
+            "labeled_at": "now()",
+        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
-    # Update dataset image status
-    supabase_service.client.table("cls_dataset_images").update({
-        "status": "labeled",
-        "labeled_at": "now()",
-    }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+        # Update stats
+        try:
+            supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": dataset_id}).execute()
+        except Exception as e:
+            logger.warning(f"Failed to update stats: {e}")
 
-    # Update stats
-    supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": dataset_id}).execute()
+        # Get next image in queue
+        all_images = supabase_service.client.table("cls_dataset_images").select("image_id").eq("dataset_id", dataset_id).order("added_at").execute()
+        image_ids = [item["image_id"] for item in all_images.data or []]
 
-    # Get next image in queue
-    all_images = supabase_service.client.table("cls_dataset_images").select("image_id").eq("dataset_id", dataset_id).order("added_at").execute()
-    image_ids = [item["image_id"] for item in all_images.data or []]
+        idx = image_ids.index(image_id) if image_id in image_ids else -1
+        next_id = image_ids[idx + 1] if idx >= 0 and idx < len(image_ids) - 1 else None
 
-    idx = image_ids.index(image_id) if image_id in image_ids else -1
-    next_id = image_ids[idx + 1] if idx >= 0 and idx < len(image_ids) - 1 else None
-
-    return {
-        "success": True,
-        "label_id": result.data[0]["id"] if result.data else None,
-        "next_image_id": next_id,
-    }
+        return {
+            "success": True,
+            "label_id": label_id,
+            "next_image_id": next_id,
+        }
+    
+    raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
 
-@router.post("/skip/{dataset_id}/{image_id}")
+@router.post("/{dataset_id}/skip/{image_id}")
 async def skip_image(dataset_id: str, image_id: str):
     """Skip an image during labeling workflow."""
     supabase_service.client.table("cls_dataset_images").update({
@@ -199,7 +252,7 @@ async def skip_image(dataset_id: str, image_id: str):
     }
 
 
-@router.get("/progress/{dataset_id}", response_model=LabelingProgressResponse)
+@router.get("/{dataset_id}/progress", response_model=LabelingProgressResponse)
 async def get_labeling_progress(dataset_id: str):
     """Get labeling progress for a dataset."""
     result = supabase_service.client.rpc("get_cls_labeling_progress", {"p_dataset_id": dataset_id}).execute()
@@ -230,7 +283,7 @@ async def get_labeling_progress(dataset_id: str):
     )
 
 
-@router.post("/mark-reviewed/{dataset_id}/{image_id}")
+@router.post("/{dataset_id}/mark-reviewed/{image_id}")
 async def mark_as_reviewed(dataset_id: str, image_id: str):
     """Mark all labels for an image as reviewed."""
     supabase_service.client.table("cls_labels").update({
