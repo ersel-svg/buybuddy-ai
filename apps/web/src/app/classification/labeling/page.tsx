@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense, useMemo, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -22,6 +23,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
 import {
   Tooltip,
   TooltipContent,
@@ -35,18 +45,24 @@ import {
   ChevronRight,
   SkipForward,
   CheckCircle,
-  AlertTriangle,
   Keyboard,
-  X,
-  Sparkles,
-  Wand2,
+  Plus,
+  Star,
+  Tag,
 } from "lucide-react";
 import Image from "next/image";
+
+// Color palette for auto-assigning colors to new classes
+const CLASS_COLORS = [
+  "#3B82F6", "#EF4444", "#10B981", "#F59E0B", "#8B5CF6",
+  "#EC4899", "#06B6D4", "#84CC16", "#F97316", "#6366F1",
+  "#14B8A6", "#A855F7", "#F43F5E", "#0EA5E9", "#22C55E",
+];
 
 export default function CLSLabelingPage() {
   return (
     <Suspense fallback={
-      <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="flex items-center justify-center h-screen">
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
     }>
@@ -59,15 +75,39 @@ function CLSLabelingPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const datasetId = searchParams.get("dataset");
   const imageIdParam = searchParams.get("image");
 
   // State
   const [currentImageId, setCurrentImageId] = useState<string | null>(imageIdParam);
+  const [searchValue, setSearchValue] = useState("");
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [queueMode, setQueueMode] = useState<"unlabeled" | "all" | "review">("all");
-  const [aiSuggestions, setAiSuggestions] = useState<Array<{ class_id: string; class_name: string; confidence: number }>>([]);
+  const [recentClassIds, setRecentClassIds] = useState<string[]>([]);
+
+  // Load recent classes from localStorage
+  useEffect(() => {
+    if (datasetId) {
+      const stored = localStorage.getItem(`cls-recent-${datasetId}`);
+      if (stored) {
+        try {
+          setRecentClassIds(JSON.parse(stored));
+        } catch {}
+      }
+    }
+  }, [datasetId]);
+
+  // Save recent class to localStorage
+  const addToRecent = useCallback((classId: string) => {
+    if (!datasetId) return;
+    setRecentClassIds(prev => {
+      const updated = [classId, ...prev.filter(id => id !== classId)].slice(0, 9);
+      localStorage.setItem(`cls-recent-${datasetId}`, JSON.stringify(updated));
+      return updated;
+    });
+  }, [datasetId]);
 
   // Fetch datasets for selector
   const { data: datasets } = useQuery({
@@ -76,13 +116,57 @@ function CLSLabelingPageContent() {
     staleTime: 60000,
   });
 
-  // Fetch classes for the selected dataset
-  const { data: classes } = useQuery({
+  // Fetch all classes
+  const { data: allClasses, refetch: refetchClasses } = useQuery({
+    queryKey: ["cls-classes"],
+    queryFn: () => apiClient.getCLSClasses(),
+    staleTime: 30000,
+  });
+
+  // Fetch dataset-specific class counts
+  const { data: datasetClasses } = useQuery({
     queryKey: ["cls-dataset-classes", datasetId],
     queryFn: () => apiClient.getCLSDatasetClasses(datasetId!),
     enabled: !!datasetId,
     staleTime: 30000,
   });
+
+  // Merge class data - use allClasses but with dataset-specific counts
+  const classes = useMemo(() => {
+    if (!allClasses) return [];
+    const countMap = new Map(datasetClasses?.map(c => [c.id, c.image_count]) || []);
+    return allClasses.map(c => ({
+      ...c,
+      image_count: countMap.get(c.id) || 0,
+    }));
+  }, [allClasses, datasetClasses]);
+
+  // Recent classes with full data
+  const recentClasses = useMemo(() => {
+    return recentClassIds
+      .map(id => classes.find(c => c.id === id))
+      .filter(Boolean) as typeof classes;
+  }, [recentClassIds, classes]);
+
+  // Filtered classes based on search
+  const filteredClasses = useMemo(() => {
+    if (!searchValue.trim()) return classes;
+    const search = searchValue.toLowerCase();
+    return classes.filter(c => 
+      c.name.toLowerCase().includes(search) ||
+      c.display_name?.toLowerCase().includes(search)
+    );
+  }, [classes, searchValue]);
+
+  // Check if search value matches any existing class
+  const exactMatch = useMemo(() => {
+    if (!searchValue.trim()) return null;
+    const search = searchValue.toLowerCase().trim();
+    return classes.find(c => 
+      c.name.toLowerCase() === search ||
+      c.display_name?.toLowerCase() === search
+    );
+  }, [classes, searchValue]);
 
   // Fetch labeling queue
   const { data: queue, isLoading: queueLoading } = useQuery({
@@ -114,14 +198,23 @@ function CLSLabelingPageContent() {
     }
   }, [queue, currentImageId]);
 
-  // Set selected class from current labels
-  useEffect(() => {
-    if (imageData?.current_labels && imageData.current_labels.length > 0) {
-      setSelectedClassId(imageData.current_labels[0].class_id);
-    } else {
-      setSelectedClassId(null);
-    }
-  }, [imageData]);
+  // Create class mutation
+  const createClassMutation = useMutation({
+    mutationFn: (name: string) => apiClient.createCLSClass({
+      name: name.toLowerCase().replace(/\s+/g, '_'),
+      display_name: name,
+      color: CLASS_COLORS[classes.length % CLASS_COLORS.length],
+    }),
+    onSuccess: (newClass) => {
+      toast.success(`Class "${newClass.name}" created`);
+      refetchClasses();
+      // Auto-select and submit with new class
+      handleSelectClass(newClass.id);
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to create class: ${error.message}`);
+    },
+  });
 
   // Submit label mutation
   const submitMutation = useMutation({
@@ -131,8 +224,9 @@ function CLSLabelingPageContent() {
         class_id: classId,
       });
     },
-    onSuccess: (result, { action }) => {
-      if (action === "label") {
+    onSuccess: (result, { action, classId }) => {
+      if (action === "label" && classId) {
+        addToRecent(classId);
         toast.success("Label saved");
       } else if (action === "skip") {
         toast.info("Image skipped");
@@ -142,119 +236,98 @@ function CLSLabelingPageContent() {
 
       queryClient.invalidateQueries({ queryKey: ["cls-labeling-progress", datasetId] });
       queryClient.invalidateQueries({ queryKey: ["cls-labeling-queue", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["cls-dataset-classes", datasetId] });
+
+      // Reset search
+      setSearchValue("");
+      setSelectedClassId(null);
 
       // Go to next image
       if (result.next_image_id) {
         setCurrentImageId(result.next_image_id);
-        router.push(`/classification/labeling?dataset=${datasetId}&image=${result.next_image_id}`);
+        router.push(`/classification/labeling?dataset=${datasetId}&image=${result.next_image_id}`, { scroll: false });
       } else {
-        // No more images
         toast.success("All images labeled!");
         setCurrentImageId(null);
       }
+
+      // Focus input for next label
+      setTimeout(() => inputRef.current?.focus(), 100);
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast.error(`Failed to save: ${error.message}`);
     },
   });
 
-  // AI suggestion mutation
-  const aiSuggestMutation = useMutation({
-    mutationFn: async () => {
-      return apiClient.predictCLSAI({
-        image_id: currentImageId!,
-        dataset_id: datasetId!,
-        model: "clip",
-        top_k: 3,
-        threshold: 0.1,
-      });
-    },
-    onSuccess: (result) => {
-      setAiSuggestions(result.predictions);
-      if (result.predictions.length > 0) {
-        // Auto-select top suggestion
-        setSelectedClassId(result.predictions[0].class_id);
-        toast.success(`AI suggests: ${result.predictions[0].class_name} (${(result.predictions[0].confidence * 100).toFixed(0)}%)`);
-      } else {
-        toast.info("No confident AI suggestions");
-      }
-    },
-    onError: (error) => {
-      toast.error(`AI suggestion failed: ${error.message}`);
-    },
-  });
+  // Handle class selection
+  const handleSelectClass = useCallback((classId: string) => {
+    setSelectedClassId(classId);
+    submitMutation.mutate({ action: "label", classId });
+  }, [submitMutation]);
 
-  // Clear AI suggestions when image changes
-  useEffect(() => {
-    setAiSuggestions([]);
-  }, [currentImageId]);
+  // Handle create new class
+  const handleCreateClass = useCallback(() => {
+    if (!searchValue.trim()) return;
+    createClassMutation.mutate(searchValue.trim());
+  }, [searchValue, createClassMutation]);
 
   // Keyboard shortcuts
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (!datasetId || !currentImageId) return;
 
-    // Number keys 1-9 for class selection
-    if (e.key >= "1" && e.key <= "9" && classes) {
+    // Don't handle if typing in input (except special keys)
+    const isTyping = document.activeElement?.tagName === "INPUT";
+
+    // Number keys 1-9 for recent class selection (works even when typing)
+    if (e.key >= "1" && e.key <= "9" && !e.ctrlKey && !e.metaKey) {
       const index = parseInt(e.key) - 1;
-      if (index < classes.length) {
-        const classToSelect = classes[index];
-        setSelectedClassId(classToSelect.id);
-        // Auto-submit on number key press
-        submitMutation.mutate({ action: "label", classId: classToSelect.id });
+      if (index < recentClasses.length) {
+        e.preventDefault();
+        handleSelectClass(recentClasses[index].id);
       }
       return;
     }
 
+    if (isTyping) return;
+
     switch (e.key) {
-      case "Enter":
-        if (selectedClassId) {
-          submitMutation.mutate({ action: "label", classId: selectedClassId });
-        }
-        break;
       case "s":
+        e.preventDefault();
         submitMutation.mutate({ action: "skip" });
         break;
-      case "r":
-        submitMutation.mutate({ action: "review" });
-        break;
       case "ArrowLeft":
+        e.preventDefault();
         if (imageData?.prev_image_id) {
           setCurrentImageId(imageData.prev_image_id);
-          router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.prev_image_id}`);
+          router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.prev_image_id}`, { scroll: false });
         }
         break;
       case "ArrowRight":
+        e.preventDefault();
         if (imageData?.next_image_id) {
           setCurrentImageId(imageData.next_image_id);
-          router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.next_image_id}`);
+          router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.next_image_id}`, { scroll: false });
         }
         break;
-      case "Escape":
-        setSelectedClassId(null);
-        break;
-      case "a":
-        // AI suggest
-        if (!aiSuggestMutation.isPending) {
-          aiSuggestMutation.mutate();
-        }
+      case "/":
+        e.preventDefault();
+        inputRef.current?.focus();
         break;
     }
-  }, [datasetId, currentImageId, selectedClassId, classes, imageData, submitMutation, aiSuggestMutation, router]);
+  }, [datasetId, currentImageId, recentClasses, imageData, submitMutation, handleSelectClass, router]);
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  // No dataset selected
+  // No dataset selected - show dataset selector
   if (!datasetId) {
     return (
-      <div className="space-y-6">
+      <div className="p-6 space-y-6">
         <div>
           <h1 className="text-2xl font-bold">Labeling</h1>
-          <p className="text-muted-foreground">
-            Select a dataset to start labeling images
-          </p>
+          <p className="text-muted-foreground">Select a dataset to start labeling images</p>
         </div>
 
         <Card>
@@ -306,7 +379,7 @@ function CLSLabelingPageContent() {
   // Loading state
   if (queueLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="flex items-center justify-center h-screen">
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
     );
@@ -315,7 +388,7 @@ function CLSLabelingPageContent() {
   // No images in queue
   if (!queue?.image_ids?.length && !currentImageId) {
     return (
-      <div className="space-y-6">
+      <div className="p-6 space-y-6">
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold">Labeling</h1>
@@ -359,9 +432,9 @@ function CLSLabelingPageContent() {
 
   return (
     <TooltipProvider>
-      <div className="h-[calc(100vh-8rem)] flex flex-col">
+      <div className="h-screen flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex justify-between items-center mb-4">
+        <div className="flex-none flex justify-between items-center px-4 py-3 border-b bg-background">
           <div className="flex items-center gap-4">
             <Button
               variant="ghost"
@@ -385,7 +458,6 @@ function CLSLabelingPageContent() {
             {/* Progress */}
             {progress && (
               <div className="flex items-center gap-2 text-sm">
-                <span className="text-muted-foreground">Progress:</span>
                 <Progress value={progress.progress_pct} className="w-32 h-2" />
                 <span className="font-medium">{progress.progress_pct.toFixed(0)}%</span>
               </div>
@@ -412,13 +484,10 @@ function CLSLabelingPageContent() {
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs">
                 <div className="space-y-1 text-xs">
-                  <p><kbd className="px-1 bg-muted rounded">1-9</kbd> Select & save class</p>
-                  <p><kbd className="px-1 bg-muted rounded">Enter</kbd> Save current label</p>
+                  <p><kbd className="px-1 bg-muted rounded">1-9</kbd> Quick select recent class</p>
+                  <p><kbd className="px-1 bg-muted rounded">/</kbd> Focus search</p>
                   <p><kbd className="px-1 bg-muted rounded">S</kbd> Skip image</p>
-                  <p><kbd className="px-1 bg-muted rounded">R</kbd> Mark for review</p>
-                  <p><kbd className="px-1 bg-muted rounded">A</kbd> AI suggest</p>
                   <p><kbd className="px-1 bg-muted rounded">←/→</kbd> Navigate</p>
-                  <p><kbd className="px-1 bg-muted rounded">Esc</kbd> Clear selection</p>
                 </div>
               </TooltipContent>
             </Tooltip>
@@ -426,10 +495,10 @@ function CLSLabelingPageContent() {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 grid grid-cols-[1fr_300px] gap-4 min-h-0">
+        <div className="flex-1 flex min-h-0">
           {/* Image Panel */}
-          <Card className="flex flex-col">
-            <CardContent className="flex-1 p-4 flex items-center justify-center bg-muted/50">
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 p-4 flex items-center justify-center bg-muted/30 min-h-0">
               {imageLoading ? (
                 <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
               ) : imageData?.image ? (
@@ -439,17 +508,17 @@ function CLSLabelingPageContent() {
                     alt={imageData.image.filename}
                     fill
                     className="object-contain"
-                    sizes="(max-width: 1200px) 70vw, 800px"
+                    sizes="(max-width: 1200px) 60vw, 800px"
                     priority
                   />
                 </div>
               ) : (
                 <div className="text-muted-foreground">No image</div>
               )}
-            </CardContent>
+            </div>
 
-            {/* Navigation */}
-            <div className="p-4 border-t flex items-center justify-between">
+            {/* Navigation Bar */}
+            <div className="flex-none p-3 border-t flex items-center justify-between bg-background">
               <Button
                 variant="outline"
                 size="sm"
@@ -457,7 +526,7 @@ function CLSLabelingPageContent() {
                 onClick={() => {
                   if (imageData?.prev_image_id) {
                     setCurrentImageId(imageData.prev_image_id);
-                    router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.prev_image_id}`);
+                    router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.prev_image_id}`, { scroll: false });
                   }
                 }}
               >
@@ -465,7 +534,7 @@ function CLSLabelingPageContent() {
                 Previous
               </Button>
 
-              <span className="text-sm text-muted-foreground">
+              <span className="text-sm text-muted-foreground truncate max-w-[200px]">
                 {imageData?.image?.filename}
               </span>
 
@@ -476,7 +545,7 @@ function CLSLabelingPageContent() {
                 onClick={() => {
                   if (imageData?.next_image_id) {
                     setCurrentImageId(imageData.next_image_id);
-                    router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.next_image_id}`);
+                    router.push(`/classification/labeling?dataset=${datasetId}&image=${imageData.next_image_id}`, { scroll: false });
                   }
                 }}
               >
@@ -484,196 +553,137 @@ function CLSLabelingPageContent() {
                 <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             </div>
-          </Card>
+          </div>
 
-          {/* Classes Panel */}
-          <div className="flex flex-col gap-4">
+          {/* Right Panel - Class Selector */}
+          <div className="w-80 flex-none border-l flex flex-col bg-background">
             {/* Current Label */}
             {imageData?.current_labels && imageData.current_labels.length > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Current Label</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-4 h-4 rounded-full"
-                      style={{ backgroundColor: imageData.current_labels[0]?.class_color }}
-                    />
-                    <span className="font-medium">{imageData.current_labels[0]?.class_name}</span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 ml-auto"
-                      onClick={() => setSelectedClassId(null)}
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+              <div className="flex-none p-3 border-b bg-green-50 dark:bg-green-950/30">
+                <p className="text-xs text-muted-foreground mb-1">Current Label</p>
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: imageData.current_labels[0]?.class_color }}
+                  />
+                  <span className="font-medium">{imageData.current_labels[0]?.class_name}</span>
+                </div>
+              </div>
             )}
 
-            {/* Class List */}
-            <Card className="flex-1 flex flex-col min-h-0">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Classes</CardTitle>
-                <CardDescription>Click or press 1-9 to select</CardDescription>
-              </CardHeader>
-              <CardContent className="flex-1 overflow-y-auto">
-                <div className="space-y-1">
-                  {classes?.map((cls, index) => (
-                    <button
-                      key={cls.id}
-                      className={`w-full flex items-center gap-3 p-2 rounded-lg text-left transition-colors ${
-                        selectedClassId === cls.id
-                          ? "bg-primary text-primary-foreground"
-                          : "hover:bg-muted"
-                      }`}
-                      onClick={() => {
-                        setSelectedClassId(cls.id);
-                        submitMutation.mutate({ action: "label", classId: cls.id });
-                      }}
-                    >
-                      <div
-                        className="w-4 h-4 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: cls.color }}
-                      />
-                      <span className="flex-1 truncate">{cls.display_name || cls.name}</span>
-                      {index < 9 && (
-                        <kbd className={`px-1.5 py-0.5 text-xs rounded ${
-                          selectedClassId === cls.id ? "bg-primary-foreground/20" : "bg-muted"
-                        }`}>
-                          {index + 1}
-                        </kbd>
-                      )}
-                      <span className={`text-xs ${selectedClassId === cls.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                        {cls.image_count}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Actions */}
-            <Card>
-              <CardContent className="p-4">
-                <div className="space-y-2">
-                  <Button
-                    className="w-full"
-                    disabled={!selectedClassId || submitMutation.isPending}
-                    onClick={() => {
-                      if (selectedClassId) {
-                        submitMutation.mutate({ action: "label", classId: selectedClassId });
-                      }
-                    }}
-                  >
-                    {submitMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                    )}
-                    Save Label
-                    <kbd className="ml-2 px-1.5 py-0.5 text-xs bg-primary-foreground/20 rounded">Enter</kbd>
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    className="w-full"
-                    disabled={aiSuggestMutation.isPending}
-                    onClick={() => aiSuggestMutation.mutate()}
-                  >
-                    {aiSuggestMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-4 w-4 mr-2" />
-                    )}
-                    AI Suggest
-                    <kbd className="ml-2 px-1.5 py-0.5 text-xs bg-secondary-foreground/20 rounded">A</kbd>
-                  </Button>
-
-                  {/* AI Suggestions */}
-                  {aiSuggestions.length > 0 && (
-                    <div className="p-2 rounded-lg bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-900">
-                      <p className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-2 flex items-center gap-1">
-                        <Wand2 className="h-3 w-3" />
-                        AI Suggestions
-                      </p>
-                      <div className="space-y-1">
-                        {aiSuggestions.map((suggestion) => (
-                          <button
-                            key={suggestion.class_id}
-                            className={`w-full flex items-center justify-between p-1.5 rounded text-sm transition-colors ${
-                              selectedClassId === suggestion.class_id
-                                ? "bg-purple-200 dark:bg-purple-900/50"
-                                : "hover:bg-purple-100 dark:hover:bg-purple-900/30"
-                            }`}
-                            onClick={() => {
-                              setSelectedClassId(suggestion.class_id);
-                              submitMutation.mutate({ action: "label", classId: suggestion.class_id });
-                            }}
-                          >
-                            <span>{suggestion.class_name}</span>
-                            <Badge variant="outline" className="text-xs">
-                              {(suggestion.confidence * 100).toFixed(0)}%
-                            </Badge>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+            {/* Search/Create Input */}
+            <div className="flex-none p-3 border-b">
+              <Command className="rounded-lg border" shouldFilter={false}>
+                <CommandInput
+                  ref={inputRef}
+                  placeholder="Search or create class..."
+                  value={searchValue}
+                  onValueChange={setSearchValue}
+                />
+                <CommandList className="max-h-none">
+                  {/* Recent Classes */}
+                  {recentClasses.length > 0 && !searchValue && (
+                    <CommandGroup heading="Recent (1-9)">
+                      {recentClasses.map((cls, index) => (
+                        <CommandItem
+                          key={cls.id}
+                          value={cls.id}
+                          onSelect={() => handleSelectClass(cls.id)}
+                          className="cursor-pointer"
+                        >
+                          <div
+                            className="w-3 h-3 rounded-full mr-2"
+                            style={{ backgroundColor: cls.color }}
+                          />
+                          <span className="flex-1">{cls.display_name || cls.name}</span>
+                          <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded">
+                            {index + 1}
+                          </kbd>
+                          <Badge variant="secondary" className="ml-2 text-xs">
+                            {cls.image_count}
+                          </Badge>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
                   )}
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={submitMutation.isPending}
-                      onClick={() => submitMutation.mutate({ action: "skip" })}
-                    >
-                      <SkipForward className="h-4 w-4 mr-2" />
-                      Skip
-                      <kbd className="ml-1 px-1 py-0.5 text-xs bg-muted rounded">S</kbd>
-                    </Button>
+                  {recentClasses.length > 0 && !searchValue && <CommandSeparator />}
 
-                    <Button
-                      variant="outline"
-                      disabled={submitMutation.isPending}
-                      onClick={() => submitMutation.mutate({ action: "review" })}
-                    >
-                      <AlertTriangle className="h-4 w-4 mr-2" />
-                      Review
-                      <kbd className="ml-1 px-1 py-0.5 text-xs bg-muted rounded">R</kbd>
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                  {/* Create New Class Option */}
+                  {searchValue && !exactMatch && (
+                    <CommandGroup heading="Create New">
+                      <CommandItem
+                        onSelect={handleCreateClass}
+                        className="cursor-pointer text-primary"
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        Create &quot;{searchValue}&quot;
+                        {createClassMutation.isPending && (
+                          <Loader2 className="h-3 w-3 ml-2 animate-spin" />
+                        )}
+                      </CommandItem>
+                    </CommandGroup>
+                  )}
+
+                  {searchValue && !exactMatch && filteredClasses.length > 0 && <CommandSeparator />}
+
+                  {/* All/Filtered Classes */}
+                  <CommandGroup heading={searchValue ? "Matching Classes" : "All Classes"}>
+                    {filteredClasses.length === 0 ? (
+                      <CommandEmpty>No classes found</CommandEmpty>
+                    ) : (
+                      filteredClasses.map((cls) => (
+                        <CommandItem
+                          key={cls.id}
+                          value={cls.id}
+                          onSelect={() => handleSelectClass(cls.id)}
+                          className="cursor-pointer"
+                        >
+                          <div
+                            className="w-3 h-3 rounded-full mr-2"
+                            style={{ backgroundColor: cls.color }}
+                          />
+                          <span className="flex-1">{cls.display_name || cls.name}</span>
+                          <Badge variant="secondary" className="text-xs">
+                            {cls.image_count}
+                          </Badge>
+                        </CommandItem>
+                      ))
+                    )}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </div>
 
             {/* Stats */}
             {progress && (
-              <Card>
-                <CardContent className="p-4">
-                  <div className="grid grid-cols-2 gap-2 text-center text-sm">
-                    <div className="p-2 rounded bg-muted">
-                      <p className="text-lg font-bold text-green-600">{progress.completed}</p>
-                      <p className="text-xs text-muted-foreground">Completed</p>
-                    </div>
-                    <div className="p-2 rounded bg-muted">
-                      <p className="text-lg font-bold text-orange-600">{progress.pending}</p>
-                      <p className="text-xs text-muted-foreground">Pending</p>
-                    </div>
-                    <div className="p-2 rounded bg-muted">
-                      <p className="text-lg font-bold text-yellow-600">{progress.review}</p>
-                      <p className="text-xs text-muted-foreground">Review</p>
-                    </div>
-                    <div className="p-2 rounded bg-muted">
-                      <p className="text-lg font-bold text-gray-600">{progress.skipped}</p>
-                      <p className="text-xs text-muted-foreground">Skipped</p>
-                    </div>
+              <div className="flex-none p-3 border-b">
+                <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                  <div className="p-2 rounded bg-muted">
+                    <p className="text-base font-bold text-green-600">{progress.completed + progress.labeled}</p>
+                    <p className="text-muted-foreground">Labeled</p>
                   </div>
-                </CardContent>
-              </Card>
+                  <div className="p-2 rounded bg-muted">
+                    <p className="text-base font-bold text-orange-600">{progress.pending}</p>
+                    <p className="text-muted-foreground">Pending</p>
+                  </div>
+                </div>
+              </div>
             )}
+
+            {/* Quick Actions */}
+            <div className="flex-none p-3 mt-auto border-t">
+              <Button
+                variant="outline"
+                className="w-full"
+                disabled={submitMutation.isPending}
+                onClick={() => submitMutation.mutate({ action: "skip" })}
+              >
+                <SkipForward className="h-4 w-4 mr-2" />
+                Skip
+                <kbd className="ml-auto px-1.5 py-0.5 text-xs bg-muted rounded">S</kbd>
+              </Button>
+            </div>
           </div>
         </div>
       </div>
