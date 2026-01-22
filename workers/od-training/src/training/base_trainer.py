@@ -337,7 +337,8 @@ class SOTABaseTrainer(ABC):
 
     def setup_scheduler(self):
         """Setup learning rate scheduler."""
-        steps_per_epoch = len(self.train_loader) // self.training_config.accumulation_steps
+        # Ensure at least 1 step per epoch to avoid division by zero
+        steps_per_epoch = max(1, len(self.train_loader) // self.training_config.accumulation_steps)
 
         self.scheduler = build_scheduler(
             optimizer=self.optimizer,
@@ -477,7 +478,7 @@ class SOTABaseTrainer(ABC):
                       f"Loss: {loss.item() * self.training_config.accumulation_steps:.4f} - "
                       f"LR: {current_lr:.6f}")
 
-        avg_loss = total_loss / num_batches
+        avg_loss = total_loss / max(1, num_batches)
         current_lr = self.optimizer.param_groups[0]["lr"]
 
         self.history["train_loss"].append(avg_loss)

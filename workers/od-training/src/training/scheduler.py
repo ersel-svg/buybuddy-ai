@@ -74,7 +74,7 @@ class WarmupCosineScheduler(LRScheduler):
         """Calculate learning rate for current step."""
         step = self.last_epoch  # Actually current step
 
-        if step < self.warmup_steps:
+        if step < self.warmup_steps and self.warmup_steps > 0:
             # Linear warmup
             warmup_factor = (step + 1) / self.warmup_steps
             return [base_lr * warmup_factor for base_lr in self.base_lrs]
@@ -126,7 +126,7 @@ class WarmupStepScheduler(LRScheduler):
         """Calculate learning rate for current step."""
         step = self.last_epoch
 
-        if step < self.warmup_steps:
+        if step < self.warmup_steps and self.warmup_steps > 0:
             # Linear warmup
             warmup_factor = (step + 1) / self.warmup_steps
             return [base_lr * warmup_factor for base_lr in self.base_lrs]
@@ -169,7 +169,7 @@ class WarmupLinearScheduler(LRScheduler):
         """Calculate learning rate for current step."""
         step = self.last_epoch
 
-        if step < self.warmup_steps:
+        if step < self.warmup_steps and self.warmup_steps > 0:
             # Linear warmup
             warmup_factor = (step + 1) / self.warmup_steps
             return [base_lr * warmup_factor for base_lr in self.base_lrs]
@@ -280,7 +280,7 @@ def get_lr_at_step(
     Returns:
         Learning rate at step
     """
-    if step < warmup_steps:
+    if step < warmup_steps and warmup_steps > 0:
         return base_lr * (step + 1) / warmup_steps
 
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
