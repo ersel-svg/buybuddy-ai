@@ -20,3 +20,4 @@ ENV TRANSFORMERS_CACHE=/runpod-volume/hf_cache
 # RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32', 'openai')"
 
 CMD ["python", "-u", "handler.py"]
+
