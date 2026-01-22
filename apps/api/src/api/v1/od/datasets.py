@@ -447,12 +447,15 @@ async def update_images_status_bulk(dataset_id: str, image_ids: list[str], statu
     if status == "completed":
         update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Bulk update all images in a single query
-    result = supabase_service.client.table("od_dataset_images").update(
-        update_data
-    ).eq("dataset_id", dataset_id).in_("image_id", image_ids).execute()
-
-    updated_count = len(result.data) if result.data else 0
+    # Bulk update in batches (Supabase has limits on IN clause size)
+    BATCH_SIZE = 100
+    updated_count = 0
+    for i in range(0, len(image_ids), BATCH_SIZE):
+        batch = image_ids[i:i + BATCH_SIZE]
+        result = supabase_service.client.table("od_dataset_images").update(
+            update_data
+        ).eq("dataset_id", dataset_id).in_("image_id", batch).execute()
+        updated_count += len(result.data) if result.data else 0
 
     # Update dataset annotated_image_count
     count = supabase_service.client.table("od_dataset_images").select(
@@ -531,10 +534,15 @@ async def update_images_status_by_filter(
     if new_status == "completed":
         update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Bulk update
-    supabase_service.client.table("od_dataset_images").update(
-        update_data
-    ).eq("dataset_id", dataset_id).in_("image_id", image_ids).execute()
+    # Bulk update in batches (Supabase has limits on IN clause size)
+    BATCH_SIZE = 100
+    total_updated = 0
+    for i in range(0, len(image_ids), BATCH_SIZE):
+        batch = image_ids[i:i + BATCH_SIZE]
+        supabase_service.client.table("od_dataset_images").update(
+            update_data
+        ).eq("dataset_id", dataset_id).in_("image_id", batch).execute()
+        total_updated += len(batch)
 
     # Update dataset annotated_image_count
     count = supabase_service.client.table("od_dataset_images").select(
@@ -545,9 +553,9 @@ async def update_images_status_by_filter(
     }).eq("id", dataset_id).execute()
 
     return {
-        "updated": len(image_ids),
+        "updated": total_updated,
         "status": new_status,
-        "message": f"Updated {len(image_ids)} images to '{new_status}'"
+        "message": f"Updated {total_updated} images to '{new_status}'"
     }
 
 
