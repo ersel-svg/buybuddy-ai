@@ -77,6 +77,7 @@ class CLSClassBase(BaseModel):
 
 
 class CLSClassCreate(CLSClassBase):
+    dataset_id: str
     parent_class_id: Optional[str] = None
 
 

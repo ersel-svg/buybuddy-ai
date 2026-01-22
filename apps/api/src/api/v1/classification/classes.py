@@ -77,16 +77,22 @@ async def get_class(class_id: str):
 
 @router.post("", response_model=CLSClassResponse)
 async def create_class(data: CLSClassCreate):
-    """Create a new classification class."""
-    # Check for duplicate name
-    existing = supabase_service.client.table("cls_classes").select("id").eq("name", data.name).execute()
+    """Create a new classification class for a dataset."""
+    # Check for duplicate name within the same dataset
+    existing = supabase_service.client.table("cls_classes").select("id").eq("dataset_id", data.dataset_id).eq("name", data.name).execute()
 
     if existing.data:
-        raise HTTPException(status_code=409, detail="Class with this name already exists")
+        raise HTTPException(status_code=409, detail="Class with this name already exists in this dataset")
 
     class_data = data.model_dump()
 
     result = supabase_service.client.table("cls_classes").insert(class_data).execute()
+
+    # Update dataset class count
+    try:
+        supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": data.dataset_id}).execute()
+    except Exception as e:
+        logger.warning(f"Failed to update dataset stats: {e}")
 
     return result.data[0]
 

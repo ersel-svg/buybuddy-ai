@@ -283,6 +283,7 @@ export default function CLSDatasetDetailPage({
   const createClassMutation = useMutation({
     mutationFn: async () => {
       return apiClient.createCLSClass({
+        dataset_id: datasetId,
         name: formName,
         display_name: formDisplayName || undefined,
         color: formColor,

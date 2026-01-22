@@ -3285,11 +3285,12 @@ class ApiClient {
   }
 
   async createCLSClass(data: {
+    dataset_id: string;
     name: string;
     display_name?: string;
     description?: string;
     color?: string;
-  }): Promise<{ id: string; name: string }> {
+  }): Promise<{ id: string; name: string; dataset_id: string }> {
     return this.request("/api/v1/classification/classes", { method: "POST", body: data });
   }
 

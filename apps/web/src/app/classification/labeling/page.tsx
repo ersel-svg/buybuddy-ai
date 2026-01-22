@@ -116,40 +116,25 @@ function CLSLabelingPageContent() {
     staleTime: 60000,
   });
 
-  // Fetch all classes
-  const { data: allClasses, refetch: refetchClasses } = useQuery({
-    queryKey: ["cls-classes"],
-    queryFn: () => apiClient.getCLSClasses(),
-    staleTime: 30000,
-  });
-
-  // Fetch dataset-specific class counts
-  const { data: datasetClasses } = useQuery({
+  // Fetch dataset classes (classes are now dataset-specific)
+  const { data: classes, refetch: refetchClasses } = useQuery({
     queryKey: ["cls-dataset-classes", datasetId],
     queryFn: () => apiClient.getCLSDatasetClasses(datasetId!),
     enabled: !!datasetId,
     staleTime: 30000,
   });
 
-  // Merge class data - use allClasses but with dataset-specific counts
-  const classes = useMemo(() => {
-    if (!allClasses) return [];
-    const countMap = new Map(datasetClasses?.map(c => [c.id, c.image_count]) || []);
-    return allClasses.map(c => ({
-      ...c,
-      image_count: countMap.get(c.id) || 0,
-    }));
-  }, [allClasses, datasetClasses]);
-
   // Recent classes with full data
   const recentClasses = useMemo(() => {
+    if (!classes) return [];
     return recentClassIds
       .map(id => classes.find(c => c.id === id))
-      .filter(Boolean) as typeof classes;
+      .filter(Boolean) as NonNullable<typeof classes>;
   }, [recentClassIds, classes]);
 
   // Filtered classes based on search
   const filteredClasses = useMemo(() => {
+    if (!classes) return [];
     if (!searchValue.trim()) return classes;
     const search = searchValue.toLowerCase();
     return classes.filter(c => 
@@ -160,7 +145,7 @@ function CLSLabelingPageContent() {
 
   // Check if search value matches any existing class
   const exactMatch = useMemo(() => {
-    if (!searchValue.trim()) return null;
+    if (!classes || !searchValue.trim()) return null;
     const search = searchValue.toLowerCase().trim();
     return classes.find(c => 
       c.name.toLowerCase() === search ||
@@ -201,9 +186,10 @@ function CLSLabelingPageContent() {
   // Create class mutation
   const createClassMutation = useMutation({
     mutationFn: (name: string) => apiClient.createCLSClass({
+      dataset_id: datasetId!,
       name: name.toLowerCase().replace(/\s+/g, '_'),
       display_name: name,
-      color: CLASS_COLORS[classes.length % CLASS_COLORS.length],
+      color: CLASS_COLORS[(classes?.length || 0) % CLASS_COLORS.length],
     }),
     onSuccess: (newClass) => {
       toast.success(`Class "${newClass.name}" created`);
