@@ -872,15 +872,31 @@ function ProductsPageContent() {
     mutationFn: ({ datasetId, filters }: { datasetId: string; filters: ExportFilters }) =>
       apiClient.addFilteredProductsToDataset(datasetId, filters),
     onSuccess: (result) => {
-      toast.success(`${result.added_count} product(s) added to dataset`);
+      const added = result.added_count || 0;
+      const skipped = result.skipped_count || 0;
+      const total = result.total_matching || added;
+      const durationSec = result.duration_ms ? (result.duration_ms / 1000).toFixed(1) : null;
+      
+      if (skipped > 0) {
+        toast.success(
+          `Added ${added} product(s) to dataset (${skipped} already existed)` +
+          (durationSec ? ` in ${durationSec}s` : "")
+        );
+      } else {
+        toast.success(
+          `${added} product(s) added to dataset` +
+          (durationSec ? ` in ${durationSec}s` : "")
+        );
+      }
+      
       setSelectedIds(new Set());
       setSelectAllFilteredMode(false);
       setDatasetDialogOpen(false);
       resetDatasetDialog();
       queryClient.invalidateQueries({ queryKey: ["datasets"] });
     },
-    onError: () => {
-      toast.error("Failed to add products to dataset");
+    onError: (error: Error) => {
+      toast.error(`Failed to add products to dataset: ${error.message}`);
     },
   });
 

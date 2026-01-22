@@ -333,6 +333,9 @@ async def add_products_to_dataset(
     Supports two modes:
     1. product_ids: Add specific products by their IDs
     2. filters: Add all products matching filter criteria (for "Select All Filtered")
+    
+    Filter mode uses a server-side RPC function for efficient bulk insert
+    that handles 10K+ products without timeout.
     """
     existing = await db.get_dataset(dataset_id)
     if not existing:
@@ -350,10 +353,16 @@ async def add_products_to_dataset(
         added_count = await db.add_products_to_dataset(dataset_id, request.product_ids)
         return {"added_count": added_count}
 
-    # Mode 2: Add all products matching filters
+    # Mode 2: Add all products matching filters (uses RPC for performance)
     if request.filters:
-        added_count = await db.add_filtered_products_to_dataset(dataset_id, request.filters)
-        return {"added_count": added_count}
+        result = await db.add_filtered_products_to_dataset(dataset_id, request.filters)
+        # Return full result with additional stats
+        return {
+            "added_count": result.get("added_count", 0),
+            "skipped_count": result.get("skipped_count", 0),
+            "total_matching": result.get("total_matching", 0),
+            "duration_ms": result.get("duration_ms"),
+        }
 
     return {"added_count": 0}
 

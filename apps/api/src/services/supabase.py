@@ -403,25 +403,24 @@ class SupabaseService:
         Get products by barcode values.
 
         Used for bulk update matching.
+        Uses SQL IN clause for efficient querying.
         """
         if not barcodes:
             return []
 
-        # Normalize barcodes for case-insensitive matching
-        normalized = [b.strip().lower() for b in barcodes if b]
+        # Clean barcodes (strip whitespace, filter empty)
+        clean_barcodes = [b.strip() for b in barcodes if b and b.strip()]
+        if not clean_barcodes:
+            return []
 
+        # Use IN clause for efficient SQL filtering
         response = (
             self.client.table("products")
             .select("*")
+            .in_("barcode", clean_barcodes)
             .execute()
         )
-
-        # Filter by normalized barcode (case-insensitive)
-        products = [
-            p for p in (response.data or [])
-            if p.get("barcode", "").strip().lower() in normalized
-        ]
-        return products
+        return response.data or []
 
     async def get_identifiers_for_products(
         self,
@@ -1990,84 +1989,186 @@ class SupabaseService:
 
     async def add_filtered_products_to_dataset(
         self, dataset_id: str, filters: dict
-    ) -> int:
-        """Add all products matching filters to dataset.
+    ) -> dict:
+        """Add all products matching filters to dataset using server-side RPC.
 
         This is used for "Select All Filtered" feature where user wants to add
         all products matching current filter criteria across all pages.
+        
+        Uses a PostgreSQL RPC function for efficient bulk insert that handles
+        10K+ products without timeout or memory issues.
+        
+        Returns:
+            dict with keys: added_count, skipped_count, total_matching, duration_ms
         """
-        # Build query to get all matching product IDs
-        query = self.client.table("products").select("id")
-
-        # Apply filters
+        # Convert filters to the format expected by the RPC function
+        rpc_filters = {}
+        
+        # Search filter
         if filters.get("search"):
-            search = filters["search"]
-            query = query.or_(
-                f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
-            )
-
-        if filters.get("status"):
-            status_list = filters["status"] if isinstance(filters["status"], list) else filters["status"].split(",")
-            query = query.in_("status", status_list)
-
-        if filters.get("category"):
-            cat_list = filters["category"] if isinstance(filters["category"], list) else filters["category"].split(",")
-            query = query.in_("category", cat_list)
-
-        if filters.get("brand"):
-            brand_list = filters["brand"] if isinstance(filters["brand"], list) else filters["brand"].split(",")
-            query = query.in_("brand_name", brand_list)
-
-        if filters.get("sub_brand"):
-            sub_list = filters["sub_brand"] if isinstance(filters["sub_brand"], list) else filters["sub_brand"].split(",")
-            query = query.in_("sub_brand", sub_list)
-
-        if filters.get("product_name"):
-            pn_list = filters["product_name"] if isinstance(filters["product_name"], list) else filters["product_name"].split(",")
-            query = query.in_("product_name", pn_list)
-
-        if filters.get("variant_flavor"):
-            vf_list = filters["variant_flavor"] if isinstance(filters["variant_flavor"], list) else filters["variant_flavor"].split(",")
-            query = query.in_("variant_flavor", vf_list)
-
-        if filters.get("container_type"):
-            ct_list = filters["container_type"] if isinstance(filters["container_type"], list) else filters["container_type"].split(",")
-            query = query.in_("container_type", ct_list)
-
-        if filters.get("net_quantity"):
-            nq_list = filters["net_quantity"] if isinstance(filters["net_quantity"], list) else filters["net_quantity"].split(",")
-            query = query.in_("net_quantity", nq_list)
-
-        if filters.get("manufacturer_country"):
-            mc_list = filters["manufacturer_country"] if isinstance(filters["manufacturer_country"], list) else filters["manufacturer_country"].split(",")
-            query = query.in_("manufacturer_country", mc_list)
-
+            rpc_filters["search"] = filters["search"]
+        
+        # Array filters - ensure they are lists
+        array_filter_keys = [
+            "status", "category", "brand", "sub_brand", "product_name",
+            "variant_flavor", "container_type", "net_quantity", 
+            "pack_type", "manufacturer_country"
+        ]
+        
+        for key in array_filter_keys:
+            if filters.get(key):
+                value = filters[key]
+                if isinstance(value, str):
+                    rpc_filters[key] = value.split(",")
+                elif isinstance(value, list):
+                    rpc_filters[key] = value
+        
         # Boolean filters
-        if filters.get("has_video") is True:
-            query = query.not_.is_("video_url", "null")
-        elif filters.get("has_video") is False:
-            query = query.is_("video_url", "null")
-
-        if filters.get("has_image") is True:
-            query = query.not_.is_("primary_image_url", "null")
-        elif filters.get("has_image") is False:
-            query = query.is_("primary_image_url", "null")
-
+        if filters.get("has_video") is not None:
+            rpc_filters["has_video"] = str(filters["has_video"]).lower()
+        if filters.get("has_image") is not None:
+            rpc_filters["has_image"] = str(filters["has_image"]).lower()
+        
         # Range filters
         if filters.get("frame_count_min") is not None:
-            query = query.gte("frame_count", filters["frame_count_min"])
+            rpc_filters["frame_count_min"] = filters["frame_count_min"]
         if filters.get("frame_count_max") is not None:
-            query = query.lte("frame_count", filters["frame_count_max"])
+            rpc_filters["frame_count_max"] = filters["frame_count_max"]
+        
+        try:
+            # Call the RPC function
+            response = self.client.rpc(
+                "bulk_add_filtered_products_to_dataset",
+                {
+                    "p_dataset_id": dataset_id,
+                    "p_filters": rpc_filters
+                }
+            ).execute()
+            
+            if response.data:
+                result = response.data
+                logger.info(
+                    f"Bulk add to dataset {dataset_id}: "
+                    f"added={result.get('added_count', 0)}, "
+                    f"skipped={result.get('skipped_count', 0)}, "
+                    f"total={result.get('total_matching', 0)}, "
+                    f"duration={result.get('duration_ms', 0)}ms"
+                )
+                return result
+            
+            return {"added_count": 0, "skipped_count": 0, "total_matching": 0}
+            
+        except Exception as e:
+            logger.error(f"RPC bulk_add_filtered_products_to_dataset failed: {e}")
+            # Fallback to pagination-based approach if RPC fails
+            logger.info("Falling back to pagination-based bulk add...")
+            return await self._add_filtered_products_to_dataset_fallback(dataset_id, filters)
+    
+    async def _add_filtered_products_to_dataset_fallback(
+        self, dataset_id: str, filters: dict
+    ) -> dict:
+        """Fallback method using pagination when RPC is not available."""
+        all_product_ids = []
+        page_size = 1000
+        offset = 0
+        
+        while True:
+            # Build query with pagination
+            query = self.client.table("products").select("id")
+            
+            # Apply filters
+            if filters.get("search"):
+                search = filters["search"]
+                query = query.or_(
+                    f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
+                )
 
-        # Execute query to get all matching IDs
-        response = query.execute()
-        product_ids = [item["id"] for item in response.data]
+            if filters.get("status"):
+                status_list = filters["status"] if isinstance(filters["status"], list) else filters["status"].split(",")
+                query = query.in_("status", status_list)
 
-        if not product_ids:
-            return 0
+            if filters.get("category"):
+                cat_list = filters["category"] if isinstance(filters["category"], list) else filters["category"].split(",")
+                query = query.in_("category", cat_list)
 
-        # Use existing method to add products (handles duplicates)
-        return await self.add_products_to_dataset(dataset_id, product_ids)
+            if filters.get("brand"):
+                brand_list = filters["brand"] if isinstance(filters["brand"], list) else filters["brand"].split(",")
+                query = query.in_("brand_name", brand_list)
+
+            if filters.get("sub_brand"):
+                sub_list = filters["sub_brand"] if isinstance(filters["sub_brand"], list) else filters["sub_brand"].split(",")
+                query = query.in_("sub_brand", sub_list)
+
+            if filters.get("product_name"):
+                pn_list = filters["product_name"] if isinstance(filters["product_name"], list) else filters["product_name"].split(",")
+                query = query.in_("product_name", pn_list)
+
+            if filters.get("variant_flavor"):
+                vf_list = filters["variant_flavor"] if isinstance(filters["variant_flavor"], list) else filters["variant_flavor"].split(",")
+                query = query.in_("variant_flavor", vf_list)
+
+            if filters.get("container_type"):
+                ct_list = filters["container_type"] if isinstance(filters["container_type"], list) else filters["container_type"].split(",")
+                query = query.in_("container_type", ct_list)
+
+            if filters.get("net_quantity"):
+                nq_list = filters["net_quantity"] if isinstance(filters["net_quantity"], list) else filters["net_quantity"].split(",")
+                query = query.in_("net_quantity", nq_list)
+            
+            if filters.get("pack_type"):
+                pt_list = filters["pack_type"] if isinstance(filters["pack_type"], list) else filters["pack_type"].split(",")
+                query = query.in_("pack_type", pt_list)
+
+            if filters.get("manufacturer_country"):
+                mc_list = filters["manufacturer_country"] if isinstance(filters["manufacturer_country"], list) else filters["manufacturer_country"].split(",")
+                query = query.in_("manufacturer_country", mc_list)
+
+            # Boolean filters
+            if filters.get("has_video") is True:
+                query = query.not_.is_("video_url", "null")
+            elif filters.get("has_video") is False:
+                query = query.is_("video_url", "null")
+
+            if filters.get("has_image") is True:
+                query = query.not_.is_("primary_image_url", "null")
+            elif filters.get("has_image") is False:
+                query = query.is_("primary_image_url", "null")
+
+            # Range filters
+            if filters.get("frame_count_min") is not None:
+                query = query.gte("frame_count", filters["frame_count_min"])
+            if filters.get("frame_count_max") is not None:
+                query = query.lte("frame_count", filters["frame_count_max"])
+
+            # Apply pagination
+            query = query.range(offset, offset + page_size - 1)
+            
+            response = query.execute()
+            
+            if not response.data:
+                break
+            
+            all_product_ids.extend([item["id"] for item in response.data])
+            
+            if len(response.data) < page_size:
+                break
+            
+            offset += page_size
+            logger.debug(f"Fetched {len(all_product_ids)} product IDs so far...")
+
+        if not all_product_ids:
+            return {"added_count": 0, "skipped_count": 0, "total_matching": 0}
+
+        total_matching = len(all_product_ids)
+        
+        # Use existing method to add products (handles duplicates and batching)
+        added_count = await self.add_products_to_dataset(dataset_id, all_product_ids)
+        
+        return {
+            "added_count": added_count,
+            "skipped_count": total_matching - added_count,
+            "total_matching": total_matching
+        }
 
     async def remove_product_from_dataset(
         self, dataset_id: str, product_id: str

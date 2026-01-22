@@ -719,8 +719,18 @@ class ApiClient {
   async addFilteredProductsToDataset(
     datasetId: string,
     filters: ExportFilters
-  ): Promise<{ added_count: number }> {
-    return this.request<{ added_count: number }>(
+  ): Promise<{ 
+    added_count: number; 
+    skipped_count?: number; 
+    total_matching?: number;
+    duration_ms?: number;
+  }> {
+    return this.request<{ 
+      added_count: number; 
+      skipped_count?: number; 
+      total_matching?: number;
+      duration_ms?: number;
+    }>(
       `/api/v1/datasets/${datasetId}/products`,
       {
         method: "POST",
