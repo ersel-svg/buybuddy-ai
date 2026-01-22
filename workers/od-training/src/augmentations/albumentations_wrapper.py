@@ -85,7 +85,7 @@ def build_albumentations_pipeline(
             A.Rotate(
                 limit=limit,
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.random_rotate.prob,
             )
         )
@@ -96,7 +96,7 @@ def build_albumentations_pipeline(
             A.SafeRotate(
                 limit=limit,
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.safe_rotate.prob,
             )
         )
@@ -109,7 +109,7 @@ def build_albumentations_pipeline(
                 scale_limit=params.get("scale_limit", 0.2),
                 rotate_limit=params.get("rotate_limit", 10),
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.shift_scale_rotate.prob,
             )
         )
@@ -121,8 +121,8 @@ def build_albumentations_pipeline(
                 scale=params.get("scale", (0.9, 1.1)),
                 translate_percent=params.get("translate_percent", 0.1),
                 shear=params.get("shear", 10),
-                mode=cv2.BORDER_CONSTANT,
-                cval=(114, 114, 114),
+                border_mode=cv2.BORDER_CONSTANT,
+                fill=(114, 114, 114),
                 p=preset.affine.prob,
             )
         )
@@ -133,8 +133,8 @@ def build_albumentations_pipeline(
         transforms.append(
             A.Perspective(
                 scale=scale,
-                pad_mode=cv2.BORDER_CONSTANT,
-                pad_val=(114, 114, 114),
+                border_mode=cv2.BORDER_CONSTANT,
+                fill=(114, 114, 114),
                 p=preset.perspective.prob,
             )
         )
@@ -167,7 +167,7 @@ def build_albumentations_pipeline(
                 num_steps=params.get("num_steps", 5),
                 distort_limit=params.get("distort_limit", 0.3),
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.grid_distortion.prob,
             )
         )
@@ -179,7 +179,7 @@ def build_albumentations_pipeline(
                 alpha=params.get("alpha", 50),
                 sigma=params.get("sigma", 5),
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.elastic_transform.prob,
             )
         )
@@ -191,7 +191,7 @@ def build_albumentations_pipeline(
                 distort_limit=params.get("distort_limit", 0.3),
                 shift_limit=params.get("shift_limit", 0.1),
                 border_mode=cv2.BORDER_CONSTANT,
-                value=(114, 114, 114),
+                fill=(114, 114, 114),
                 p=preset.optical_distortion.prob,
             )
         )
@@ -203,8 +203,6 @@ def build_albumentations_pipeline(
                 scale=params.get("scale", 0.03),
                 nb_rows=params.get("nb_rows", 4),
                 nb_cols=params.get("nb_cols", 4),
-                mode="constant",
-                cval=(114, 114, 114),
                 p=preset.piecewise_affine.prob,
             )
         )
@@ -435,10 +433,15 @@ def build_albumentations_pipeline(
 
     if preset.gaussian_noise.enabled:
         params = preset.gaussian_noise.params
+        # Convert var_limit to std_range (sqrt of variance)
         var_limit = params.get("var_limit", (10.0, 50.0))
+        if isinstance(var_limit, (list, tuple)):
+            std_range = (var_limit[0] ** 0.5 / 255.0, var_limit[1] ** 0.5 / 255.0)
+        else:
+            std_range = (0.0, (var_limit ** 0.5) / 255.0)
         transforms.append(
             A.GaussNoise(
-                var_limit=var_limit,
+                std_range=std_range,
                 p=preset.gaussian_noise.prob,
             )
         )
@@ -468,20 +471,22 @@ def build_albumentations_pipeline(
 
     if preset.image_compression.enabled:
         params = preset.image_compression.params
+        quality_lower = params.get("quality_lower", 70)
+        quality_upper = params.get("quality_upper", 95)
         transforms.append(
             A.ImageCompression(
-                quality_lower=params.get("quality_lower", 70),
-                quality_upper=params.get("quality_upper", 95),
+                quality_range=(quality_lower, quality_upper),
                 p=preset.image_compression.prob,
             )
         )
 
     if preset.downscale.enabled:
         params = preset.downscale.params
+        scale_min = params.get("scale_min", 0.5)
+        scale_max = params.get("scale_max", 0.9)
         transforms.append(
             A.Downscale(
-                scale_min=params.get("scale_min", 0.5),
-                scale_max=params.get("scale_max", 0.9),
+                scale_range=(scale_min, scale_max),
                 p=preset.downscale.prob,
             )
         )
@@ -492,24 +497,29 @@ def build_albumentations_pipeline(
 
     if preset.coarse_dropout.enabled:
         params = preset.coarse_dropout.params
+        max_holes = params.get("max_holes", 8)
+        max_height = params.get("max_height", 32)
+        max_width = params.get("max_width", 32)
+        fill_val = params.get("fill_value", 114)
         transforms.append(
             A.CoarseDropout(
-                max_holes=params.get("max_holes", 8),
-                max_height=params.get("max_height", 32),
-                max_width=params.get("max_width", 32),
-                fill_value=params.get("fill_value", 114),
+                num_holes_range=(1, max_holes),
+                hole_height_range=(8, max_height),
+                hole_width_range=(8, max_width),
+                fill=(fill_val, fill_val, fill_val) if isinstance(fill_val, int) else fill_val,
                 p=preset.coarse_dropout.prob,
             )
         )
 
     if preset.grid_dropout.enabled:
         params = preset.grid_dropout.params
+        unit_min = params.get("unit_size_min", 10)
+        unit_max = params.get("unit_size_max", 40)
         transforms.append(
             A.GridDropout(
                 ratio=params.get("ratio", 0.3),
-                unit_size_min=params.get("unit_size_min", 10),
-                unit_size_max=params.get("unit_size_max", 40),
-                fill_value=114,
+                unit_size_range=(unit_min, unit_max),
+                fill=(114, 114, 114),
                 p=preset.grid_dropout.prob,
             )
         )
@@ -531,10 +541,11 @@ def build_albumentations_pipeline(
 
     if preset.random_rain.enabled:
         params = preset.random_rain.params
+        slant_lower = params.get("slant_lower", -10)
+        slant_upper = params.get("slant_upper", 10)
         transforms.append(
             A.RandomRain(
-                slant_lower=params.get("slant_lower", -10),
-                slant_upper=params.get("slant_upper", 10),
+                slant_range=(slant_lower, slant_upper),
                 drop_length=params.get("drop_length", 20),
                 drop_width=params.get("drop_width", 1),
                 blur_value=params.get("blur_value", 5),
@@ -544,10 +555,11 @@ def build_albumentations_pipeline(
 
     if preset.random_fog.enabled:
         params = preset.random_fog.params
+        fog_lower = params.get("fog_coef_lower", 0.1)
+        fog_upper = params.get("fog_coef_upper", 0.3)
         transforms.append(
             A.RandomFog(
-                fog_coef_lower=params.get("fog_coef_lower", 0.1),
-                fog_coef_upper=params.get("fog_coef_upper", 0.3),
+                fog_coef_range=(fog_lower, fog_upper),
                 alpha_coef=params.get("alpha_coef", 0.08),
                 p=preset.random_fog.prob,
             )
@@ -555,21 +567,23 @@ def build_albumentations_pipeline(
 
     if preset.random_shadow.enabled:
         params = preset.random_shadow.params
+        num_lower = params.get("num_shadows_lower", 1)
+        num_upper = params.get("num_shadows_upper", 2)
         transforms.append(
             A.RandomShadow(
-                num_shadows_lower=params.get("num_shadows_lower", 1),
-                num_shadows_upper=params.get("num_shadows_upper", 2),
+                num_shadows_limit=(num_lower, num_upper),
                 p=preset.random_shadow.prob,
             )
         )
 
     if preset.random_sun_flare.enabled:
         params = preset.random_sun_flare.params
+        num_lower = params.get("num_flare_circles_lower", 3)
+        num_upper = params.get("num_flare_circles_upper", 7)
         transforms.append(
             A.RandomSunFlare(
                 src_radius=params.get("src_radius", 100),
-                num_flare_circles_lower=params.get("num_flare_circles_lower", 3),
-                num_flare_circles_upper=params.get("num_flare_circles_upper", 7),
+                num_flare_circles_range=(num_lower, num_upper),
                 p=preset.random_sun_flare.prob,
             )
         )
@@ -609,7 +623,7 @@ def build_albumentations_pipeline(
             min_height=img_size,
             min_width=img_size,
             border_mode=cv2.BORDER_CONSTANT,
-            value=(114, 114, 114),  # Gray padding
+            fill=(114, 114, 114),  # Gray padding
         )
     )
 
@@ -660,7 +674,7 @@ def build_val_pipeline(
             min_height=img_size,
             min_width=img_size,
             border_mode=cv2.BORDER_CONSTANT,
-            value=(114, 114, 114),
+            fill=(114, 114, 114),
         ),
     ]
 
