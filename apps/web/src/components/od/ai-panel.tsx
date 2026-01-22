@@ -406,7 +406,7 @@ export function AIPanel({
           {/* Detect button */}
           <Button
             onClick={handleDetect}
-            disabled={isLoading || !textPrompt.trim()}
+            disabled={isLoading || (requiresPrompt && !textPrompt.trim())}
             className="w-full h-8"
             size="sm"
           >
