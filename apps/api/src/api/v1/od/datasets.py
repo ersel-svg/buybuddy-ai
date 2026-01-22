@@ -48,14 +48,43 @@ async def get_dataset_images(
     limit: int = 50,
     status: Optional[str] = None,
     split: Optional[str] = None,
+    merchant_ids: Optional[str] = None,
+    store_ids: Optional[str] = None,
 ):
-    """Get images in a dataset with their annotation counts."""
+    """Get images in a dataset with their annotation counts.
+
+    Args:
+        merchant_ids: Comma-separated merchant IDs to filter by
+        store_ids: Comma-separated store IDs to filter by
+    """
     offset = (page - 1) * limit
 
     # Verify dataset exists
     dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
     if not dataset.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # If filtering by merchant/store, first get the matching image IDs
+    filtered_image_ids = None
+    if merchant_ids or store_ids:
+        img_query = supabase_service.client.table("od_images").select("id")
+
+        if merchant_ids:
+            merchant_list = [int(m.strip()) for m in merchant_ids.split(",") if m.strip().isdigit()]
+            if merchant_list:
+                img_query = img_query.in_("merchant_id", merchant_list)
+
+        if store_ids:
+            store_list = [int(s.strip()) for s in store_ids.split(",") if s.strip().isdigit()]
+            if store_list:
+                img_query = img_query.in_("store_id", store_list)
+
+        img_result = img_query.execute()
+        filtered_image_ids = [r["id"] for r in (img_result.data or [])]
+
+        if not filtered_image_ids:
+            # No images match the filter, return empty
+            return {"images": [], "total": 0, "page": page, "limit": limit}
 
     # Build query for dataset_images with joined image data
     query = supabase_service.client.table("od_dataset_images").select(
@@ -67,6 +96,41 @@ async def get_dataset_images(
         query = query.eq("status", status)
     if split:
         query = query.eq("split", split)
+
+    # Apply image ID filter if merchant/store filter was used
+    if filtered_image_ids is not None:
+        # Batch the IN clause to avoid URL length limits
+        BATCH_SIZE = 100
+        if len(filtered_image_ids) <= BATCH_SIZE:
+            query = query.in_("image_id", filtered_image_ids)
+        else:
+            # For large filters, we need to fetch all and filter in Python
+            # This is less efficient but avoids URL limits
+            all_results = []
+            filtered_set = set(filtered_image_ids)
+
+            # Fetch without image_id filter
+            base_query = supabase_service.client.table("od_dataset_images").select(
+                "*, image:od_images(*)"
+            ).eq("dataset_id", dataset_id)
+            if status:
+                base_query = base_query.eq("status", status)
+            if split:
+                base_query = base_query.eq("split", split)
+
+            all_data = base_query.execute()
+            all_results = [r for r in (all_data.data or []) if r.get("image_id") in filtered_set]
+
+            # Manual pagination
+            total = len(all_results)
+            paginated = all_results[offset:offset + limit]
+
+            return {
+                "images": paginated,
+                "total": total,
+                "page": page,
+                "limit": limit,
+            }
 
     query = query.order("added_at", desc=True).range(offset, offset + limit - 1)
     result = query.execute()
