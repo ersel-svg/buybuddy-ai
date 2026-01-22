@@ -124,6 +124,11 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
   const [bbStoreId, setBbStoreId] = useState<string>("");
   const [bbIsAnnotated, setBbIsAnnotated] = useState<boolean | undefined>(undefined);
   const [bbIsApproved, setBbIsApproved] = useState<boolean | undefined>(undefined);
+  // BuyBuddy job tracking state
+  const [bbSyncJobId, setBbSyncJobId] = useState<string | null>(null);
+  const [bbSyncProgress, setBbSyncProgress] = useState(0);
+  const [bbSyncStatus, setBbSyncStatus] = useState<string | null>(null);
+  const [bbSyncMessage, setBbSyncMessage] = useState<string | null>(null);
 
   // Roboflow Tab State
   const [rfApiKey, setRfApiKey] = useState("");
@@ -207,14 +212,50 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
     enabled: open && activeTab === "buybuddy" && bbStatus?.accessible === true,
   });
 
-  // BuyBuddy sync mutation
-  const bbSyncMutation = useMutation({
-    mutationFn: async () => {
-      return apiClient.syncFromBuyBuddy({
+  // BuyBuddy sync mutation (job-based with progress tracking)
+  type BbSyncResult = { synced: number; skipped: number; total_found: number; errors?: string[] };
+  const bbSyncMutation = useMutation<BbSyncResult, Error, void>({
+    mutationFn: async (): Promise<BbSyncResult> => {
+      // Start the sync job
+      const response = await apiClient.syncFromBuyBuddy({
         ...bbFilterParams,
         max_images: bbMaxImages,
         dataset_id: datasetId,
         tags: bbFolder ? [bbFolder] : undefined,
+      });
+
+      // Set job ID and start polling
+      setBbSyncJobId(response.job_id);
+      setBbSyncProgress(0);
+      setBbSyncStatus("fetching");
+      setBbSyncMessage("Starting sync...");
+
+      // Poll for status every 2 seconds
+      return new Promise<BbSyncResult>((resolve, reject) => {
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await apiClient.getBuyBuddySyncStatus(response.job_id);
+            setBbSyncProgress(status.progress);
+            setBbSyncStatus(status.result?.stage || status.status);
+            setBbSyncMessage(status.result?.message || null);
+
+            if (status.status === "completed") {
+              clearInterval(pollInterval);
+              resolve({
+                synced: status.result?.synced || 0,
+                skipped: status.result?.skipped || 0,
+                total_found: status.result?.total_found || 0,
+                errors: status.result?.errors,
+              });
+            } else if (status.status === "failed") {
+              clearInterval(pollInterval);
+              reject(new Error(status.error || "Sync failed"));
+            }
+          } catch (err) {
+            clearInterval(pollInterval);
+            reject(err);
+          }
+        }, 2000);
       });
     },
     onSuccess: (data) => {
@@ -227,10 +268,18 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
       if (datasetId) {
         queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
       }
+      setBbSyncJobId(null);
+      setBbSyncProgress(0);
+      setBbSyncStatus(null);
+      setBbSyncMessage(null);
       onSuccess?.();
     },
     onError: (error) => {
       toast.error(`Sync failed: ${error}`);
+      setBbSyncJobId(null);
+      setBbSyncProgress(0);
+      setBbSyncStatus(null);
+      setBbSyncMessage(null);
     },
   });
 
@@ -1683,6 +1732,20 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                   )}
                 </div>
 
+                {/* Progress indicator when syncing */}
+                {bbSyncJobId && (
+                  <div className="space-y-3 p-4 bg-muted rounded-lg">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground capitalize">{bbSyncStatus || "Processing"}</span>
+                      <span className="font-medium">{bbSyncProgress}%</span>
+                    </div>
+                    <Progress value={bbSyncProgress} />
+                    {bbSyncMessage && (
+                      <p className="text-xs text-muted-foreground">{bbSyncMessage}</p>
+                    )}
+                  </div>
+                )}
+
                 {/* Sync Button */}
                 <Button
                   className="w-full"
@@ -1692,7 +1755,11 @@ export function ImportModal({ open, onOpenChange, datasetId, onSuccess }: Import
                   {bbSyncMutation.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Syncing...
+                      {bbSyncStatus === "fetching" ? "Fetching from BuyBuddy..." :
+                       bbSyncStatus === "checking" ? "Checking duplicates..." :
+                       bbSyncStatus === "syncing" ? `Syncing... ${bbSyncProgress}%` :
+                       bbSyncStatus === "linking" ? "Adding to dataset..." :
+                       "Syncing..."}
                     </>
                   ) : (
                     <>
