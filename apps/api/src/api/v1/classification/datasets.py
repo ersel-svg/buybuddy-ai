@@ -98,6 +98,43 @@ async def delete_dataset(dataset_id: str):
 
 
 # ===========================================
+# Dataset Classes
+# ===========================================
+
+@router.get("/{dataset_id}/classes")
+async def get_dataset_classes(dataset_id: str):
+    """Get all active classes with image counts for this dataset.
+    
+    Classes are global but image_count is dataset-specific.
+    """
+    # Get all active classes
+    result = supabase_service.client.table("cls_classes").select(
+        "id, name, display_name, color, is_active"
+    ).eq("is_active", True).order("name").execute()
+    
+    classes = result.data or []
+    
+    # Get image counts per class for this specific dataset
+    if classes:
+        class_ids = [c["id"] for c in classes]
+        labels_result = supabase_service.client.table("cls_labels").select(
+            "class_id"
+        ).eq("dataset_id", dataset_id).in_("class_id", class_ids).execute()
+        
+        # Count labels per class
+        counts = {}
+        for label in labels_result.data or []:
+            cid = label["class_id"]
+            counts[cid] = counts.get(cid, 0) + 1
+        
+        # Add counts to classes
+        for cls in classes:
+            cls["image_count"] = counts.get(cls["id"], 0)
+    
+    return classes
+
+
+# ===========================================
 # Dataset Images
 # ===========================================
 

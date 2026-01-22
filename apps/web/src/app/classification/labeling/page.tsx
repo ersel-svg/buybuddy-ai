@@ -66,7 +66,7 @@ function CLSLabelingPageContent() {
   // State
   const [currentImageId, setCurrentImageId] = useState<string | null>(imageIdParam);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
-  const [queueMode, setQueueMode] = useState<"unlabeled" | "all" | "review">("unlabeled");
+  const [queueMode, setQueueMode] = useState<"unlabeled" | "all" | "review">("all");
   const [aiSuggestions, setAiSuggestions] = useState<Array<{ class_id: string; class_name: string; confidence: number }>>([]);
 
   // Fetch datasets for selector
