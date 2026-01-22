@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     runpod_endpoint_preview: str = ""  # Segmentation preview worker
     runpod_endpoint_od_annotation: str = ""  # OD AI annotation worker
     runpod_endpoint_od_training: str = ""  # OD model training worker
+    runpod_endpoint_cls_annotation: str = ""  # CLS AI annotation worker (CLIP, SigLIP)
+    runpod_endpoint_cls_training: str = ""  # CLS model training worker
 
     # External APIs
     gemini_api_key: str = ""

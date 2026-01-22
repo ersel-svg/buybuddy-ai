@@ -36,8 +36,8 @@ class RunpodService:
             EndpointType.PREVIEW: settings.runpod_endpoint_preview,
             EndpointType.OD_ANNOTATION: settings.runpod_endpoint_od_annotation,
             EndpointType.OD_TRAINING: settings.runpod_endpoint_od_training,
-            EndpointType.CLS_ANNOTATION: getattr(settings, 'runpod_endpoint_cls_annotation', None),
-            EndpointType.CLS_TRAINING: getattr(settings, 'runpod_endpoint_cls_training', None),
+            EndpointType.CLS_ANNOTATION: settings.runpod_endpoint_cls_annotation,
+            EndpointType.CLS_TRAINING: settings.runpod_endpoint_cls_training,
         }
 
     def _get_headers(self) -> dict[str, str]:
