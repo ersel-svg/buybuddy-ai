@@ -500,6 +500,21 @@ def handler(job: dict) -> dict:
                 print(f"[WARNING] No validation annotations found, using train data for validation")
                 dataset_config.val_ann_file = dataset_config.train_ann_file
                 dataset_config.val_path = dataset_config.train_path
+
+            # Read num_classes from COCO annotation if not provided
+            if num_classes == 0 or not class_names:
+                try:
+                    with open(dataset_config.train_ann_file) as f:
+                        coco_data = json.load(f)
+                    categories = coco_data.get("categories", [])
+                    if categories:
+                        num_classes = len(categories)
+                        class_names = [c.get("name", f"class_{c['id']}") for c in categories]
+                        dataset_config.num_classes = num_classes
+                        dataset_config.class_names = class_names
+                        print(f"[INFO] Read {num_classes} classes from COCO annotations: {class_names}")
+                except Exception as e:
+                    print(f"[WARNING] Could not read classes from COCO file: {e}")
         else:
             # YOLO format - convert to COCO
             from src.data import convert_yolo_to_coco, get_yolo_class_names

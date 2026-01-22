@@ -103,10 +103,19 @@ class RTDETRSOTATrainer(SOTABaseTrainer):
                 RTDetrImageProcessor,
             )
 
-            # Load model
+            # Load model config first, then set proper prior_prob to avoid math domain error
+            from transformers import RTDetrConfig
+
+            config = RTDetrConfig.from_pretrained(model_name)
+            config.num_labels = self.dataset_config.num_classes
+            # Set valid prior_prob (must be between 0 and 1, exclusive)
+            # Default is usually 0.01, which works for any num_labels
+            if not hasattr(config, 'prior_prob') or config.prior_prob <= 0 or config.prior_prob >= 1:
+                config.prior_prob = 0.01
+
             self.model = RTDetrForObjectDetection.from_pretrained(
                 model_name,
-                num_labels=self.dataset_config.num_classes,
+                config=config,
                 ignore_mismatched_sizes=True,
             )
 
