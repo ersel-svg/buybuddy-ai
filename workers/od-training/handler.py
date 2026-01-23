@@ -62,9 +62,7 @@ def is_shutdown_requested() -> bool:
     return _shutdown_requested
 
 
-# Register signal handlers
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+# Note: Signal handlers registered at end of file (after update_training_run is defined)
 
 from config import (
     TrainingConfig,
@@ -303,19 +301,24 @@ def update_training_run(
     metrics: Optional[dict] = None,
     error: Optional[str] = None,
     model_url: Optional[str] = None,
+    max_retries: int = 3,
 ):
     """
-    Update training run directly in Supabase.
+    Update training run directly in Supabase with retry logic.
 
     This is more reliable than webhook-based updates as it doesn't
     require a publicly accessible API endpoint.
     """
+    import time
+
     client = get_supabase_client()
     if not client:
         print(f"[WARNING] Cannot update training run: Supabase client not available")
         return
 
-    try:
+    last_error = None
+    for attempt in range(max_retries):
+        try:
         # Build update data
         update_data = {
             "status": status,
@@ -365,6 +368,10 @@ def update_training_run(
                         run_data = run_result.data
                         from uuid import uuid4
 
+                        # Extract class_count from config if available
+                        config = run_data.get("config", {})
+                        class_count = config.get("num_classes", 0) if isinstance(config, dict) else 0
+
                         model_data = {
                             "id": str(uuid4()),
                             "training_run_id": training_run_id,
@@ -373,11 +380,12 @@ def update_training_run(
                             "checkpoint_url": model_url,
                             "map": update_data.get("best_map") or run_data.get("best_map"),
                             "map_50": metrics.get("map_50") if metrics else None,
+                            "class_count": class_count,
                             "is_active": True,
                             "created_at": datetime.now(timezone.utc).isoformat(),
                         }
                         client.table("od_trained_models").insert(model_data).execute()
-                        print(f"[INFO] Created trained model record: {model_data['id']}")
+                        print(f"[INFO] Created trained model record: {model_data['id']} (class_count={class_count})")
                 except Exception as model_err:
                     print(f"[WARNING] Failed to create trained model record: {model_err}")
 
@@ -392,13 +400,20 @@ def update_training_run(
             if check_result.data and not check_result.data.get("started_at"):
                 update_data["started_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Update training run
-        client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
-        print(f"[Supabase] Training run updated: status={status}, epoch={current_epoch}")
+            # Update training run
+            client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
+            print(f"[Supabase] Training run updated: status={status}, epoch={current_epoch}")
+            return  # Success, exit retry loop
 
-    except Exception as e:
-        print(f"[ERROR] Failed to update training run in Supabase: {e}")
-        traceback.print_exc()
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1s, 2s, 4s
+                print(f"[WARNING] Supabase update failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                time.sleep(wait_time)
+            else:
+                print(f"[ERROR] Failed to update training run after {max_retries} attempts: {e}")
+                traceback.print_exc()
 
 
 def upload_model_to_supabase(
@@ -814,6 +829,13 @@ def handler(job: dict) -> dict:
     finally:
         # Always clear current training run
         _current_training_run_id = None
+
+
+# ===========================================
+# Register Signal Handlers (after all functions defined)
+# ===========================================
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 
 # RunPod serverless entry point

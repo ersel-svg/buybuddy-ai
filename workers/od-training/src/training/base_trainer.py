@@ -428,6 +428,13 @@ class SOTABaseTrainer(ABC):
                     loss = self.compute_loss(outputs, targets)
                     loss = loss / self.training_config.accumulation_steps
 
+                # NaN loss detection
+                if torch.isnan(loss) or torch.isinf(loss):
+                    raise ValueError(
+                        f"NaN/Inf loss detected at epoch {epoch}, batch {batch_idx}. "
+                        "Training is unstable. Try: lower learning rate, gradient clipping, or check data."
+                    )
+
                 self.scaler.scale(loss).backward()
 
                 # Gradient accumulation
@@ -455,6 +462,14 @@ class SOTABaseTrainer(ABC):
                 outputs = self.forward_pass(images)
                 loss = self.compute_loss(outputs, targets)
                 loss = loss / self.training_config.accumulation_steps
+
+                # NaN loss detection
+                if torch.isnan(loss) or torch.isinf(loss):
+                    raise ValueError(
+                        f"NaN/Inf loss detected at epoch {epoch}, batch {batch_idx}. "
+                        "Training is unstable. Try: lower learning rate, gradient clipping, or check data."
+                    )
+
                 loss.backward()
 
                 if (batch_idx + 1) % self.training_config.accumulation_steps == 0:
