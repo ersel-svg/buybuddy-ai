@@ -1,0 +1,16 @@
+# Test Dockerfile - for running tests locally
+FROM python:3.10-slim
+
+WORKDIR /workspace
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/ ./src/
+COPY handler.py .
+COPY tests/ ./tests/
+
+# Run tests
+CMD ["python", "-u", "tests/test_pipeline.py"]
