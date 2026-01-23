@@ -68,6 +68,25 @@ from src.models import create_model, MODEL_REGISTRY
 from src.losses import get_loss, AVAILABLE_LOSSES
 from src.augmentations import get_train_transforms, get_val_transforms, AUGMENTATION_PRESETS
 from src.trainer import ClassificationTrainer, TrainingConfig, compute_class_weights
+from src.production import (
+    ProductionConfig,
+    validate_dataset,
+    load_image_with_retry,
+    check_memory_available,
+    export_model_onnx,
+    save_checkpoint,
+    load_checkpoint,
+    cleanup_old_checkpoints,
+    get_shutdown_handler,
+    TrainingStats,
+)
+
+# Check ONNX availability
+try:
+    import onnx
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
 
 
 # Default config
@@ -104,7 +123,7 @@ class URLImageDataset(Dataset):
     """
     Dataset that loads images from URLs.
 
-    Supports caching and parallel loading.
+    Supports caching, parallel loading, and production error handling.
     """
 
     def __init__(
@@ -113,6 +132,8 @@ class URLImageDataset(Dataset):
         transform=None,
         cache_dir: Optional[str] = None,
         max_workers: int = 8,
+        production_config: Optional[ProductionConfig] = None,
+        stats: Optional[TrainingStats] = None,
     ):
         """
         Args:
@@ -120,17 +141,22 @@ class URLImageDataset(Dataset):
             transform: Transform pipeline
             cache_dir: Directory to cache downloaded images
             max_workers: Number of download workers
+            production_config: Production settings for retry/timeout
+            stats: TrainingStats for tracking failures
         """
         self.image_data = image_data
         self.transform = transform
         self.cache_dir = cache_dir
         self.max_workers = max_workers
+        self.production_config = production_config or ProductionConfig()
+        self.stats = stats
 
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
         # Pre-download images (optional)
         self._cache = {}
+        self._failed_urls = set()
 
     def __len__(self):
         return len(self.image_data)
@@ -162,31 +188,36 @@ class URLImageDataset(Dataset):
         return img, label
 
     def _load_image(self, url: str) -> Image.Image:
-        """Load image from URL or cache."""
+        """Load image from URL with retry logic and caching."""
         if self.cache_dir:
             # Check file cache
-            cache_path = os.path.join(
-                self.cache_dir,
-                url.split("/")[-1].split("?")[0]
-            )
+            import hashlib
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+            cache_path = os.path.join(self.cache_dir, f"{url_hash}.jpg")
+
             if os.path.exists(cache_path):
-                return Image.open(cache_path).convert("RGB")
+                try:
+                    return Image.open(cache_path).convert("RGB")
+                except Exception:
+                    pass  # Corrupted cache, re-download
 
-        # Download
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            img = Image.open(BytesIO(response.content)).convert("RGB")
+        # Use production utility for retry logic
+        img, error = load_image_with_retry(url, self.production_config)
 
+        if error:
+            self._failed_urls.add(url)
+            if self.stats:
+                self.stats.record_failed_url(url, error)
+            print(f"⚠️  Failed to load {url[:60]}...: {error}")
+        else:
             # Cache to file
-            if self.cache_dir:
-                img.save(cache_path)
+            if self.cache_dir and img:
+                try:
+                    img.save(cache_path, "JPEG", quality=95)
+                except Exception:
+                    pass
 
-            return img
-        except Exception as e:
-            print(f"Failed to load {url}: {e}")
-            # Return blank image as fallback
-            return Image.new("RGB", (224, 224), (128, 128, 128))
+        return img
 
     def preload(self, progress_callback=None):
         """Pre-download all images in parallel."""
@@ -197,7 +228,7 @@ class URLImageDataset(Dataset):
             try:
                 img = self._load_image(url)
                 self._cache[url] = img
-                return True
+                return url not in self._failed_urls
             except:
                 return False
 
@@ -205,6 +236,9 @@ class URLImageDataset(Dataset):
             results = list(executor.map(download, self.image_data))
 
         loaded = sum(results)
+        failed = len(self.image_data) - loaded
+        if failed > 0:
+            print(f"⚠️  {failed} images failed to load")
         print(f"Pre-loaded {loaded}/{len(self.image_data)} images")
         return loaded
 
@@ -404,6 +438,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Result dict
     """
+    stats = TrainingStats()
+
     try:
         job_input = job.get("input", job)
 
@@ -413,17 +449,30 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         dataset = job_input.get("dataset", {})
         supabase_url = job_input.get("supabase_url")
         supabase_key = job_input.get("supabase_key")
+        resume_from = job_input.get("resume_from")  # Checkpoint path for resume
 
         print(f"\n{'=' * 60}")
         print(f"CLS TRAINING JOB: {training_run_id}")
         print(f"{'=' * 60}")
 
-        # Validate inputs
-        if not dataset.get("train_urls"):
-            return {"error": "No training data provided", "status": "FAILED"}
+        # === PRODUCTION VALIDATION ===
+        validation = validate_dataset(
+            train_urls=dataset.get("train_urls", []),
+            val_urls=dataset.get("val_urls", []),
+            class_names=dataset.get("class_names", []),
+        )
 
-        if not dataset.get("class_names"):
-            return {"error": "No class names provided", "status": "FAILED"}
+        if not validation["valid"]:
+            return {
+                "error": f"Dataset validation failed: {validation['issues']}",
+                "status": "FAILED",
+                "validation": validation,
+            }
+
+        if validation["warnings"]:
+            print(f"⚠️  Validation warnings: {validation['warnings']}")
+
+        print(f"✓ Dataset validated: {validation['train_samples']} train, {validation['val_samples']} val")
 
         # Setup device
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -431,8 +480,20 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         if device == "cuda":
             print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-        # Training directory
-        save_dir = f"/tmp/cls_training_{training_run_id}"
+            # === MEMORY CHECK ===
+            memory_info = check_memory_available(
+                model=None,  # Will check after model creation
+                batch_size=config.get("batch_size", 32),
+                img_size=config.get("image_size", 224),
+                device=device,
+            )
+            if memory_info.get("memory_warning"):
+                print(f"⚠️  Memory warning: Reducing batch size from {config.get('batch_size', 32)} to {memory_info['recommended_batch_size']}")
+                config["batch_size"] = memory_info["recommended_batch_size"]
+
+        # Training directory - prefer /workspace over /tmp for more space
+        workspace_dir = "/workspace" if os.path.exists("/workspace") else "/tmp"
+        save_dir = f"{workspace_dir}/cls_training_{training_run_id}"
 
         # Progress callback for Supabase updates
         def progress_callback(epoch, metrics):
@@ -494,6 +555,56 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 print(f"Model upload failed: {e}")
 
+        # === ONNX EXPORT (if requested) ===
+        onnx_url = None
+        if config.get("export_onnx", False):
+            if not ONNX_AVAILABLE:
+                print("⚠️  ONNX export requested but onnx package not installed")
+            else:
+                try:
+                    onnx_path = os.path.join(save_dir, "model.onnx")
+                    # Need to reload best model for export
+                    from src.models import create_model
+                    export_model, _ = create_model(
+                        config.get("model_name", "efficientnet_b0"),
+                        num_classes=len(dataset.get("class_names", [])),
+                        pretrained=False,
+                    )
+                    best_ckpt = torch.load(os.path.join(save_dir, "best_model.pt"), map_location="cpu", weights_only=False)
+                    export_model.load_state_dict(best_ckpt["model_state_dict"])
+
+                    export_result = export_model_onnx(
+                        export_model,
+                        onnx_path,
+                        img_size=config.get("image_size", 224),
+                    )
+                    if export_result["success"]:
+                        print(f"✓ ONNX exported: {export_result['size_mb']:.1f}MB")
+                        # Upload ONNX to Supabase too
+                        if supabase_url and supabase_key:
+                            import httpx
+                            with open(onnx_path, "rb") as f:
+                                onnx_data = f.read()
+                            response = httpx.post(
+                                f"{supabase_url}/storage/v1/object/cls-models/{training_run_id}/model.onnx",
+                                headers={
+                                    "apikey": supabase_key,
+                                    "Authorization": f"Bearer {supabase_key}",
+                                    "Content-Type": "application/octet-stream",
+                                },
+                                content=onnx_data,
+                                timeout=120,
+                            )
+                            if response.status_code in [200, 201]:
+                                onnx_url = f"{supabase_url}/storage/v1/object/public/cls-models/{training_run_id}/model.onnx"
+                    else:
+                        print(f"⚠️  ONNX export failed: {export_result.get('error')}")
+                except Exception as e:
+                    print(f"⚠️  ONNX export error: {e}")
+
+        # Get training stats summary
+        training_stats = stats.get_summary()
+
         return {
             "status": "COMPLETED",
             "training_run_id": training_run_id,
@@ -505,8 +616,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "final_val_loss": results["history"]["val_loss"][-1] if results["history"]["val_loss"] else None,
             },
             "model_url": model_url,
+            "onnx_url": onnx_url,
             "model_info": results["model_info"],
             "class_names": results["class_names"],
+            "training_stats": training_stats,
         }
 
     except Exception as e:
@@ -515,6 +628,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "error": str(e),
             "status": "FAILED",
             "traceback": traceback.format_exc(),
+            "training_stats": stats.get_summary() if stats else None,
         }
 
 
