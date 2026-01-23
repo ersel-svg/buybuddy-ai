@@ -186,6 +186,86 @@ class SOTABaseTrainer(ABC):
             "lr": [],
         }
 
+    def _get_optimal_num_workers(self) -> int:
+        """
+        Auto-detect optimal number of DataLoader workers based on system resources.
+
+        Considers:
+        - Available RAM (each worker uses ~1-2GB for URL-based loading)
+        - CPU cores
+        - GPU memory (larger models need more headroom)
+
+        Returns:
+            Optimal number of workers (1-8)
+        """
+        import os
+        import multiprocessing
+
+        # Default fallback
+        default_workers = 2
+
+        try:
+            # Get CPU count
+            cpu_count = multiprocessing.cpu_count()
+
+            # Get available RAM (in GB)
+            available_ram_gb = None
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                available_ram_gb = mem.available / (1024 ** 3)
+            except ImportError:
+                # Fallback: read from /proc/meminfo on Linux
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        for line in f:
+                            if 'MemAvailable' in line:
+                                available_ram_gb = int(line.split()[1]) / (1024 ** 2)
+                                break
+                except:
+                    pass
+
+            # Get GPU memory (in GB)
+            gpu_memory_gb = None
+            try:
+                if torch.cuda.is_available():
+                    gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            except:
+                pass
+
+            # Calculate optimal workers
+            # Rule: Each worker uses ~1.5-2GB RAM for URL loading + image processing
+            ram_per_worker = 2.0  # GB
+
+            if available_ram_gb is not None:
+                # Reserve 8GB for main process + model + GPU transfers
+                usable_ram = max(0, available_ram_gb - 8)
+                workers_by_ram = int(usable_ram / ram_per_worker)
+            else:
+                workers_by_ram = default_workers
+
+            # Don't use more workers than CPU cores - 2 (leave headroom)
+            workers_by_cpu = max(1, cpu_count - 2)
+
+            # Final decision: minimum of RAM-based and CPU-based limits
+            optimal = min(workers_by_ram, workers_by_cpu)
+
+            # Clamp to reasonable range (max 4 to prevent OOM with large datasets)
+            optimal = max(1, min(4, optimal))
+
+            print(f"[AUTO-CONFIG] CPU cores: {cpu_count}, "
+                  f"Available RAM: {available_ram_gb:.1f}GB, "
+                  f"GPU Memory: {gpu_memory_gb:.1f}GB" if gpu_memory_gb else "")
+            print(f"[AUTO-CONFIG] Workers by RAM: {workers_by_ram}, "
+                  f"Workers by CPU: {workers_by_cpu}, "
+                  f"Selected: {optimal}")
+
+            return optimal
+
+        except Exception as e:
+            print(f"[WARNING] Auto-config failed: {e}, using default {default_workers} workers")
+            return default_workers
+
     @abstractmethod
     def setup_model(self):
         """
@@ -247,8 +327,22 @@ class SOTABaseTrainer(ABC):
         """
         pass
 
-    def setup_data(self):
-        """Setup data loaders with augmentation pipeline."""
+    def setup_data(self, url_dataset_data: Optional[Dict[str, Any]] = None):
+        """
+        Setup data loaders with augmentation pipeline.
+
+        Args:
+            url_dataset_data: If provided, use URL-based dataset loading.
+                Expected format:
+                {
+                    "train_images": [...],
+                    "val_images": [...],
+                    "class_mapping": {...},
+                    "class_names": [...],
+                    "num_classes": int,
+                }
+                If None, use file-based loading (legacy).
+        """
         from data import ODDataset, create_dataloader
         from augmentations import AugmentationPipeline
 
@@ -268,45 +362,100 @@ class SOTABaseTrainer(ABC):
         )
 
         # Create datasets
-        train_dataset = ODDataset(
-            img_dir=self.dataset_config.train_img_dir,
-            ann_file=self.dataset_config.train_ann_file,
-            transform=train_pipeline,
-            img_size=self.training_config.img_size,
-            class_names=self.dataset_config.class_names,
-        )
+        if url_dataset_data is not None:
+            # NEW: URL-based dataset loading
+            from data.url_dataset import URLODDataset, create_url_dataloader
 
-        val_dataset = ODDataset(
-            img_dir=self.dataset_config.val_img_dir,
-            ann_file=self.dataset_config.val_ann_file,
-            transform=val_pipeline,
-            img_size=self.training_config.img_size,
-            class_names=self.dataset_config.class_names,
-        )
+            print("[INFO] Using URL-based dataset loading")
 
-        # Create data loaders
-        self.train_loader = create_dataloader(
-            train_dataset,
-            batch_size=self.training_config.batch_size,
-            shuffle=True,
-            num_workers=4,
-            drop_last=True,
-        )
+            train_dataset = URLODDataset(
+                image_data=url_dataset_data["train_images"],
+                class_mapping=url_dataset_data["class_mapping"],
+                transform=train_pipeline,
+                img_size=self.training_config.img_size,
+                preload=False,  # Lazy loading - DataLoader handles prefetch
+                use_memory_cache=False,  # IMPORTANT: Prevents OOM - file cache only
+            )
 
-        self.val_loader = create_dataloader(
-            val_dataset,
-            batch_size=self.training_config.batch_size,
-            shuffle=False,
-            num_workers=4,
-            drop_last=False,
-        )
+            val_dataset = URLODDataset(
+                image_data=url_dataset_data["val_images"],
+                class_mapping=url_dataset_data["class_mapping"],
+                transform=val_pipeline,
+                img_size=self.training_config.img_size,
+                preload=False,  # Lazy loading - DataLoader handles prefetch
+                use_memory_cache=False,  # IMPORTANT: Prevents OOM - file cache only
+            )
+
+            # Auto-detect optimal num_workers based on available resources
+            num_workers = self._get_optimal_num_workers()
+            print(f"[INFO] Using {num_workers} DataLoader workers (auto-detected)")
+
+            # Create data loaders
+            self.train_loader = create_url_dataloader(
+                train_dataset,
+                batch_size=self.training_config.batch_size,
+                shuffle=True,
+                num_workers=num_workers,
+                drop_last=True,
+            )
+
+            self.val_loader = create_url_dataloader(
+                val_dataset,
+                batch_size=self.training_config.batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                drop_last=False,
+            )
+
+            # Update class info
+            if url_dataset_data.get("num_classes"):
+                self.dataset_config.num_classes = url_dataset_data["num_classes"]
+            if url_dataset_data.get("class_names"):
+                self.dataset_config.class_names = url_dataset_data["class_names"]
+
+        else:
+            # LEGACY: File-based dataset loading
+            print("[INFO] Using file-based dataset loading")
+
+            train_dataset = ODDataset(
+                img_dir=self.dataset_config.train_img_dir,
+                ann_file=self.dataset_config.train_ann_file,
+                transform=train_pipeline,
+                img_size=self.training_config.img_size,
+                class_names=self.dataset_config.class_names,
+            )
+
+            val_dataset = ODDataset(
+                img_dir=self.dataset_config.val_img_dir,
+                ann_file=self.dataset_config.val_ann_file,
+                transform=val_pipeline,
+                img_size=self.training_config.img_size,
+                class_names=self.dataset_config.class_names,
+            )
+
+            # Create data loaders
+            self.train_loader = create_dataloader(
+                train_dataset,
+                batch_size=self.training_config.batch_size,
+                shuffle=True,
+                num_workers=4,
+                drop_last=True,
+            )
+
+            self.val_loader = create_dataloader(
+                val_dataset,
+                batch_size=self.training_config.batch_size,
+                shuffle=False,
+                num_workers=4,
+                drop_last=False,
+            )
+
+            # Update num_classes from dataset if not set
+            if self.dataset_config.num_classes == 0:
+                self.dataset_config.num_classes = train_dataset.get_num_classes()
 
         print(f"Train dataset: {len(train_dataset)} images")
         print(f"Val dataset: {len(val_dataset)} images")
-
-        # Update num_classes from dataset if not set
-        if self.dataset_config.num_classes == 0:
-            self.dataset_config.num_classes = train_dataset.get_num_classes()
 
     def setup_optimizer(self):
         """Setup optimizer with LLRD."""
@@ -379,8 +528,13 @@ class SOTABaseTrainer(ABC):
             num_classes=self.dataset_config.num_classes,
         )
 
-    def setup(self):
-        """Setup all components."""
+    def setup(self, url_dataset_data: Optional[Dict[str, Any]] = None):
+        """
+        Setup all components.
+
+        Args:
+            url_dataset_data: If provided, use URL-based dataset loading.
+        """
         print("\n" + "=" * 50)
         print("Setting up training...")
         print("=" * 50)
@@ -389,7 +543,7 @@ class SOTABaseTrainer(ABC):
         self.model.to(self.device)
         print(f"Model: {self.training_config.model_type}-{self.training_config.model_size}")
 
-        self.setup_data()
+        self.setup_data(url_dataset_data=url_dataset_data)
         self.setup_optimizer()
         self.setup_scheduler()
         self.setup_ema()
@@ -652,12 +806,17 @@ class SOTABaseTrainer(ABC):
 
         print(f"Loaded checkpoint from epoch {self.current_epoch}")
 
-    def train(self) -> TrainingResult:
-        """Main training loop."""
+    def train(self, url_dataset_data: Optional[Dict[str, Any]] = None) -> TrainingResult:
+        """
+        Main training loop.
+
+        Args:
+            url_dataset_data: If provided, use URL-based dataset loading.
+        """
         start_time = time.time()
 
         # Setup all components
-        self.setup()
+        self.setup(url_dataset_data=url_dataset_data)
 
         print(f"\nStarting training for {self.training_config.epochs} epochs")
         print("=" * 50)

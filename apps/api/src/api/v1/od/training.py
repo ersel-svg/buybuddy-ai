@@ -4,6 +4,8 @@ Object Detection - Training Router
 Endpoints for managing OD training runs.
 """
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -17,6 +19,9 @@ from schemas.od import (
     ODTrainingRunCreate,
     ODTrainingRunResponse,
 )
+
+# Thread pool for CPU-bound/blocking operations
+_executor = ThreadPoolExecutor(max_workers=2)
 
 router = APIRouter()
 
@@ -58,11 +63,21 @@ async def create_training_run(data: ODTrainingRunCreate, background_tasks: Backg
     Create and start a new training run.
 
     This will:
-    1. Export the dataset
-    2. Upload to storage
-    3. Trigger RunPod training job
-    4. Track progress via webhooks
+    1. Create training run record
+    2. Trigger RunPod training job (URL-based mode)
+    3. Worker fetches data directly from Supabase (no ZIP export!)
+    4. Track progress via direct Supabase writes
     """
+    import json
+    print(f"[DEBUG] Received training request: name={data.name}, dataset_id={data.dataset_id}")
+    print(f"[DEBUG] Model: {data.model_type}/{data.model_size}")
+    if data.config:
+        try:
+            config_dict = data.config.model_dump()
+            print(f"[DEBUG] Config keys: {list(config_dict.keys())}")
+        except Exception as e:
+            print(f"[DEBUG] Error dumping config: {e}")
+
     # Verify dataset exists
     dataset = supabase_service.client.table("od_datasets").select("*").eq("id", data.dataset_id).single().execute()
     if not dataset.data:
@@ -139,55 +154,40 @@ async def start_training_job(
     config: dict,
     class_names: list,
 ):
-    """Background task to start training job."""
-    from services.od_export import od_export_service
+    """
+    Background task to start training job.
 
+    NEW: URL-based approach - no ZIP export!
+    Worker fetches data directly from Supabase with pagination.
+    This is much faster and doesn't block the API for large datasets.
+    """
     try:
-        # Update status to preparing
-        supabase_service.client.table("od_training_runs").update({
-            "status": "preparing",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", training_id).execute()
+        print(f"[TRAINING] Starting job {training_id}")
 
-        # Export dataset
-        export_data = await od_export_service.get_dataset_for_export(
-            dataset_id=dataset_id,
-            version_id=version_id,
-        )
-
-        # Determine format based on model type
-        export_format = "yolo" if model_type == "yolo-nas" else "coco"
-
-        # Create export
-        if export_format == "yolo":
-            zip_path = od_export_service.export_yolo(export_data, include_images=True)
-        else:
-            zip_path = od_export_service.export_coco(export_data, include_images=True)
-
-        # Upload to storage
-        bucket = "od-datasets"
-        file_name = f"{training_id}/dataset.zip"
-
-        with open(zip_path, "rb") as f:
-            supabase_service.client.storage.from_(bucket).upload(
-                file_name,
-                f.read(),
-                {"content-type": "application/zip"}
-            )
-
-        dataset_url = supabase_service.client.storage.from_(bucket).get_public_url(file_name)
-
-        # Update status to queued
+        # Update status to queued (no more preparing/export phase!)
+        print(f"[TRAINING] Updating status to queued...")
         supabase_service.client.table("od_training_runs").update({
             "status": "queued",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", training_id).execute()
+        print(f"[TRAINING] Status updated to queued")
 
-        # Trigger RunPod job
+        # Determine format based on model type (worker may use this for annotation format)
+        export_format = "yolo" if model_type == "yolo-nas" else "coco"
+
+        # NEW: Build lightweight job payload - no ZIP export needed!
+        # Worker will fetch data directly from Supabase
         job_input = {
             "training_run_id": training_id,
-            "dataset_url": dataset_url,
+            # NEW: URL-based loading - worker fetches from Supabase directly
+            "dataset_id": dataset_id,
+            "dataset_version_id": version_id,
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            # Legacy field (kept for backward compatibility, worker checks this first)
+            "dataset_url": None,
             "dataset_format": export_format,
+            # Model config
             "model_type": model_type,
             "model_size": model_size,
             "config": config,
@@ -195,14 +195,16 @@ async def start_training_job(
             "num_classes": len(class_names),
         }
 
+        print(f"[TRAINING] Submitting job to RunPod (URL-based mode)...")
+
         # Submit job to RunPod
         # Note: We don't use RunPod's built-in webhook mechanism because
-        # the worker implements its own webhook calls via WEBHOOK_URL env var.
-        # This is more reliable and allows for retry logic.
+        # the worker implements its own Supabase writes for progress updates.
+        # This is more reliable than webhooks.
         job_result = await runpod_service.submit_job(
             endpoint_type=EndpointType.OD_TRAINING,
             input_data=job_input,
-            webhook_url=None,  # Worker uses WEBHOOK_URL env var instead
+            webhook_url=None,  # Worker uses direct Supabase writes
         )
 
         # Update with job ID
@@ -213,11 +215,19 @@ async def start_training_job(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", training_id).execute()
 
+        print(f"[TRAINING] Job submitted successfully: {job_result.get('id')}")
+
     except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[TRAINING] Error in job {training_id}: {e}")
+        print(f"[TRAINING] Traceback:\n{error_traceback}")
+
         # Update status to failed
         supabase_service.client.table("od_training_runs").update({
             "status": "failed",
             "error_message": str(e),
+            "error_traceback": error_traceback,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", training_id).execute()
         raise

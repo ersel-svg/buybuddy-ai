@@ -319,86 +319,86 @@ def update_training_run(
     last_error = None
     for attempt in range(max_retries):
         try:
-        # Build update data
-        update_data = {
-            "status": status,
-            "current_epoch": current_epoch,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+            # Build update data
+            update_data = {
+                "status": status,
+                "current_epoch": current_epoch,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-        # Add total_epochs if provided
-        if total_epochs > 0:
-            update_data["total_epochs"] = total_epochs
+            # Add total_epochs if provided
+            if total_epochs > 0:
+                update_data["total_epochs"] = total_epochs
 
-        # Handle metrics and metrics_history
-        if metrics:
-            # Get current training run to append to metrics_history
-            result = client.table("od_training_runs").select("metrics_history, best_map, best_epoch").eq("id", training_run_id).single().execute()
+            # Handle metrics and metrics_history
+            if metrics:
+                # Get current training run to append to metrics_history
+                result = client.table("od_training_runs").select("metrics_history, best_map, best_epoch").eq("id", training_run_id).single().execute()
 
-            if result.data:
-                current_data = result.data
-                metrics_history = current_data.get("metrics_history") or []
+                if result.data:
+                    current_data = result.data
+                    metrics_history = current_data.get("metrics_history") or []
 
-                # Append new metrics to history
-                metrics_history.append({
-                    "epoch": current_epoch,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    **metrics,
-                })
-                update_data["metrics_history"] = metrics_history
+                    # Append new metrics to history
+                    metrics_history.append({
+                        "epoch": current_epoch,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        **metrics,
+                    })
+                    update_data["metrics_history"] = metrics_history
 
-                # Update best_map if improved
-                current_map = metrics.get("map", 0)
-                best_map = current_data.get("best_map") or 0
-                if current_map > best_map:
-                    update_data["best_map"] = current_map
-                    update_data["best_epoch"] = current_epoch
+                    # Update best_map if improved
+                    current_map = metrics.get("map", 0)
+                    best_map = current_data.get("best_map") or 0
+                    if current_map > best_map:
+                        update_data["best_map"] = current_map
+                        update_data["best_epoch"] = current_epoch
 
-        # Handle completion
-        if status == "completed":
-            update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+            # Handle completion
+            if status == "completed":
+                update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-            # Create trained model record if model_url provided
-            if model_url:
-                try:
-                    # Get training run details for model creation
-                    run_result = client.table("od_training_runs").select("name, model_type, config, best_map").eq("id", training_run_id).single().execute()
+                # Create trained model record if model_url provided
+                if model_url:
+                    try:
+                        # Get training run details for model creation
+                        run_result = client.table("od_training_runs").select("name, model_type, config, best_map").eq("id", training_run_id).single().execute()
 
-                    if run_result.data:
-                        run_data = run_result.data
-                        from uuid import uuid4
+                        if run_result.data:
+                            run_data = run_result.data
+                            from uuid import uuid4
 
-                        # Extract class_count from config if available
-                        config = run_data.get("config", {})
-                        class_count = config.get("num_classes", 0) if isinstance(config, dict) else 0
+                            # Extract class_count from config if available
+                            config = run_data.get("config", {})
+                            class_count = config.get("num_classes", 0) if isinstance(config, dict) else 0
 
-                        model_data = {
-                            "id": str(uuid4()),
-                            "training_run_id": training_run_id,
-                            "name": f"{run_data.get('name', 'OD Model')} Model",
-                            "model_type": run_data.get("model_type", "rt-detr"),
-                            "checkpoint_url": model_url,
-                            "map": update_data.get("best_map") or run_data.get("best_map"),
-                            "map_50": metrics.get("map_50") if metrics else None,
-                            "class_count": class_count,
-                            "is_active": True,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                        client.table("od_trained_models").insert(model_data).execute()
-                        print(f"[INFO] Created trained model record: {model_data['id']} (class_count={class_count})")
-                except Exception as model_err:
-                    print(f"[WARNING] Failed to create trained model record: {model_err}")
+                            model_data = {
+                                "id": str(uuid4()),
+                                "training_run_id": training_run_id,
+                                "name": f"{run_data.get('name', 'OD Model')} Model",
+                                "model_type": run_data.get("model_type", "rt-detr"),
+                                "checkpoint_url": model_url,
+                                "map": update_data.get("best_map") or run_data.get("best_map"),
+                                "map_50": metrics.get("map_50") if metrics else None,
+                                "class_count": class_count,
+                                "is_active": True,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            client.table("od_trained_models").insert(model_data).execute()
+                            print(f"[INFO] Created trained model record: {model_data['id']} (class_count={class_count})")
+                    except Exception as model_err:
+                        print(f"[WARNING] Failed to create trained model record: {model_err}")
 
-        # Handle failure
-        if status == "failed" and error:
-            update_data["error_message"] = error
+            # Handle failure
+            if status == "failed" and error:
+                update_data["error_message"] = error
 
-        # Handle start
-        if status in ["started", "training"] and "started_at" not in update_data:
-            # Check if started_at already set
-            check_result = client.table("od_training_runs").select("started_at").eq("id", training_run_id).single().execute()
-            if check_result.data and not check_result.data.get("started_at"):
-                update_data["started_at"] = datetime.now(timezone.utc).isoformat()
+            # Handle start
+            if status in ["started", "training"] and "started_at" not in update_data:
+                # Check if started_at already set
+                check_result = client.table("od_training_runs").select("started_at").eq("id", training_run_id).single().execute()
+                if check_result.data and not check_result.data.get("started_at"):
+                    update_data["started_at"] = datetime.now(timezone.utc).isoformat()
 
             # Update training run
             client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
@@ -500,13 +500,23 @@ def train_sota(
     training_run_id: str,
     model_type: str,
     training_config: TrainingConfig,
-    dataset_config: DatasetConfig,
+    dataset_config: Optional[DatasetConfig],
     output_config: OutputConfig,
+    url_dataset_data: Optional[Dict] = None,
 ) -> dict:
     """
     Train model using SOTA trainer.
 
     Supports RT-DETR and D-FINE with all SOTA features.
+
+    Args:
+        job_id: RunPod job ID
+        training_run_id: Training run UUID
+        model_type: "rt-detr" or "d-fine"
+        training_config: Training hyperparameters
+        dataset_config: Dataset paths (for file-based mode, can be None for URL mode)
+        output_config: Output directories
+        url_dataset_data: If provided, use URL-based data loading (new mode)
     """
     # Import SOTA trainers
     from src.trainers import RTDETRSOTATrainer, DFINESOTATrainer
@@ -524,8 +534,19 @@ def train_sota(
 
     # Convert configs to SOTA format
     sota_training_config = training_config.to_sota_config()
-    sota_dataset_config = dataset_config.to_sota_config()
     sota_output_config = output_config.to_sota_config()
+
+    # Dataset config: use provided or create minimal for URL mode
+    if url_dataset_data is not None:
+        # URL-based mode: create minimal dataset config
+        from src.training.base_trainer import DatasetConfig as SOTADatasetConfig
+        sota_dataset_config = SOTADatasetConfig(
+            num_classes=url_dataset_data.get("num_classes", 0),
+            class_names=url_dataset_data.get("class_names", []),
+        )
+    else:
+        # File-based mode: use provided config
+        sota_dataset_config = dataset_config.to_sota_config()
 
     # Select trainer based on model type
     if model_type == "rt-detr":
@@ -545,8 +566,8 @@ def train_sota(
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    # Train
-    result = trainer.train()
+    # Train (pass url_dataset_data if available)
+    result = trainer.train(url_dataset_data=url_dataset_data)
 
     return {
         "best_checkpoint": result.best_checkpoint,
@@ -591,7 +612,8 @@ def handler(job: dict) -> dict:
 
     # Extract parameters
     training_run_id = job_input.get("training_run_id")
-    dataset_url = job_input.get("dataset_url")
+    dataset_url = job_input.get("dataset_url")  # Legacy: ZIP URL
+    dataset_id = job_input.get("dataset_id")  # NEW: Direct Supabase fetch
     dataset_format = job_input.get("dataset_format", "coco")
     model_type = job_input.get("model_type", "rt-detr")
     model_size = job_input.get("model_size", "l")
@@ -599,11 +621,16 @@ def handler(job: dict) -> dict:
     class_names = job_input.get("class_names", [])
     num_classes = job_input.get("num_classes", len(class_names))
 
+    # NEW: Supabase credentials for URL-based loading
+    supabase_url_param = job_input.get("supabase_url")
+    supabase_service_key = job_input.get("supabase_service_key")
+
     # Validate
     if not training_run_id:
         return {"error": "training_run_id is required"}
-    if not dataset_url:
-        return {"error": "dataset_url is required"}
+    # NEW: Either dataset_id (URL-based) OR dataset_url (ZIP-based) is required
+    if not dataset_id and not dataset_url:
+        return {"error": "Either dataset_id or dataset_url is required"}
     if model_type not in MODEL_CONFIGS:
         return {"error": f"Invalid model_type: {model_type}. Supported: {list(MODEL_CONFIGS.keys())}"}
 
@@ -632,13 +659,58 @@ def handler(job: dict) -> dict:
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(logs_dir, exist_ok=True)
 
-        # Download dataset
-        update_training_run(
-            training_run_id=training_run_id,
-            status="downloading",
-            progress=5,
-        )
-        dataset_path = download_dataset(dataset_url, temp_dir)
+        # =====================================================
+        # DATA LOADING: URL-based (new) or ZIP-based (legacy)
+        # =====================================================
+        use_url_based = bool(dataset_id and supabase_url_param and supabase_service_key)
+        url_dataset_data = None
+
+        if use_url_based:
+            # NEW: URL-based approach - fetch from Supabase directly
+            print(f"[INFO] Using URL-based data loading (dataset_id: {dataset_id})")
+            update_training_run(
+                training_run_id=training_run_id,
+                status="preparing",
+                progress=5,
+            )
+
+            try:
+                from src.data.supabase_fetcher import build_url_dataset_data
+                url_dataset_data = build_url_dataset_data(
+                    supabase_url=supabase_url_param,
+                    supabase_key=supabase_service_key,
+                    dataset_id=dataset_id,
+                    train_split=config.get("train_split", 0.8),
+                    seed=config.get("seed", 42),
+                )
+
+                # Update class info from fetched data
+                if url_dataset_data["class_names"]:
+                    class_names = url_dataset_data["class_names"]
+                    num_classes = url_dataset_data["num_classes"]
+                    print(f"[INFO] Loaded {num_classes} classes: {class_names}")
+
+                dataset_path = None  # Not used in URL mode
+
+            except Exception as e:
+                print(f"[ERROR] Failed to fetch dataset from Supabase: {e}")
+                # Fall back to ZIP if available
+                if dataset_url:
+                    print("[INFO] Falling back to ZIP-based loading...")
+                    use_url_based = False
+                    url_dataset_data = None
+                else:
+                    raise
+
+        if not use_url_based:
+            # LEGACY: ZIP-based approach - download and extract
+            print(f"[INFO] Using ZIP-based data loading (dataset_url: {dataset_url})")
+            update_training_run(
+                training_run_id=training_run_id,
+                status="downloading",
+                progress=5,
+            )
+            dataset_path = download_dataset(dataset_url, temp_dir)
 
         # Handle custom augmentation config from frontend
         aug_preset = config.get("augmentation_preset", "sota")
@@ -674,16 +746,18 @@ def handler(job: dict) -> dict:
             save_freq=config.get("save_freq", 5),
         )
 
-        # Setup dataset config
-        dataset_config = DatasetConfig(
-            dataset_path=dataset_path,
-            format=dataset_format,
-            num_classes=num_classes,
-            class_names=class_names,
-        )
+        # Setup dataset config (only needed for ZIP-based mode)
+        dataset_config = None
+        if not use_url_based:
+            dataset_config = DatasetConfig(
+                dataset_path=dataset_path,
+                format=dataset_format,
+                num_classes=num_classes,
+                class_names=class_names,
+            )
 
-        # Set paths based on format
-        if dataset_format == "coco":
+        # Set paths based on format (ZIP-based only)
+        if not use_url_based and dataset_format == "coco":
             dataset_config.train_path = os.path.join(dataset_path, "images", "train")
             dataset_config.val_path = os.path.join(dataset_path, "images", "val")
             dataset_config.train_ann_file = os.path.join(dataset_path, "annotations", "train.json")
@@ -715,8 +789,8 @@ def handler(job: dict) -> dict:
                         print(f"[INFO] Read {num_classes} classes from COCO annotations: {class_names}")
                 except Exception as e:
                     print(f"[WARNING] Could not read classes from COCO file: {e}")
-        else:
-            # YOLO format - convert to COCO
+        elif not use_url_based:
+            # YOLO format - convert to COCO (ZIP-based only)
             from src.data import convert_yolo_to_coco, get_yolo_class_names
 
             print("Converting YOLO format to COCO...")
@@ -766,6 +840,7 @@ def handler(job: dict) -> dict:
             training_config=training_config,
             dataset_config=dataset_config,
             output_config=output_config,
+            url_dataset_data=url_dataset_data,  # NEW: URL-based data if available
         )
 
         # Upload best model
