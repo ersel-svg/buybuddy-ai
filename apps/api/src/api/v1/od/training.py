@@ -196,10 +196,13 @@ async def start_training_job(
         }
 
         # Submit job to RunPod
+        # Note: We don't use RunPod's built-in webhook mechanism because
+        # the worker implements its own webhook calls via WEBHOOK_URL env var.
+        # This is more reliable and allows for retry logic.
         job_result = await runpod_service.submit_job(
             endpoint_type=EndpointType.OD_TRAINING,
             input_data=job_input,
-            webhook_url=f"/api/v1/od/training/webhook",
+            webhook_url=None,  # Worker uses WEBHOOK_URL env var instead
         )
 
         # Update with job ID

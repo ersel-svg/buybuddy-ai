@@ -12,6 +12,10 @@ SOTA Features:
 - Mixed Precision (FP16)
 - Mosaic, MixUp, CopyPaste augmentations
 - COCO mAP evaluation
+
+Progress Updates:
+- Direct Supabase writes (no webhook dependency)
+- More reliable than webhook-based updates
 """
 
 import os
@@ -30,11 +34,31 @@ from config import (
     OutputConfig,
     SUPABASE_URL,
     SUPABASE_SERVICE_KEY,
-    WEBHOOK_URL,
-    WEBHOOK_SECRET,
     MODEL_CONFIGS,
     AUGMENTATION_PRESETS,
 )
+
+
+# ===========================================
+# Supabase Client Singleton
+# ===========================================
+_supabase_client = None
+
+
+def get_supabase_client():
+    """Get or create Supabase client singleton."""
+    global _supabase_client
+
+    if _supabase_client is not None:
+        return _supabase_client
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("[WARNING] Supabase credentials not configured, progress updates disabled")
+        return None
+
+    from supabase import create_client
+    _supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    return _supabase_client
 
 
 def convert_frontend_augmentation_config(aug_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -232,53 +256,111 @@ def download_dataset(dataset_url: str, output_path: str) -> str:
     return extract_path
 
 
-def send_webhook(
-    job_id: str,
+def update_training_run(
     training_run_id: str,
     status: str,
     progress: int = 0,
     current_epoch: int = 0,
+    total_epochs: int = 0,
     metrics: Optional[dict] = None,
     error: Optional[str] = None,
     model_url: Optional[str] = None,
 ):
-    """Send progress update to webhook."""
-    if not WEBHOOK_URL:
+    """
+    Update training run directly in Supabase.
+
+    This is more reliable than webhook-based updates as it doesn't
+    require a publicly accessible API endpoint.
+    """
+    client = get_supabase_client()
+    if not client:
+        print(f"[WARNING] Cannot update training run: Supabase client not available")
         return
 
-    payload = {
-        "job_id": job_id,
-        "training_run_id": training_run_id,
-        "status": status,
-        "progress": progress,
-        "current_epoch": current_epoch,
-        "metrics": metrics or {},
-        "error": error,
-        "model_url": model_url,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
     try:
-        # Build headers with authentication
-        headers = {"Content-Type": "application/json"}
+        # Build update data
+        update_data = {
+            "status": status,
+            "current_epoch": current_epoch,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
-        # Add authentication if available
-        if WEBHOOK_SECRET:
-            headers["X-Webhook-Secret"] = WEBHOOK_SECRET
-        if SUPABASE_SERVICE_KEY:
-            # Use Supabase service key as API key for internal services
-            headers["apikey"] = SUPABASE_SERVICE_KEY
-            headers["Authorization"] = f"Bearer {SUPABASE_SERVICE_KEY}"
+        # Add total_epochs if provided
+        if total_epochs > 0:
+            update_data["total_epochs"] = total_epochs
 
-        response = httpx.post(
-            WEBHOOK_URL,
-            json=payload,
-            timeout=30,
-            headers=headers,
-        )
-        print(f"Webhook sent: {status}, response: {response.status_code}")
+        # Handle metrics and metrics_history
+        if metrics:
+            # Get current training run to append to metrics_history
+            result = client.table("od_training_runs").select("metrics_history, best_map, best_epoch").eq("id", training_run_id).single().execute()
+
+            if result.data:
+                current_data = result.data
+                metrics_history = current_data.get("metrics_history") or []
+
+                # Append new metrics to history
+                metrics_history.append({
+                    "epoch": current_epoch,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **metrics,
+                })
+                update_data["metrics_history"] = metrics_history
+
+                # Update best_map if improved
+                current_map = metrics.get("map", 0)
+                best_map = current_data.get("best_map") or 0
+                if current_map > best_map:
+                    update_data["best_map"] = current_map
+                    update_data["best_epoch"] = current_epoch
+
+        # Handle completion
+        if status == "completed":
+            update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+            # Create trained model record if model_url provided
+            if model_url:
+                try:
+                    # Get training run details for model creation
+                    run_result = client.table("od_training_runs").select("name, model_type, config, best_map").eq("id", training_run_id).single().execute()
+
+                    if run_result.data:
+                        run_data = run_result.data
+                        from uuid import uuid4
+
+                        model_data = {
+                            "id": str(uuid4()),
+                            "training_run_id": training_run_id,
+                            "name": f"{run_data.get('name', 'OD Model')} Model",
+                            "model_type": run_data.get("model_type", "rt-detr"),
+                            "checkpoint_url": model_url,
+                            "map": update_data.get("best_map") or run_data.get("best_map"),
+                            "map_50": metrics.get("map_50") if metrics else None,
+                            "is_active": True,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        client.table("od_trained_models").insert(model_data).execute()
+                        print(f"[INFO] Created trained model record: {model_data['id']}")
+                except Exception as model_err:
+                    print(f"[WARNING] Failed to create trained model record: {model_err}")
+
+        # Handle failure
+        if status == "failed" and error:
+            update_data["error_message"] = error
+
+        # Handle start
+        if status in ["started", "training"] and "started_at" not in update_data:
+            # Check if started_at already set
+            check_result = client.table("od_training_runs").select("started_at").eq("id", training_run_id).single().execute()
+            if check_result.data and not check_result.data.get("started_at"):
+                update_data["started_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Update training run
+        client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
+        print(f"[Supabase] Training run updated: status={status}, epoch={current_epoch}")
+
     except Exception as e:
-        print(f"Failed to send webhook: {e}")
+        print(f"[ERROR] Failed to update training run in Supabase: {e}")
+        traceback.print_exc()
 
 
 def upload_model_to_supabase(
@@ -378,12 +460,12 @@ def train_sota(
 
     # Create progress callback
     def progress_callback(epoch: int, metrics: Dict[str, float]):
-        send_webhook(
-            job_id=job_id,
+        update_training_run(
             training_run_id=training_run_id,
             status="training",
             progress=int((epoch / training_config.epochs) * 90) + 10,  # 10-100%
             current_epoch=epoch,
+            total_epochs=training_config.epochs,
             metrics=metrics,
         )
 
@@ -473,9 +555,8 @@ def handler(job: dict) -> dict:
         return {"error": f"Invalid model_type: {model_type}. Supported: {list(MODEL_CONFIGS.keys())}"}
 
     try:
-        # Send started webhook
-        send_webhook(
-            job_id=job_id,
+        # Update status to started
+        update_training_run(
             training_run_id=training_run_id,
             status="started",
             progress=0,
@@ -491,8 +572,7 @@ def handler(job: dict) -> dict:
         os.makedirs(logs_dir, exist_ok=True)
 
         # Download dataset
-        send_webhook(
-            job_id=job_id,
+        update_training_run(
             training_run_id=training_run_id,
             status="downloading",
             progress=5,
@@ -609,12 +689,12 @@ def handler(job: dict) -> dict:
             logs_dir=logs_dir,
         )
 
-        # Send training started
-        send_webhook(
-            job_id=job_id,
+        # Update status to training
+        update_training_run(
             training_run_id=training_run_id,
             status="training",
             progress=10,
+            total_epochs=training_config.epochs,
         )
 
         # Train using SOTA trainer
@@ -636,13 +716,13 @@ def handler(job: dict) -> dict:
                 model_type,
             )
 
-        # Send completed webhook
-        send_webhook(
-            job_id=job_id,
+        # Update status to completed
+        update_training_run(
             training_run_id=training_run_id,
             status="completed",
             progress=100,
             current_epoch=result.get("total_epochs", 0),
+            total_epochs=result.get("total_epochs", 0),
             metrics=result.get("best_metrics", {}),
             model_url=model_url,
         )
@@ -662,8 +742,8 @@ def handler(job: dict) -> dict:
         error_msg = str(e)
         traceback.print_exc()
 
-        send_webhook(
-            job_id=job_id,
+        # Update status to failed
+        update_training_run(
             training_run_id=training_run_id,
             status="failed",
             error=error_msg,
