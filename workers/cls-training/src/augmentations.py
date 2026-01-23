@@ -116,7 +116,7 @@ def _get_albumentations_train(
                 translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
                 scale=(0.8, 1.2),
                 rotate=(-30, 30),
-                mode=0,
+                border_mode=0,
                 p=0.5,
             ),
             A.OneOf([
@@ -159,7 +159,7 @@ def _get_albumentations_train(
                 translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
                 scale=(0.85, 1.15),
                 rotate=(-15, 15),
-                mode=0,
+                border_mode=0,
                 p=0.5,
             ),
             A.OneOf([
