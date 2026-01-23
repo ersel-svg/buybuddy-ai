@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # Slack Integration
     slack_webhook_url: str = ""
 
+    # Internal Webhook Authentication
+    webhook_secret: str = ""  # For authenticating internal webhook calls (e.g., from RunPod workers)
+
     # Roboflow Integration (optional - users can provide their own API key)
     roboflow_api_key: str = ""
 

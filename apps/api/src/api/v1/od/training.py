@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Header
 
+from config import settings
 from services.supabase import supabase_service
 from services.runpod import runpod_service, EndpointType
 from schemas.od import (
@@ -305,9 +306,17 @@ async def get_training_logs(training_id: str, limit: int = 100):
 
 
 @router.post("/webhook")
-async def training_webhook(payload: dict):
+async def training_webhook(
+    payload: dict,
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    authorization: Optional[str] = Header(None),
+    apikey: Optional[str] = Header(None),
+):
     """
     Webhook endpoint for training progress updates from RunPod.
+
+    Authentication: Accepts X-Webhook-Secret, Authorization Bearer, or apikey headers.
+    The webhook is called by the RunPod training worker.
 
     Expected payload:
     {
@@ -320,6 +329,29 @@ async def training_webhook(payload: dict):
         "error": "error message"
     }
     """
+    # Verify authentication - accept multiple methods
+    is_authenticated = False
+
+    # Method 1: X-Webhook-Secret header
+    webhook_secret = getattr(settings, 'webhook_secret', None) or getattr(settings, 'WEBHOOK_SECRET', None)
+    if x_webhook_secret and webhook_secret and x_webhook_secret == webhook_secret:
+        is_authenticated = True
+
+    # Method 2: Supabase service key (apikey or Authorization Bearer)
+    service_key = settings.supabase_service_role_key
+    if service_key:
+        if apikey == service_key:
+            is_authenticated = True
+        if authorization and authorization.replace("Bearer ", "") == service_key:
+            is_authenticated = True
+
+    # Method 3: If no secrets configured, allow (development mode)
+    if not webhook_secret and not service_key:
+        is_authenticated = True
+
+    if not is_authenticated:
+        raise HTTPException(status_code=401, detail="Webhook authentication failed")
+
     training_run_id = payload.get("training_run_id")
     if not training_run_id:
         raise HTTPException(status_code=400, detail="training_run_id required")

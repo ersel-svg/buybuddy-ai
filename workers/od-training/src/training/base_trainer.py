@@ -32,7 +32,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from .ema import ModelEMA
 from .optimizer import build_llrd_optimizer, build_simple_optimizer
@@ -368,7 +368,7 @@ class SOTABaseTrainer(ABC):
     def setup_amp(self):
         """Setup Automatic Mixed Precision."""
         if self.training_config.use_amp and self.device.type == "cuda":
-            self.scaler = GradScaler()
+            self.scaler = GradScaler("cuda")
             print("AMP (FP16) enabled")
         else:
             self.scaler = None
@@ -396,6 +396,11 @@ class SOTABaseTrainer(ABC):
         self.setup_amp()
         self.setup_evaluator()
 
+        # Initialize optimizer step count to avoid LR scheduler warning
+        # This is needed because our scheduler.step() is per-batch, not per-epoch
+        if hasattr(self.optimizer, '_step_count'):
+            self.optimizer._step_count = 1
+
         print("=" * 50 + "\n")
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
@@ -418,7 +423,7 @@ class SOTABaseTrainer(ABC):
 
             # Forward pass with AMP
             if self.scaler is not None:
-                with autocast():
+                with autocast("cuda"):
                     outputs = self.forward_pass(images)
                     loss = self.compute_loss(outputs, targets)
                     loss = loss / self.training_config.accumulation_steps
@@ -471,8 +476,9 @@ class SOTABaseTrainer(ABC):
             total_loss += loss.item() * self.training_config.accumulation_steps
             num_batches += 1
 
-            # Log progress
-            if batch_idx % 50 == 0:
+            # Log progress - every 5 batches or if total batches <= 10
+            log_interval = min(5, max(1, len(self.train_loader) // 2))
+            if batch_idx % log_interval == 0:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 print(f"  Batch {batch_idx}/{len(self.train_loader)} - "
                       f"Loss: {loss.item() * self.training_config.accumulation_steps:.4f} - "
@@ -506,7 +512,7 @@ class SOTABaseTrainer(ABC):
 
             # Forward pass
             if self.scaler is not None:
-                with autocast():
+                with autocast("cuda"):
                     outputs = self.forward_pass(images)
             else:
                 outputs = self.forward_pass(images)

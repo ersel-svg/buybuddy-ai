@@ -31,6 +31,7 @@ from config import (
     SUPABASE_URL,
     SUPABASE_SERVICE_KEY,
     WEBHOOK_URL,
+    WEBHOOK_SECRET,
     MODEL_CONFIGS,
     AUGMENTATION_PRESETS,
 )
@@ -258,11 +259,22 @@ def send_webhook(
     }
 
     try:
+        # Build headers with authentication
+        headers = {"Content-Type": "application/json"}
+
+        # Add authentication if available
+        if WEBHOOK_SECRET:
+            headers["X-Webhook-Secret"] = WEBHOOK_SECRET
+        if SUPABASE_SERVICE_KEY:
+            # Use Supabase service key as API key for internal services
+            headers["apikey"] = SUPABASE_SERVICE_KEY
+            headers["Authorization"] = f"Bearer {SUPABASE_SERVICE_KEY}"
+
         response = httpx.post(
             WEBHOOK_URL,
             json=payload,
             timeout=30,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         print(f"Webhook sent: {status}, response: {response.status_code}")
     except Exception as e:
