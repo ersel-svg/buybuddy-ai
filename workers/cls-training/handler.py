@@ -299,6 +299,9 @@ DEFAULT_CONFIG = {
     "num_workers": 4,
     "image_size": 224,
     "seed": 42,
+    # Anti-overfitting parameters (API can override based on dataset size)
+    "drop_rate": 0.1,
+    "drop_path_rate": 0.1,
 }
 
 
@@ -357,15 +360,20 @@ class URLImageDataset(Dataset):
 
         # Apply transforms
         if self.transform is not None:
-            # Check if albumentations by checking the module name
+            # Check if albumentations by checking class name or module
+            transform_class = type(self.transform).__name__
+            transform_module = type(self.transform).__module__
             is_albumentations = (
-                hasattr(self.transform, '__module__') and
-                'albumentations' in self.transform.__module__
+                'albumentations' in transform_module or
+                (transform_class == 'Compose' and hasattr(self.transform, 'transforms'))
             )
+
             if is_albumentations:
+                # Albumentations style: pass image as keyword argument
                 transformed = self.transform(image=np.array(img))
                 img = transformed["image"]
             else:
+                # Torchvision style: pass image directly
                 img = self.transform(img)
 
         return img, label
@@ -542,13 +550,17 @@ def train_model(
         class_weights = class_weights.to(device)
         print(f"✓ Class weights enabled: {[f'{w:.3f}' for w in class_weights.tolist()]}")
 
-    # Create model
+    # Create model with configurable dropout rates
+    drop_rate = full_config.get("drop_rate", 0.1)
+    drop_path_rate = full_config.get("drop_path_rate", 0.1)
+    print(f"Dropout config: drop_rate={drop_rate}, drop_path_rate={drop_path_rate}")
+
     model, model_info = create_model(
         model_name,
         num_classes=num_classes,
         pretrained=True,
-        drop_rate=0.1,
-        drop_path_rate=0.1,
+        drop_rate=drop_rate,
+        drop_path_rate=drop_path_rate,
     )
     print(f"Model params: {model_info['params_m']:.1f}M")
 

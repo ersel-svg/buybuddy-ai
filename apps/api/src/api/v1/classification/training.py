@@ -197,10 +197,10 @@ async def create_training_run(data: CLSTrainingRunCreate, background_tasks: Back
     if not dataset.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Get class count from dataset
-    labels = supabase_service.client.table("cls_labels").select("class_id").eq("dataset_id", data.dataset_id).execute()
-    class_ids = list(set(l["class_id"] for l in labels.data or []))
-    num_classes = len(class_ids)
+    # Get active class count from dataset
+    active_classes = supabase_service.client.table("cls_classes").select("id").eq("dataset_id", data.dataset_id).eq("is_active", True).execute()
+    active_class_ids = set(c["id"] for c in active_classes.data or [])
+    num_classes = len(active_class_ids)
 
     if num_classes < 2:
         raise HTTPException(status_code=400, detail="Dataset must have at least 2 classes for training")
@@ -379,12 +379,25 @@ async def submit_training_job(training_run_id: str):
         class_names = [c.get("display_name") or c["name"] for c in classes]
         class_id_to_index = {c["id"]: i for i, c in enumerate(classes)}
 
-        # Fetch labeled images with their labels
-        labels_result = supabase_service.client.table("cls_labels").select(
-            "image_id, class_id, cls_images!inner(id, image_url)"
-        ).eq("dataset_id", dataset_id).execute()
+        # Fetch labeled images with their labels (with pagination to handle >1000 records)
+        labels_data = []
+        page_size = 1000
+        offset = 0
 
-        labels_data = labels_result.data or []
+        while True:
+            labels_result = supabase_service.client.table("cls_labels").select(
+                "image_id, class_id, cls_images!inner(id, image_url)"
+            ).eq("dataset_id", dataset_id).range(offset, offset + page_size - 1).execute()
+
+            batch = labels_result.data or []
+            labels_data.extend(batch)
+
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        logger.info(f"[CLS Training] Fetched {len(labels_data)} labels with pagination")
+
         if not labels_data:
             raise Exception("No labeled images found in dataset")
 
@@ -469,6 +482,36 @@ async def submit_training_job(training_run_id: str):
         }
         loss = loss_map.get(config.get("loss_function", "cross_entropy"), "label_smoothing")
 
+        # ===========================================
+        # Smart Defaults Based on Dataset Size
+        # ===========================================
+        num_train_samples = len(train_urls)
+        is_small_dataset = num_train_samples < 5000
+
+        # Augmentation preset - auto-select heavy for small datasets unless overridden
+        augmentation_preset = config.get("augmentation_preset")
+        if augmentation_preset is None:
+            augmentation_preset = "heavy" if is_small_dataset else "sota"
+            logger.info(f"[CLS Training] Auto-selected '{augmentation_preset}' augmentation for {num_train_samples} samples")
+
+        # MixUp/CutMix - enable for sota and heavy presets
+        use_mixup = config.get("use_mixup", augmentation_preset in ["sota", "heavy"])
+
+        # Dropout - higher for small datasets to prevent overfitting
+        drop_rate = config.get("drop_rate", 0.3 if is_small_dataset else 0.1)
+        drop_path_rate = config.get("drop_path_rate", 0.2 if is_small_dataset else 0.1)
+
+        # Weight decay - stronger regularization for small datasets
+        weight_decay = config.get("weight_decay", 0.05 if is_small_dataset else 0.01)
+
+        # Learning rate - lower default for stability
+        learning_rate = config.get("learning_rate", 0.0001)
+
+        # Class weights - auto-enable for better class balance
+        use_class_weights = config.get("use_class_weights", True)
+
+        logger.info(f"[CLS Training] Anti-overfitting config: drop_rate={drop_rate}, weight_decay={weight_decay}, mixup={use_mixup}")
+
         # Prepare RunPod input in worker's expected format
         runpod_input = {
             "training_run_id": training_run_id,
@@ -481,19 +524,26 @@ async def submit_training_job(training_run_id: str):
                 "model_name": model_name,
                 "epochs": config.get("epochs", 30),
                 "batch_size": config.get("batch_size", 32),
-                "learning_rate": config.get("learning_rate", 0.001),
-                "weight_decay": config.get("weight_decay", 0.01),
+                "learning_rate": learning_rate,
+                "weight_decay": weight_decay,
                 "optimizer": config.get("optimizer", "adamw"),
                 "scheduler": "cosine_warmup",
                 "warmup_epochs": config.get("warmup_epochs", 5),
                 "loss": loss,
                 "loss_smoothing": config.get("label_smoothing", 0.1),
-                "augmentation": config.get("augmentation_preset", "sota"),
-                "use_mixup": config.get("augmentation_preset") in ["sota", "heavy"],
+                "augmentation": augmentation_preset,
+                "use_mixup": use_mixup,
+                "mixup_alpha": config.get("mixup_alpha", 1.0 if augmentation_preset == "heavy" else 0.8),
+                "cutmix_alpha": config.get("cutmix_alpha", 1.0),
                 "use_amp": config.get("mixed_precision", True),
                 "use_ema": True,
+                "use_class_weights": use_class_weights,
                 "early_stopping": True,
                 "patience": config.get("early_stopping_patience", 10),
+                # Anti-overfitting parameters
+                "drop_rate": drop_rate,
+                "drop_path_rate": drop_path_rate,
+                "image_size": config.get("image_size", 224),
             },
             "supabase_url": settings.supabase_url,
             "supabase_key": settings.supabase_service_role_key,
