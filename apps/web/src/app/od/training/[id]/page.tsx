@@ -332,6 +332,20 @@ export default function ODTrainingDetailPage({
             Pending
           </Badge>
         );
+      case "started":
+        return (
+          <Badge variant="default" className="bg-blue-600">
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Starting
+          </Badge>
+        );
+      case "downloading":
+        return (
+          <Badge variant="default" className="bg-purple-600">
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Downloading
+          </Badge>
+        );
       case "failed":
         return (
           <Badge variant="destructive">

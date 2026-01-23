@@ -137,6 +137,16 @@ const statusConfig: Record<string, { icon: React.ReactNode; color: string; label
     color: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
     label: "Pending",
   },
+  started: {
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+    label: "Starting",
+  },
+  downloading: {
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    color: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
+    label: "Downloading",
+  },
   preparing: {
     icon: <Loader2 className="h-3 w-3 animate-spin" />,
     color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
@@ -528,7 +538,7 @@ export default function ODTrainingPage() {
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
       const selectableIds = paginatedRuns
-        .filter((run) => !["training", "preparing", "queued"].includes(run.status))
+        .filter((run) => !["training", "preparing", "queued", "started", "downloading"].includes(run.status))
         .map((run) => run.id);
       setSelectedRunIds(new Set([...selectedRunIds, ...selectableIds]));
     } else {
@@ -537,7 +547,7 @@ export default function ODTrainingPage() {
     }
   };
 
-  const selectableOnPage = paginatedRuns.filter((run) => !["training", "preparing", "queued"].includes(run.status));
+  const selectableOnPage = paginatedRuns.filter((run) => !["training", "preparing", "queued", "started", "downloading"].includes(run.status));
   const allSelectedOnPage = selectableOnPage.length > 0 &&
     selectableOnPage.every((run) => selectedRunIds.has(run.id));
   const someSelectedOnPage = selectableOnPage.some((run) => selectedRunIds.has(run.id));
@@ -629,11 +639,13 @@ export default function ODTrainingPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="started">Starting</SelectItem>
+                    <SelectItem value="downloading">Downloading</SelectItem>
                     <SelectItem value="training">Training</SelectItem>
                     <SelectItem value="completed">Completed</SelectItem>
                     <SelectItem value="failed">Failed</SelectItem>
                     <SelectItem value="cancelled">Cancelled</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select
@@ -754,7 +766,7 @@ export default function ODTrainingPage() {
                       </TableHeader>
                       <TableBody>
                         {paginatedRuns.map((run) => {
-                          const isSelectable = !["training", "preparing", "queued"].includes(run.status);
+                          const isSelectable = !["training", "preparing", "queued", "started", "downloading"].includes(run.status);
                           const isSelected = selectedRunIds.has(run.id);
                           const status = statusConfig[run.status] || statusConfig.pending;
                           return (
@@ -839,7 +851,7 @@ export default function ODTrainingPage() {
                                         View Details
                                       </Link>
                                     </DropdownMenuItem>
-                                    {["training", "preparing", "queued", "pending"].includes(run.status) && (
+                                    {["training", "preparing", "queued", "pending", "started", "downloading"].includes(run.status) && (
                                       <>
                                         <DropdownMenuSeparator />
                                         <DropdownMenuItem
