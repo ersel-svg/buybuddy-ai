@@ -112,11 +112,11 @@ def _get_albumentations_train(
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.2),
             A.RandomRotate90(p=0.3),
-            A.ShiftScaleRotate(
-                shift_limit=0.1,
-                scale_limit=0.2,
-                rotate_limit=30,
-                border_mode=0,
+            A.Affine(
+                translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
+                scale=(0.8, 1.2),
+                rotate=(-30, 30),
+                mode=0,
                 p=0.5,
             ),
             A.OneOf([
@@ -142,11 +142,10 @@ def _get_albumentations_train(
             A.GaussNoise(std_range=(0.02, 0.15), p=0.3),
             A.CLAHE(clip_limit=4.0, p=0.2),
             A.CoarseDropout(
-                max_holes=8,
-                max_height=img_size // 8,
-                max_width=img_size // 8,
-                min_holes=1,
-                fill_value=0,
+                num_holes_range=(1, 8),
+                hole_height_range=(img_size // 16, img_size // 8),
+                hole_width_range=(img_size // 16, img_size // 8),
+                fill=0,
                 p=0.3,
             ),
         ])
@@ -156,11 +155,11 @@ def _get_albumentations_train(
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.1),
             A.RandomRotate90(p=0.2),
-            A.ShiftScaleRotate(
-                shift_limit=0.1,
-                scale_limit=0.15,
-                rotate_limit=15,
-                border_mode=0,
+            A.Affine(
+                translate_percent={"x": (-0.1, 0.1), "y": (-0.1, 0.1)},
+                scale=(0.85, 1.15),
+                rotate=(-15, 15),
+                mode=0,
                 p=0.5,
             ),
             A.OneOf([
@@ -188,14 +187,13 @@ def _get_albumentations_train(
             ], p=0.2),
             A.GaussNoise(std_range=(0.02, 0.1), p=0.2),
             A.CoarseDropout(
-                max_holes=8,
-                max_height=img_size // 8,
-                max_width=img_size // 8,
-                min_holes=1,
-                fill_value=0,
+                num_holes_range=(1, 8),
+                hole_height_range=(img_size // 16, img_size // 8),
+                hole_width_range=(img_size // 16, img_size // 8),
+                fill=0,
                 p=0.25,
             ),
-            A.ImageCompression(quality_lower=70, quality_upper=100, p=0.2),
+            A.ImageCompression(quality_range=(70, 100), p=0.2),
         ])
 
     transforms_list.extend([

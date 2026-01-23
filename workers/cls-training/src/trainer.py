@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     CosineAnnealingWarmRestarts,
@@ -213,7 +213,7 @@ class ClassificationTrainer:
         self.scheduler = None
 
         # Mixed precision
-        self.scaler = GradScaler() if config.use_amp else None
+        self.scaler = GradScaler('cuda') if config.use_amp else None
 
         # EMA
         self.ema = EMA(model, config.ema_decay) if config.use_ema else None
@@ -341,7 +341,7 @@ class ClassificationTrainer:
                 use_soft_targets = True
 
             # Forward pass with AMP
-            with autocast(enabled=self.config.use_amp):
+            with autocast('cuda', enabled=self.config.use_amp):
                 outputs = self.model(images)
 
                 # Handle different output types

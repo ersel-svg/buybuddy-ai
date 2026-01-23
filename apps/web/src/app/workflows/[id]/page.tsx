@@ -10,6 +10,8 @@ import {
   Controls,
   MiniMap,
   Panel,
+  Handle,
+  Position,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
@@ -115,13 +117,27 @@ function WorkflowNodeComponent({
   const color = categoryColors[data.category] || "#6b7280";
   const icon = blockIcons[data.type] || <Box className="h-4 w-4" />;
 
+  // Determine if node has input/output based on type
+  const hasInput = data.type !== "image_input" && data.type !== "parameter_input";
+  const hasOutput = data.type !== "json_output" && data.type !== "grid_builder";
+
   return (
     <div
-      className={`px-4 py-3 rounded-lg border-2 bg-card shadow-md min-w-[160px] transition-all ${
+      className={`px-4 py-3 rounded-lg border-2 bg-card shadow-md min-w-[160px] transition-all relative ${
         selected ? "ring-2 ring-primary ring-offset-2" : ""
       }`}
       style={{ borderColor: color }}
     >
+      {/* Input Handle (left side) */}
+      {hasInput && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="image"
+          className="!w-3 !h-3 !bg-gray-400 hover:!bg-blue-500 !border-2 !border-white"
+        />
+      )}
+
       <div className="flex items-center gap-2">
         <div
           className="p-1.5 rounded"
@@ -131,6 +147,16 @@ function WorkflowNodeComponent({
         </div>
         <span className="font-medium text-sm">{data.label}</span>
       </div>
+
+      {/* Output Handle (right side) */}
+      {hasOutput && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="image"
+          className="!w-3 !h-3 !bg-gray-400 hover:!bg-green-500 !border-2 !border-white"
+        />
+      )}
     </div>
   );
 }

@@ -4310,16 +4310,36 @@ class ApiClient {
       config_schema: Record<string, unknown>;
     }>
   > {
-    const response = await this.request<{ blocks: Array<{
-      type: string;
-      display_name: string;
-      description: string;
-      category: string;
-      input_ports: Array<{ name: string; type: string; required: boolean; description?: string }>;
-      output_ports: Array<{ name: string; type: string; description?: string }>;
-      config_schema: Record<string, unknown>;
-    }>; categories: Record<string, unknown> }>("/api/v1/workflows/blocks");
-    return response.blocks;
+    const response = await this.request<{
+      blocks: Record<string, {
+        type: string;
+        name: string;
+        description: string;
+        inputs: Array<{ name: string; type: string; description?: string }>;
+        outputs: Array<{ name: string; type: string; description?: string }>;
+        config_schema: Record<string, unknown>;
+      }>;
+      categories: Record<string, { name: string; color: string; blocks: string[] }>;
+    }>("/api/v1/workflows/blocks");
+
+    // Build category lookup from categories
+    const categoryMap: Record<string, string> = {};
+    for (const [category, data] of Object.entries(response.categories)) {
+      for (const blockType of data.blocks) {
+        categoryMap[blockType] = category;
+      }
+    }
+
+    // Convert blocks object to array with category
+    return Object.values(response.blocks).map((block) => ({
+      type: block.type,
+      display_name: block.name,
+      description: block.description,
+      category: categoryMap[block.type] || "logic",
+      input_ports: block.inputs.map((i) => ({ ...i, required: true })),
+      output_ports: block.outputs,
+      config_schema: block.config_schema,
+    }));
   }
 }
 
