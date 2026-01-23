@@ -65,7 +65,7 @@ def _get_albumentations_train(
     preset: str,
     mean: Tuple[float, ...],
     std: Tuple[float, ...],
-) -> A.Compose:
+) -> Any:
     """Albumentations-based training transforms."""
 
     transforms_list = []
