@@ -19,7 +19,9 @@ Progress Updates:
 """
 
 import os
+import sys
 import json
+import signal
 import tempfile
 import traceback
 from datetime import datetime, timezone
@@ -27,6 +29,42 @@ from typing import Any, Optional, Dict
 import httpx
 
 import runpod
+
+
+# ===========================================
+# Graceful Shutdown Handling
+# ===========================================
+_shutdown_requested = False
+_current_training_run_id = None
+
+
+def _signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT for graceful shutdown."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    print(f"\n[SHUTDOWN] Signal {signum} received, initiating graceful shutdown...")
+
+    # Update training run status if we have one
+    if _current_training_run_id:
+        try:
+            update_training_run(
+                training_run_id=_current_training_run_id,
+                status="cancelled",
+                error="Training cancelled due to server shutdown",
+            )
+            print(f"[SHUTDOWN] Training run {_current_training_run_id} marked as cancelled")
+        except Exception as e:
+            print(f"[SHUTDOWN] Failed to update training run: {e}")
+
+
+def is_shutdown_requested() -> bool:
+    """Check if shutdown has been requested."""
+    return _shutdown_requested
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 from config import (
     TrainingConfig,
@@ -554,7 +592,15 @@ def handler(job: dict) -> dict:
     if model_type not in MODEL_CONFIGS:
         return {"error": f"Invalid model_type: {model_type}. Supported: {list(MODEL_CONFIGS.keys())}"}
 
+    # Set current training run for graceful shutdown
+    global _current_training_run_id
+    _current_training_run_id = training_run_id
+
     try:
+        # Check for early shutdown
+        if is_shutdown_requested():
+            return {"error": "Server shutdown in progress", "status": "cancelled"}
+
         # Update status to started
         update_training_run(
             training_run_id=training_run_id,
@@ -727,6 +773,9 @@ def handler(job: dict) -> dict:
             model_url=model_url,
         )
 
+        # Clear current training run
+        _current_training_run_id = None
+
         return {
             "status": "completed",
             "training_run_id": training_run_id,
@@ -742,19 +791,31 @@ def handler(job: dict) -> dict:
         error_msg = str(e)
         traceback.print_exc()
 
-        # Update status to failed
+        # Check if this was a shutdown
+        if is_shutdown_requested():
+            error_msg = "Training cancelled due to server shutdown"
+            status = "cancelled"
+        else:
+            status = "failed"
+
+        # Update status
         update_training_run(
             training_run_id=training_run_id,
-            status="failed",
+            status=status,
             error=error_msg,
         )
 
         return {
-            "status": "failed",
+            "status": status,
             "error": error_msg,
             "training_run_id": training_run_id,
         }
 
+    finally:
+        # Always clear current training run
+        _current_training_run_id = None
+
 
 # RunPod serverless entry point
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})

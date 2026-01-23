@@ -19,6 +19,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
+# Load .env file for local development (no-op in production where env vars are set)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, env vars must be set externally
+
 
 @dataclass
 class TrainingConfig:
