@@ -431,6 +431,9 @@ export interface CreateTrainingRequest {
     learning_rate: number;
     weight_decay: number;
 
+    // Optimizer
+    optimizer: OptimizerType;
+
     // Scheduler
     scheduler: SchedulerType;
     warmup_epochs: number;
@@ -439,6 +442,7 @@ export interface CreateTrainingRequest {
     // SOTA
     use_ema: boolean;
     ema_decay: number;
+    ema_warmup_steps: number;
     mixed_precision: boolean;
     llrd_decay: number;
     head_lr_factor: number;

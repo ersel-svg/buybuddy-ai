@@ -252,16 +252,21 @@ class ODTrainingConfigBase(BaseModel):
     batch_size: int = 16
     learning_rate: float = 0.0001
     image_size: int = 640
+    accumulation_steps: int = Field(default=1, description="Gradient accumulation steps")
+
+    # Optimizer
+    optimizer: str = Field(default="adamw", description="Optimizer: adamw, sgd, adam")
 
     # SOTA: Augmentation preset (IMPORTANT for user)
     augmentation_preset: str = Field(
         default="sota",
-        description="Augmentation preset: sota, heavy, medium, light, none"
+        description="Augmentation preset: sota-v2, sota, heavy, medium, light, none"
     )
 
     # SOTA: EMA (Exponential Moving Average)
     use_ema: bool = Field(default=True, description="Enable EMA for stable training")
     ema_decay: float = Field(default=0.9999, description="EMA decay rate")
+    ema_warmup_steps: int = Field(default=2000, description="EMA warmup steps")
 
     # SOTA: LLRD (Layer-wise Learning Rate Decay)
     llrd_decay: float = Field(
@@ -274,7 +279,9 @@ class ODTrainingConfigBase(BaseModel):
     )
 
     # SOTA: Scheduler
+    scheduler: str = Field(default="cosine", description="Scheduler: cosine, step, linear")
     warmup_epochs: int = Field(default=3, description="Linear warmup epochs")
+    min_lr_ratio: float = Field(default=0.01, description="Min LR ratio for scheduler")
 
     # SOTA: Mixed Precision
     mixed_precision: bool = Field(default=True, description="Enable FP16 training")
@@ -282,9 +289,16 @@ class ODTrainingConfigBase(BaseModel):
     # SOTA: Regularization
     weight_decay: float = Field(default=0.0001, description="Weight decay")
     gradient_clip: float = Field(default=1.0, description="Gradient clipping max norm")
+    label_smoothing: float = Field(default=0.0, description="Label smoothing factor")
 
     # SOTA: Multi-scale training
     multi_scale: bool = Field(default=False, description="Enable multi-scale training")
+    multi_scale_range: Optional[list[float]] = Field(default=None, description="Multi-scale range [min, max]")
+
+    # Model options
+    pretrained: bool = Field(default=True, description="Use pretrained weights")
+    freeze_backbone: bool = Field(default=False, description="Freeze backbone during training")
+    freeze_epochs: int = Field(default=0, description="Epochs to keep backbone frozen")
 
     # Early stopping
     patience: int = Field(default=20, description="Early stopping patience (epochs)")

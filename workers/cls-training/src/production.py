@@ -132,6 +132,25 @@ def validate_dataset(
         elif count < config.min_images_per_class:
             warnings.append(f"Class '{class_names[class_idx]}' has only {count} samples")
 
+    # Calculate class imbalance ratio
+    imbalance_ratio = 1.0
+    recommend_class_weights = False
+    if train_dist and len(train_dist) > 0:
+        counts = [train_dist.get(i, 0) for i in range(num_classes)]
+        non_zero_counts = [c for c in counts if c > 0]
+        if non_zero_counts:
+            max_count = max(non_zero_counts)
+            min_count = min(non_zero_counts)
+            if min_count > 0:
+                imbalance_ratio = max_count / min_count
+                # Recommend class weights if imbalance > 3:1
+                if imbalance_ratio > 3.0:
+                    recommend_class_weights = True
+                    warnings.append(
+                        f"Class imbalance detected (ratio {imbalance_ratio:.1f}:1). "
+                        "Consider enabling class_weights or using focal loss."
+                    )
+
     # Check URLs
     empty_urls = sum(1 for item in train_urls + val_urls if not item.get("url"))
     if empty_urls > 0:
@@ -145,6 +164,8 @@ def validate_dataset(
         "train_samples": len(train_urls),
         "val_samples": len(val_urls),
         "class_distribution": dict(train_dist),
+        "imbalance_ratio": imbalance_ratio,
+        "recommend_class_weights": recommend_class_weights,
     }
 
 

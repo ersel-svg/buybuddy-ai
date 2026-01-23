@@ -27,23 +27,15 @@ import "@xyflow/react/dist/style.css";
 
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
+  NodeConfigDrawer,
+  WorkflowParameters,
+  type NodeData,
+  type WorkflowParameter,
+  type NodeInfo,
+  type EdgeInfo,
+} from "@/components/workflows";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -51,7 +43,6 @@ import {
   Save,
   Play,
   Loader2,
-  Settings,
   Layers,
   Cpu,
   ScanLine,
@@ -66,6 +57,7 @@ import {
   PenTool,
   Search,
   GripVertical,
+  Variable,
 } from "lucide-react";
 
 // Node data type
@@ -75,6 +67,7 @@ interface WorkflowNodeData extends Record<string, unknown> {
   category: string;
   config?: Record<string, unknown>;
   model_id?: string;
+  model_source?: "pretrained" | "trained";
 }
 
 // Custom node type
@@ -261,7 +254,9 @@ function WorkflowEditorContent() {
   // State with proper types - use useState instead of useNodesState for better control
   const [nodes, setNodes] = useState<WorkflowNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [parameters, setParameters] = useState<WorkflowParameter[]>([]);
   const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
+  const [parametersOpen, setParametersOpen] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
   // Fetch workflow
@@ -275,12 +270,6 @@ function WorkflowEditorContent() {
   const { data: blocks } = useQuery({
     queryKey: ["workflow-blocks"],
     queryFn: () => apiClient.getWorkflowBlocks(),
-  });
-
-  // Fetch models for model blocks (flattened list)
-  const { data: models } = useQuery({
-    queryKey: ["workflow-models-list"],
-    queryFn: () => apiClient.getWorkflowModelsList(),
   });
 
   // Get block category
@@ -299,7 +288,12 @@ function WorkflowEditorContent() {
         id: string;
         type: string;
         position: { x: number; y: number };
-        data?: { label?: string; config?: Record<string, unknown>; model_id?: string };
+        data?: {
+          label?: string;
+          config?: Record<string, unknown>;
+          model_id?: string;
+          model_source?: "pretrained" | "trained";
+        };
       }>;
       const defEdges = workflow.definition.edges as Array<{
         id: string;
@@ -308,6 +302,7 @@ function WorkflowEditorContent() {
         sourceHandle?: string;
         targetHandle?: string;
       }>;
+      const defParams = ((workflow.definition as Record<string, unknown>).parameters as WorkflowParameter[]) || [];
 
       const flowNodes: WorkflowNode[] = (defNodes || []).map((node) => ({
         id: node.id,
@@ -319,6 +314,7 @@ function WorkflowEditorContent() {
           category: getBlockCategory(node.type),
           config: node.data?.config || {},
           model_id: node.data?.model_id,
+          model_source: node.data?.model_source,
         },
       }));
 
@@ -332,6 +328,7 @@ function WorkflowEditorContent() {
 
       setNodes(flowNodes);
       setEdges(flowEdges);
+      setParameters(defParams);
     }
   }, [workflow, getBlockCategory]);
 
@@ -347,6 +344,7 @@ function WorkflowEditorContent() {
             label: node.data.label,
             config: node.data.config || {},
             model_id: node.data.model_id,
+            model_source: node.data.model_source,
           },
         })),
         edges: edges.map((edge) => ({
@@ -356,6 +354,7 @@ function WorkflowEditorContent() {
           sourceHandle: edge.sourceHandle,
           targetHandle: edge.targetHandle,
         })),
+        parameters: parameters,
       };
       return apiClient.updateWorkflow(workflowId, { definition });
     },
@@ -514,6 +513,20 @@ function WorkflowEditorContent() {
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
+            size="icon"
+            onClick={() => setParametersOpen(true)}
+            className="relative"
+          >
+            <Variable className="h-4 w-4" />
+            {parameters.length > 0 && (
+              <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center">
+                {parameters.length}
+              </span>
+            )}
+          </Button>
+          <Separator orientation="vertical" className="h-6" />
+          <Button
+            variant="outline"
             onClick={() => saveMutation.mutate()}
             disabled={!hasChanges || saveMutation.isPending}
           >
@@ -576,114 +589,93 @@ function WorkflowEditorContent() {
           </ReactFlow>
         </div>
 
-        {/* Node config sheet */}
-        <Sheet open={!!selectedNode} onOpenChange={() => setSelectedNode(null)}>
-          <SheetContent className="w-80">
-            <SheetHeader>
-              <SheetTitle className="flex items-center gap-2">
-                <Settings className="h-4 w-4" />
-                Node Configuration
-              </SheetTitle>
-              <SheetDescription>Configure the selected node</SheetDescription>
-            </SheetHeader>
+        {/* Node Configuration Drawer */}
+        <NodeConfigDrawer
+          open={!!selectedNode}
+          onClose={() => setSelectedNode(null)}
+          node={selectedNode ? { id: selectedNode.id, data: selectedNode.data as NodeData } : null}
+          onNodeChange={(nodeId, updates) => {
+            setNodes((nds) =>
+              nds.map((n) =>
+                n.id === nodeId
+                  ? { ...n, data: { ...n.data, ...updates } }
+                  : n
+              )
+            );
+            setHasChanges(true);
+          }}
+          onNodeDelete={(nodeId) => {
+            setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+            setEdges((eds) =>
+              eds.filter((e) => e.source !== nodeId && e.target !== nodeId)
+            );
+            setSelectedNode(null);
+            setHasChanges(true);
+          }}
+          onNodeDuplicate={(nodeId) => {
+            const nodeToDuplicate = nodes.find((n) => n.id === nodeId);
+            if (!nodeToDuplicate) return;
 
-            {selectedNode && (
-              <div className="mt-4 space-y-4">
-                <div className="space-y-2">
-                  <Label>Node Type</Label>
-                  <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
-                    {blockIcons[selectedNode.data.type] || <Box className="h-4 w-4" />}
-                    <span className="text-sm font-medium">
-                      {selectedNode.data.label}
-                    </span>
-                  </div>
-                </div>
+            const newNode: WorkflowNode = {
+              id: `${nodeToDuplicate.data.type}_${Date.now()}`,
+              type: "workflowNode",
+              position: {
+                x: nodeToDuplicate.position.x + 50,
+                y: nodeToDuplicate.position.y + 50,
+              },
+              data: {
+                ...nodeToDuplicate.data,
+                label: `${nodeToDuplicate.data.label} (Copy)`,
+              },
+            };
 
-                <div className="space-y-2">
-                  <Label>Label</Label>
-                  <Input
-                    value={selectedNode.data.label}
-                    onChange={(e) => {
-                      const newLabel = e.target.value;
-                      setNodes((nds) =>
-                        nds.map((n) =>
-                          n.id === selectedNode.id
-                            ? { ...n, data: { ...n.data, label: newLabel } }
-                            : n
-                        )
-                      );
-                      setHasChanges(true);
-                    }}
-                  />
-                </div>
+            setNodes((nds) => [...nds, newNode]);
+            setHasChanges(true);
+            toast.success("Node duplicated");
+          }}
+          allNodes={nodes.map((n): NodeInfo => ({
+            id: n.id,
+            label: (n.data as WorkflowNodeData).label,
+            type: (n.data as WorkflowNodeData).type,
+            outputPorts: [], // Will be filled from BLOCK_PORTS in drawer
+          }))}
+          edges={edges.map((e): EdgeInfo => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            sourceHandle: e.sourceHandle || undefined,
+            targetHandle: e.targetHandle || undefined,
+          }))}
+          onEdgeChange={(sourceId, sourceHandle, targetId, targetHandle) => {
+            // Remove existing edge to this target handle
+            setEdges((eds) => {
+              const filtered = eds.filter(
+                (e) => !(e.target === targetId && e.targetHandle === targetHandle)
+              );
+              // Add new edge
+              const newEdge: Edge = {
+                id: `e_${sourceId}_${targetId}_${Date.now()}`,
+                source: sourceId,
+                target: targetId,
+                sourceHandle,
+                targetHandle,
+              };
+              return [...filtered, newEdge];
+            });
+            setHasChanges(true);
+          }}
+        />
 
-                {/* Model selection for model blocks */}
-                {["detection", "classification", "embedding"].includes(
-                  selectedNode.data.type
-                ) && (
-                  <div className="space-y-2">
-                    <Label>Model</Label>
-                    <Select
-                      value={selectedNode.data.model_id || ""}
-                      onValueChange={(value) => {
-                        setNodes((nds) =>
-                          nds.map((n) =>
-                            n.id === selectedNode.id
-                              ? { ...n, data: { ...n.data, model_id: value } }
-                              : n
-                          )
-                        );
-                        setHasChanges(true);
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select model..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {models?.items
-                          ?.filter((m) => m.category === selectedNode.data.type)
-                          .map((model) => (
-                            <SelectItem key={model.id} value={model.id}>
-                              <div className="flex items-center gap-2">
-                                <span>{model.name}</span>
-                                {model.is_default && (
-                                  <Badge variant="secondary" className="text-xs">
-                                    Default
-                                  </Badge>
-                                )}
-                              </div>
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                <Separator />
-
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="w-full"
-                  onClick={() => {
-                    setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
-                    setEdges((eds) =>
-                      eds.filter(
-                        (e) =>
-                          e.source !== selectedNode.id &&
-                          e.target !== selectedNode.id
-                      )
-                    );
-                    setSelectedNode(null);
-                    setHasChanges(true);
-                  }}
-                >
-                  Delete Node
-                </Button>
-              </div>
-            )}
-          </SheetContent>
-        </Sheet>
+        {/* Workflow Parameters Panel */}
+        <WorkflowParameters
+          open={parametersOpen}
+          onClose={() => setParametersOpen(false)}
+          parameters={parameters}
+          onParametersChange={(newParams) => {
+            setParameters(newParams);
+            setHasChanges(true);
+          }}
+        />
       </div>
     </div>
   );

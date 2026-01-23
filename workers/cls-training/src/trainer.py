@@ -330,40 +330,65 @@ class ClassificationTrainer:
         total = 0
         accumulation_steps = 0
 
+        oom_count = 0
         for batch_idx, (images, targets) in enumerate(train_loader):
-            images = images.to(self.device)
-            targets = targets.to(self.device)
+            try:
+                images = images.to(self.device)
+                targets = targets.to(self.device)
 
-            # MixUp / CutMix
-            use_soft_targets = False
-            if self.mixup is not None and self.model.training:
-                images, targets = self.mixup(images, targets)
-                use_soft_targets = True
+                # MixUp / CutMix
+                use_soft_targets = False
+                if self.mixup is not None and self.model.training:
+                    images, targets = self.mixup(images, targets)
+                    use_soft_targets = True
 
-            # Forward pass with AMP
-            with autocast('cuda', enabled=self.config.use_amp):
-                outputs = self.model(images)
+                # Forward pass with AMP
+                with autocast('cuda', enabled=self.config.use_amp):
+                    outputs = self.model(images)
 
-                # Handle different output types
-                if isinstance(outputs, dict):
-                    logits = outputs["logits"]
+                    # Handle different output types
+                    if isinstance(outputs, dict):
+                        logits = outputs["logits"]
+                    else:
+                        logits = outputs
+
+                    # Compute loss
+                    if use_soft_targets:
+                        # Soft targets from MixUp/CutMix
+                        loss = self._soft_cross_entropy(logits, targets)
+                    else:
+                        loss = self.loss_fn(logits, targets)
+
+                    loss = loss / self.config.gradient_accumulation
+
+                # NaN/Inf detection - stop early to avoid corrupted model
+                if torch.isnan(loss) or torch.isinf(loss):
+                    raise ValueError(
+                        f"NaN/Inf loss detected at epoch {epoch}, batch {batch_idx}. "
+                        "Try reducing learning rate or using gradient clipping."
+                    )
+
+                # Backward pass
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
                 else:
-                    logits = outputs
+                    loss.backward()
 
-                # Compute loss
-                if use_soft_targets:
-                    # Soft targets from MixUp/CutMix
-                    loss = self._soft_cross_entropy(logits, targets)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    oom_count += 1
+                    # Clear memory and skip this batch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    self.optimizer.zero_grad()
+                    if oom_count <= 3:
+                        print(f"⚠️  OOM on batch {batch_idx}, skipping (count: {oom_count})")
+                        continue
+                    else:
+                        print(f"❌ Too many OOM errors ({oom_count}), stopping training")
+                        raise
                 else:
-                    loss = self.loss_fn(logits, targets)
-
-                loss = loss / self.config.gradient_accumulation
-
-            # Backward pass
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
+                    raise
 
             accumulation_steps += 1
 
@@ -499,6 +524,7 @@ class ClassificationTrainer:
         val_loader: DataLoader,
         save_dir: Optional[str] = None,
         callback: Optional[Callable] = None,
+        shutdown_checker: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """
         Full training loop.
@@ -508,6 +534,7 @@ class ClassificationTrainer:
             val_loader: Validation data loader
             save_dir: Directory to save checkpoints
             callback: Optional callback function(epoch, metrics)
+            shutdown_checker: Optional function that returns True if shutdown requested
 
         Returns:
             Training history and best metrics
@@ -522,6 +549,11 @@ class ClassificationTrainer:
         start_time = time.time()
 
         for epoch in range(self.config.epochs):
+            # Check for shutdown request at start of each epoch
+            if shutdown_checker and shutdown_checker():
+                print(f"⚠️  Shutdown requested. Stopping training at epoch {epoch + 1}.")
+                break
+
             epoch_start = time.time()
 
             # Train
@@ -529,6 +561,10 @@ class ClassificationTrainer:
 
             # Validate
             val_metrics = self.validate(val_loader)
+
+            # Memory cleanup between epochs to prevent gradual buildup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             # Update plateau scheduler
             if isinstance(self.scheduler, ReduceLROnPlateau):

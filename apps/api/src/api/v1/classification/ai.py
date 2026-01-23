@@ -214,8 +214,8 @@ async def predict_single(request: CLSAIPredictRequest) -> CLSAIPredictResponse:
         runpod_input = {
             "task": "classify",
             "model": request.model,
-            "image_url": image_url,
-            "class_names": class_names,
+            "images": [{"id": request.image_id, "url": image_url}],  # Worker expects 'images' array
+            "classes": class_names,  # Worker expects 'classes' not 'class_names'
             "top_k": request.top_k,
         }
 
@@ -238,12 +238,19 @@ async def predict_single(request: CLSAIPredictRequest) -> CLSAIPredictResponse:
             raise HTTPException(status_code=500, detail=f"Classification failed: {error}")
 
         output = result.get("output", {})
-        raw_predictions = output.get("predictions", [])
+
+        # Worker returns results array, get first result's predictions
+        results = output.get("results", [])
+        if results:
+            raw_predictions = results[0].get("predictions", [])
+        else:
+            # Fallback for legacy format
+            raw_predictions = output.get("predictions", [])
 
         # Convert to response format
         predictions = []
         for pred in raw_predictions:
-            class_name = pred.get("label", pred.get("class_name", ""))
+            class_name = pred.get("class", pred.get("label", pred.get("class_name", "")))
             confidence = pred.get("confidence", 0)
 
             if confidence < request.threshold:
@@ -385,7 +392,7 @@ async def batch_classify(
         "task": "batch_classify",
         "model": request.model,
         "images": image_data,
-        "class_names": class_names,
+        "classes": class_names,  # Worker expects 'classes' not 'class_names'
         "top_k": request.top_k,
         "job_id": job_id,
     }
@@ -538,7 +545,8 @@ async def _save_predictions_as_labels(
             valid_predictions = valid_predictions[:1]
 
         for pred in valid_predictions:
-            class_name = pred.get("label", pred.get("class_name", ""))
+            # Worker returns "class", fallback to "label" or "class_name" for compatibility
+            class_name = pred.get("class", pred.get("label", pred.get("class_name", "")))
             confidence = pred.get("confidence", 0)
 
             class_id = class_map.get(class_name)

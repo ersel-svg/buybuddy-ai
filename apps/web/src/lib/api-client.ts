@@ -4229,8 +4229,10 @@ class ApiClient {
   }
 
   // Get flattened list of all models for workflow blocks
+  // Uses the new /models/list endpoint for server-side flattening
   async getWorkflowModelsList(params?: {
     model_type?: string;
+    source?: "pretrained" | "trained";
     include_inactive?: boolean;
   }): Promise<{
     items: Array<{
@@ -4241,52 +4243,34 @@ class ApiClient {
       source: "pretrained" | "trained";
       is_active: boolean;
       is_default?: boolean;
+      checkpoint_url?: string;
+      class_mapping?: Record<string, string>;
       created_at?: string;
     }>;
     total: number;
   }> {
-    const data = await this.getWorkflowModels(params);
-    const items: Array<{
-      id: string;
-      name: string;
-      model_type: string;
-      category: string;
-      source: "pretrained" | "trained";
-      is_active: boolean;
-      is_default?: boolean;
-      created_at?: string;
-    }> = [];
+    const queryParams = new URLSearchParams();
+    if (params?.model_type) queryParams.append("model_type", params.model_type);
+    if (params?.source) queryParams.append("source", params.source);
+    if (params?.include_inactive) queryParams.append("include_inactive", "true");
 
-    // Flatten the nested structure
-    for (const category of ["detection", "classification", "embedding", "segmentation"] as const) {
-      const categoryData = data[category];
-      if (categoryData) {
-        for (const model of categoryData.pretrained || []) {
-          items.push({
-            id: model.id,
-            name: model.name,
-            model_type: model.model_type,
-            category,
-            source: "pretrained",
-            is_active: model.is_active,
-            is_default: false,
-          });
-        }
-        for (const model of categoryData.trained || []) {
-          items.push({
-            id: model.id,
-            name: model.name,
-            model_type: model.model_type,
-            category,
-            source: "trained",
-            is_active: model.is_active,
-            is_default: false,
-          });
-        }
-      }
-    }
-
-    return { items, total: items.length };
+    const queryString = queryParams.toString();
+    const url = `/api/v1/workflows/models/list${queryString ? `?${queryString}` : ""}`;
+    return this.request<{
+      items: Array<{
+        id: string;
+        name: string;
+        model_type: string;
+        category: string;
+        source: "pretrained" | "trained";
+        is_active: boolean;
+        is_default?: boolean;
+        checkpoint_url?: string;
+        class_mapping?: Record<string, string>;
+        created_at?: string;
+      }>;
+      total: number;
+    }>(url, { method: "GET" });
   }
 
   // Block Registry

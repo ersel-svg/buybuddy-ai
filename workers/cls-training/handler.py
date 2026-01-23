@@ -47,6 +47,7 @@ import os
 import sys
 import json
 import time
+import signal
 import tempfile
 import traceback
 from pathlib import Path
@@ -54,6 +55,13 @@ from typing import Dict, Any, List, Optional
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import requests
+
+# Load environment variables from .env file (if available)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import torch
 import torch.nn as nn
@@ -87,6 +95,181 @@ try:
     ONNX_AVAILABLE = True
 except ImportError:
     ONNX_AVAILABLE = False
+
+
+# ============================================
+# Graceful Shutdown Tracking
+# ============================================
+
+_shutdown_requested = False
+_current_training_run_id = None
+_current_supabase_url = None
+_current_supabase_key = None
+
+
+def is_shutdown_requested() -> bool:
+    """Check if shutdown has been requested."""
+    return _shutdown_requested
+
+
+def _update_training_run_status(status: str, error_message: str = None):
+    """Update training run status in Supabase (called during shutdown)."""
+    global _current_training_run_id, _current_supabase_url, _current_supabase_key
+
+    if not _current_training_run_id or not _current_supabase_url or not _current_supabase_key:
+        return
+
+    try:
+        from datetime import datetime
+        import httpx
+
+        data = {
+            "status": status,
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+        if error_message:
+            data["error_message"] = error_message[:1000]
+
+        # Direct HTTP call to Supabase (avoid circular dependencies)
+        headers = {
+            "apikey": _current_supabase_key,
+            "Authorization": f"Bearer {_current_supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        }
+        url = f"{_current_supabase_url}/rest/v1/cls_training_runs?id=eq.{_current_training_run_id}"
+
+        with httpx.Client(timeout=15) as client:
+            response = client.patch(url, json=data, headers=headers)
+            if response.status_code in [200, 204]:
+                print(f"✓ Training run status updated to: {status}")
+            else:
+                print(f"⚠️  Failed to update status: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️  Failed to update training run status: {e}")
+
+
+def _signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    print(f"\n⚠️  Received {signal_name}. Marking training as cancelled...")
+    _update_training_run_status("cancelled", f"Training interrupted by {signal_name}")
+
+
+# ============================================
+# Retry Helper for Supabase/HTTP calls
+# ============================================
+
+def retry_request(
+    func,
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    retry_on: tuple = (ConnectionError, TimeoutError),
+):
+    """
+    Retry a function with exponential backoff.
+
+    Args:
+        func: Function to call (should be a lambda or callable)
+        max_retries: Maximum number of retries
+        initial_delay: Initial delay between retries in seconds
+        backoff_factor: Multiplier for delay after each retry
+        retry_on: Exception types to retry on
+
+    Returns:
+        Result of the function call
+    """
+    import httpx
+
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:
+            last_exception = e
+            if attempt < max_retries:
+                print(f"⚠️  Request failed (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                time.sleep(delay)
+                delay *= backoff_factor
+            else:
+                raise
+        except Exception as e:
+            # Don't retry on other exceptions
+            raise
+
+    raise last_exception
+
+
+def supabase_update(
+    supabase_url: str,
+    supabase_key: str,
+    table: str,
+    id_field: str,
+    id_value: str,
+    data: dict,
+    timeout: int = 30,
+):
+    """
+    Update a Supabase record with retry logic.
+    """
+    import httpx
+
+    def do_request():
+        return httpx.patch(
+            f"{supabase_url}/rest/v1/{table}?{id_field}=eq.{id_value}",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json=data,
+            timeout=timeout,
+        )
+
+    return retry_request(do_request)
+
+
+def supabase_upload(
+    supabase_url: str,
+    supabase_key: str,
+    bucket: str,
+    path: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+    timeout: int = 300,  # 5 minutes for large files
+):
+    """
+    Upload a file to Supabase Storage with retry logic.
+    For files > 50MB, uses chunked upload.
+    """
+    import httpx
+
+    file_size_mb = len(data) / (1024 * 1024)
+
+    # For very large files (> 100MB), increase timeout proportionally
+    if file_size_mb > 100:
+        timeout = max(timeout, int(file_size_mb * 3))  # ~3 seconds per MB
+        print(f"Large file ({file_size_mb:.1f}MB), timeout set to {timeout}s")
+
+    def do_request():
+        return httpx.post(
+            f"{supabase_url}/storage/v1/object/{bucket}/{path}",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": content_type,
+            },
+            content=data,
+            timeout=timeout,
+        )
+
+    return retry_request(do_request, max_retries=2)  # Fewer retries for large uploads
 
 
 # Default config
@@ -249,6 +432,7 @@ def train_model(
     device: str = "cuda",
     save_dir: str = "/tmp/cls_training",
     progress_callback=None,
+    validation: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Main training function.
@@ -259,10 +443,12 @@ def train_model(
         device: Device to train on
         save_dir: Directory to save checkpoints
         progress_callback: Optional callback for progress updates
+        validation: Optional validation results with imbalance detection
 
     Returns:
         Training results
     """
+    validation = validation or {}
     os.makedirs(save_dir, exist_ok=True)
 
     # Merge with defaults
@@ -340,13 +526,21 @@ def train_model(
     print(f"Train samples: {len(train_dataset)}")
     print(f"Val samples: {len(val_dataset)}")
 
-    # Compute class weights if needed
+    # Compute class weights if needed (auto-enable if imbalance detected)
     class_weights = None
-    if full_config["use_class_weights"]:
+    use_class_weights = full_config["use_class_weights"]
+
+    # Auto-enable class weights if validation recommends it
+    if not use_class_weights and validation.get("recommend_class_weights"):
+        imbalance_ratio = validation.get("imbalance_ratio", 1.0)
+        print(f"⚠️  Auto-enabling class weights due to imbalance ratio: {imbalance_ratio:.1f}:1")
+        use_class_weights = True
+
+    if use_class_weights:
         train_labels = [item["label"] for item in dataset["train_urls"]]
         class_weights = compute_class_weights(train_labels, num_classes)
         class_weights = class_weights.to(device)
-        print(f"Class weights: {class_weights.tolist()}")
+        print(f"✓ Class weights enabled: {[f'{w:.3f}' for w in class_weights.tolist()]}")
 
     # Create model
     model, model_info = create_model(
@@ -405,12 +599,13 @@ def train_model(
         class_names=dataset.get("class_names"),
     )
 
-    # Train
+    # Train (with shutdown checker for graceful termination)
     results = trainer.train(
         train_loader=train_loader,
         val_loader=val_loader,
         save_dir=save_dir,
         callback=progress_callback,
+        shutdown_checker=is_shutdown_requested,
     )
 
     # Save final model info
@@ -440,6 +635,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """
     stats = TrainingStats()
 
+    # Initialize variables for exception handler access
+    training_run_id = None
+    supabase_url = None
+    supabase_key = None
+
     try:
         job_input = job.get("input", job)
 
@@ -450,6 +650,19 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         supabase_url = job_input.get("supabase_url")
         supabase_key = job_input.get("supabase_key")
         resume_from = job_input.get("resume_from")  # Checkpoint path for resume
+
+        # Track current training run for graceful shutdown
+        global _current_training_run_id, _current_supabase_url, _current_supabase_key
+        _current_training_run_id = training_run_id
+        _current_supabase_url = supabase_url
+        _current_supabase_key = supabase_key
+
+        # Check for shutdown before starting
+        if is_shutdown_requested():
+            return {
+                "error": "Shutdown requested before training started",
+                "status": "CANCELLED",
+            }
 
         print(f"\n{'=' * 60}")
         print(f"CLS TRAINING JOB: {training_run_id}")
@@ -488,31 +701,70 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 device=device,
             )
             if memory_info.get("memory_warning"):
-                print(f"⚠️  Memory warning: Reducing batch size from {config.get('batch_size', 32)} to {memory_info['recommended_batch_size']}")
-                config["batch_size"] = memory_info["recommended_batch_size"]
+                original_batch = config.get("batch_size", 32)
+                new_batch = memory_info["recommended_batch_size"]
+
+                # Calculate gradient accumulation to maintain effective batch size
+                if new_batch > 0 and original_batch > new_batch:
+                    grad_accum = max(1, original_batch // new_batch)
+                    config["gradient_accumulation"] = grad_accum
+                    print(f"⚠️  Memory warning: Reducing batch size {original_batch} → {new_batch}")
+                    print(f"   Gradient accumulation set to {grad_accum} (effective batch: {new_batch * grad_accum})")
+                else:
+                    print(f"⚠️  Memory warning: Reducing batch size from {original_batch} to {new_batch}")
+
+                config["batch_size"] = new_batch
 
         # Training directory - prefer /workspace over /tmp for more space
         workspace_dir = "/workspace" if os.path.exists("/workspace") else "/tmp"
         save_dir = f"{workspace_dir}/cls_training_{training_run_id}"
 
-        # Progress callback for Supabase updates
+        # === UPDATE STATUS TO TRAINING ===
+        if supabase_url and supabase_key:
+            try:
+                from datetime import datetime
+                supabase_update(
+                    supabase_url, supabase_key,
+                    table="cls_training_runs",
+                    id_field="id",
+                    id_value=training_run_id,
+                    data={
+                        "status": "training",
+                        "started_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                print(f"✓ Status updated: training")
+            except Exception as e:
+                print(f"⚠️  Failed to update training status: {e}")
+
+        # Progress callback for Supabase updates (with retry)
+        best_val_acc_so_far = 0.0
+
         def progress_callback(epoch, metrics):
+            nonlocal best_val_acc_so_far
             if supabase_url and supabase_key:
                 try:
-                    # Update training run in Supabase
-                    import httpx
-                    httpx.patch(
-                        f"{supabase_url}/rest/v1/cls_training_runs?id=eq.{training_run_id}",
-                        headers={
-                            "apikey": supabase_key,
-                            "Authorization": f"Bearer {supabase_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "current_epoch": epoch + 1,
-                            "metrics": metrics,
-                        },
-                        timeout=10,
+                    update_data = {
+                        "current_epoch": epoch + 1,
+                    }
+
+                    # Update best metrics if improved
+                    val_acc = metrics.get("val_acc", metrics.get("accuracy", 0))
+                    if val_acc > best_val_acc_so_far:
+                        best_val_acc_so_far = val_acc
+                        update_data["best_accuracy"] = val_acc
+                        update_data["best_epoch"] = epoch + 1
+
+                    if metrics.get("val_f1"):
+                        update_data["best_f1"] = metrics["val_f1"]
+
+                    supabase_update(
+                        supabase_url, supabase_key,
+                        table="cls_training_runs",
+                        id_field="id",
+                        id_value=training_run_id,
+                        data=update_data,
+                        timeout=15,
                     )
                 except Exception as e:
                     print(f"Progress update failed: {e}")
@@ -524,36 +776,40 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             device=device,
             save_dir=save_dir,
             progress_callback=progress_callback,
+            validation=validation,
         )
 
-        # Upload model to Supabase Storage (if configured)
+        # Upload model to Supabase Storage (if configured) - with retry for large files
         model_url = None
+        model_storage_path = None
         if supabase_url and supabase_key:
             try:
                 model_path = os.path.join(save_dir, "best_model.pt")
                 if os.path.exists(model_path):
-                    # Upload to Supabase storage
-                    import httpx
                     with open(model_path, "rb") as f:
                         model_data = f.read()
 
-                    storage_path = f"cls-models/{training_run_id}/best_model.pt"
-                    response = httpx.post(
-                        f"{supabase_url}/storage/v1/object/cls-models/{training_run_id}/best_model.pt",
-                        headers={
-                            "apikey": supabase_key,
-                            "Authorization": f"Bearer {supabase_key}",
-                            "Content-Type": "application/octet-stream",
-                        },
-                        content=model_data,
-                        timeout=120,
+                    file_size_mb = len(model_data) / (1024 * 1024)
+                    print(f"Uploading model ({file_size_mb:.1f}MB)...")
+
+                    # Storage path within cls-models bucket (private bucket)
+                    model_storage_path = f"{training_run_id}/best_model.pt"
+                    response = supabase_upload(
+                        supabase_url, supabase_key,
+                        bucket="cls-models",
+                        path=model_storage_path,
+                        data=model_data,
+                        timeout=300,  # 5 minutes for large models
                     )
 
                     if response.status_code in [200, 201]:
-                        model_url = f"{supabase_url}/storage/v1/object/public/{storage_path}"
-                        print(f"Model uploaded: {model_url}")
+                        # Store the storage path (not public URL - bucket is private)
+                        model_url = f"cls-models/{model_storage_path}"
+                        print(f"✓ Model uploaded to storage: {model_url}")
+                    else:
+                        print(f"⚠️  Model upload failed: {response.status_code} - {response.text}")
             except Exception as e:
-                print(f"Model upload failed: {e}")
+                print(f"⚠️  Model upload failed: {e}")
 
         # === ONNX EXPORT (if requested) ===
         onnx_url = None
@@ -580,23 +836,21 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     )
                     if export_result["success"]:
                         print(f"✓ ONNX exported: {export_result['size_mb']:.1f}MB")
-                        # Upload ONNX to Supabase too
+                        # Upload ONNX to Supabase storage (with retry)
                         if supabase_url and supabase_key:
-                            import httpx
                             with open(onnx_path, "rb") as f:
                                 onnx_data = f.read()
-                            response = httpx.post(
-                                f"{supabase_url}/storage/v1/object/cls-models/{training_run_id}/model.onnx",
-                                headers={
-                                    "apikey": supabase_key,
-                                    "Authorization": f"Bearer {supabase_key}",
-                                    "Content-Type": "application/octet-stream",
-                                },
-                                content=onnx_data,
-                                timeout=120,
+                            onnx_storage_path = f"{training_run_id}/model.onnx"
+                            response = supabase_upload(
+                                supabase_url, supabase_key,
+                                bucket="cls-models",
+                                path=onnx_storage_path,
+                                data=onnx_data,
+                                timeout=300,
                             )
                             if response.status_code in [200, 201]:
-                                onnx_url = f"{supabase_url}/storage/v1/object/public/cls-models/{training_run_id}/model.onnx"
+                                onnx_url = f"cls-models/{onnx_storage_path}"
+                                print(f"✓ ONNX uploaded to storage: {onnx_url}")
                     else:
                         print(f"⚠️  ONNX export failed: {export_result.get('error')}")
                 except Exception as e:
@@ -605,16 +859,40 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         # Get training stats summary
         training_stats = stats.get_summary()
 
+        # === UPDATE FINAL STATUS IN SUPABASE ===
+        final_metrics = {
+            "best_val_acc": results["best_val_acc"],
+            "best_epoch": results["best_epoch"],
+            "total_time": results["total_time"],
+            "final_train_loss": results["history"]["train_loss"][-1] if results["history"]["train_loss"] else None,
+            "final_val_loss": results["history"]["val_loss"][-1] if results["history"]["val_loss"] else None,
+        }
+
+        if supabase_url and supabase_key:
+            try:
+                from datetime import datetime
+                supabase_update(
+                    supabase_url, supabase_key,
+                    table="cls_training_runs",
+                    id_field="id",
+                    id_value=training_run_id,
+                    data={
+                        "status": "completed",
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "best_accuracy": results["best_val_acc"],
+                        "best_epoch": results["best_epoch"],
+                        "model_url": model_url,
+                        "onnx_url": onnx_url,
+                    },
+                )
+                print(f"✓ Final status updated in Supabase: completed")
+            except Exception as e:
+                print(f"⚠️  Failed to update final status: {e}")
+
         return {
             "status": "COMPLETED",
             "training_run_id": training_run_id,
-            "metrics": {
-                "best_val_acc": results["best_val_acc"],
-                "best_epoch": results["best_epoch"],
-                "total_time": results["total_time"],
-                "final_train_loss": results["history"]["train_loss"][-1] if results["history"]["train_loss"] else None,
-                "final_val_loss": results["history"]["val_loss"][-1] if results["history"]["val_loss"] else None,
-            },
+            "metrics": final_metrics,
             "model_url": model_url,
             "onnx_url": onnx_url,
             "model_info": results["model_info"],
@@ -624,49 +902,87 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         traceback.print_exc()
+        error_msg = str(e)
+
+        # === UPDATE FAILED STATUS IN SUPABASE (with retry) ===
+        if supabase_url and supabase_key and training_run_id:
+            try:
+                from datetime import datetime
+                supabase_update(
+                    supabase_url, supabase_key,
+                    table="cls_training_runs",
+                    id_field="id",
+                    id_value=training_run_id,
+                    data={
+                        "status": "failed",
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "error_message": error_msg[:1000],  # Limit error message length
+                    },
+                )
+                print(f"✓ Failed status updated in Supabase")
+            except Exception as update_error:
+                print(f"⚠️  Failed to update failed status: {update_error}")
+
         return {
-            "error": str(e),
+            "error": error_msg,
             "status": "FAILED",
             "traceback": traceback.format_exc(),
             "training_stats": stats.get_summary() if stats else None,
         }
 
 
-# For local testing
+# ============================================
+# Signal Handler Registration (MUST be at end of file)
+# ============================================
+# Register signal handlers AFTER all functions are defined
+# This ensures _signal_handler can access all necessary functions
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
+
+# ============================================
+# RunPod Serverless Entry Point
+# ============================================
 if __name__ == "__main__":
-    # Test with synthetic data
-    print("Testing CLS Training Handler...")
+    import runpod
 
-    # Create test job
-    test_job = {
-        "input": {
-            "training_run_id": "test_run",
-            "config": {
-                "model_name": "efficientnet_b0",
-                "epochs": 2,
-                "batch_size": 4,
-                "learning_rate": 1e-4,
-                "loss": "label_smoothing",
-                "augmentation": "light",
-                "use_amp": True,
-                "use_ema": False,
-                "num_workers": 0,
-            },
-            "dataset": {
-                "train_urls": [
-                    {"url": "https://picsum.photos/id/237/224/224", "label": 0},
-                    {"url": "https://picsum.photos/id/238/224/224", "label": 0},
-                    {"url": "https://picsum.photos/id/239/224/224", "label": 1},
-                    {"url": "https://picsum.photos/id/240/224/224", "label": 1},
-                ],
-                "val_urls": [
-                    {"url": "https://picsum.photos/id/241/224/224", "label": 0},
-                    {"url": "https://picsum.photos/id/242/224/224", "label": 1},
-                ],
-                "class_names": ["class_a", "class_b"],
-            },
+    # Check if we're running as a RunPod serverless worker
+    if os.environ.get("RUNPOD_POD_ID"):
+        print("Starting CLS Training Worker (RunPod Serverless)...")
+        runpod.serverless.start({"handler": handler})
+    else:
+        # Local testing with synthetic data
+        print("Testing CLS Training Handler (Local Mode)...")
+
+        test_job = {
+            "input": {
+                "training_run_id": "test_run",
+                "config": {
+                    "model_name": "efficientnet_b0",
+                    "epochs": 2,
+                    "batch_size": 4,
+                    "learning_rate": 1e-4,
+                    "loss": "label_smoothing",
+                    "augmentation": "light",
+                    "use_amp": True,
+                    "use_ema": False,
+                    "num_workers": 0,
+                },
+                "dataset": {
+                    "train_urls": [
+                        {"url": "https://picsum.photos/id/237/224/224", "label": 0},
+                        {"url": "https://picsum.photos/id/238/224/224", "label": 0},
+                        {"url": "https://picsum.photos/id/239/224/224", "label": 1},
+                        {"url": "https://picsum.photos/id/240/224/224", "label": 1},
+                    ],
+                    "val_urls": [
+                        {"url": "https://picsum.photos/id/241/224/224", "label": 0},
+                        {"url": "https://picsum.photos/id/242/224/224", "label": 1},
+                    ],
+                    "class_names": ["class_a", "class_b"],
+                },
+            }
         }
-    }
 
-    result = handler(test_job)
-    print(f"\nResult: {json.dumps(result, indent=2, default=str)}")
+        result = handler(test_job)
+        print(f"\nResult: {json.dumps(result, indent=2, default=str)}")

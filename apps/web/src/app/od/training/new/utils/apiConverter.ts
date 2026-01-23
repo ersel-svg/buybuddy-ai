@@ -65,6 +65,9 @@ export function convertWizardStateToApiRequest(
       learning_rate: hyperparams.learningRate,
       weight_decay: hyperparams.weightDecay,
 
+      // Optimizer
+      optimizer: hyperparams.optimizer,
+
       // Scheduler
       scheduler: hyperparams.scheduler,
       warmup_epochs: hyperparams.warmupEpochs,
@@ -73,6 +76,7 @@ export function convertWizardStateToApiRequest(
       // SOTA features
       use_ema: hyperparams.useEma,
       ema_decay: hyperparams.emaDecay,
+      ema_warmup_steps: hyperparams.emaWarmupSteps,
       mixed_precision: hyperparams.useMixedPrecision,
       llrd_decay: hyperparams.useLlrd ? hyperparams.llrdDecay : 1.0,
       head_lr_factor: hyperparams.headLrFactor,

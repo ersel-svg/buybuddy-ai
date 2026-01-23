@@ -168,6 +168,42 @@ async def get_workflow_models(
     return response
 
 
+@router.get("/list")
+async def get_workflow_models_list(
+    model_type: Optional[str] = Query(
+        None,
+        description="Filter by category: detection, classification, embedding, segmentation"
+    ),
+    source: Optional[str] = Query(
+        None,
+        description="Filter by source: pretrained, trained"
+    ),
+    include_inactive: bool = Query(False, description="Include inactive models"),
+):
+    """
+    Get flattened list of all models for UI dropdowns.
+
+    Returns unified list from:
+    - wf_pretrained_models (YOLO, DINOv2, CLIP)
+    - od_trained_models (RT-DETR, D-FINE, YOLO-NAS)
+    - cls_trained_models (ViT, ConvNeXt, EfficientNet, Swin)
+    - trained_models (Fine-tuned embeddings)
+    """
+    from services.workflow.model_loader import get_model_loader
+
+    loader = get_model_loader()
+    items = await loader.list_available_models(
+        model_type=model_type,
+        source=source,
+        include_inactive=include_inactive,
+    )
+
+    return {
+        "items": items,
+        "total": len(items),
+    }
+
+
 @router.get("/pretrained")
 async def list_pretrained_models(
     model_type: Optional[str] = Query(None, description="Filter by model type"),

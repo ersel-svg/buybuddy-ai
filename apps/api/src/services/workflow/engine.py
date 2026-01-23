@@ -87,18 +87,23 @@ class WorkflowEngine:
         """
         start_time = time.time()
 
+        # Parse workflow
+        nodes = workflow.get("nodes", [])
+        edges = workflow.get("edges", [])
+        outputs_config = workflow.get("outputs", [])
+        param_definitions = workflow.get("parameters", [])
+
+        # Resolve workflow parameters from definitions and runtime inputs
+        parameters = self._resolve_parameters(param_definitions, inputs.get("parameters", {}))
+
         # Initialize context
         context = ExecutionContext(
             inputs=inputs,
             nodes={},
             workflow_id=workflow_id,
             execution_id=execution_id,
+            parameters=parameters,
         )
-
-        # Parse workflow
-        nodes = workflow.get("nodes", [])
-        edges = workflow.get("edges", [])
-        outputs_config = workflow.get("outputs", [])
 
         if not nodes:
             return {
@@ -162,10 +167,13 @@ class WorkflowEngine:
                 }
                 break
 
+            # Resolve config values (handles parameter references in config)
+            resolved_config = self._resolve_config(node_config, context)
+
             # Execute block
             try:
                 logger.info(f"Executing block: {node_id} ({node_type})")
-                result = await block.execute(resolved_inputs, node_config, context)
+                result = await block.execute(resolved_inputs, resolved_config, context)
 
                 # Store result in context
                 context.nodes[node_id] = result.outputs
@@ -320,6 +328,78 @@ class WorkflowEngine:
         elif isinstance(value, list):
             return [self._resolve_value(item, context) for item in value]
         return value
+
+    def _resolve_parameters(
+        self,
+        definitions: list[dict],
+        runtime_values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Resolve workflow parameters from definitions and runtime values.
+
+        Parameter definitions format:
+        [
+            {
+                "name": "confidence_threshold",
+                "type": "number",
+                "default": 0.5,
+                "description": "Minimum confidence for detections"
+            },
+            ...
+        ]
+
+        Returns dict of resolved parameter values with defaults applied.
+        """
+        parameters = {}
+
+        for param_def in definitions:
+            name = param_def.get("name")
+            if not name:
+                continue
+
+            # Use runtime value if provided, otherwise use default
+            if name in runtime_values:
+                value = runtime_values[name]
+            else:
+                value = param_def.get("default")
+
+            # Type coercion
+            param_type = param_def.get("type", "string")
+            if value is not None:
+                try:
+                    if param_type == "number":
+                        value = float(value)
+                    elif param_type == "integer":
+                        value = int(value)
+                    elif param_type == "boolean":
+                        if isinstance(value, str):
+                            value = value.lower() in ("true", "1", "yes")
+                        else:
+                            value = bool(value)
+                    elif param_type == "string":
+                        value = str(value)
+                    # array and object types are passed through as-is
+                except (ValueError, TypeError):
+                    pass  # Keep original value if coercion fails
+
+            parameters[name] = value
+
+        return parameters
+
+    def _resolve_config(
+        self,
+        config: dict[str, Any],
+        context: ExecutionContext,
+    ) -> dict[str, Any]:
+        """
+        Resolve parameter references in config values.
+
+        Handles:
+        - "{{ params.confidence }}" -> actual value
+        - "$params.confidence" -> actual value
+        - Nested dicts and lists
+        """
+        return self._resolve_value(config, context)
 
 
 # Singleton instance

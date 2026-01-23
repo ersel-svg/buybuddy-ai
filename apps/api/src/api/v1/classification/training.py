@@ -10,7 +10,9 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 
 logger = logging.getLogger(__name__)
 
+from config import settings
 from services.supabase import supabase_service
+from services.runpod import runpod_service, EndpointType
 from schemas.classification import (
     CLSTrainingRunCreate,
     CLSTrainingRunUpdate,
@@ -222,8 +224,8 @@ async def create_training_run(data: CLSTrainingRunCreate, background_tasks: Back
 
     training_run = result.data[0]
 
-    # TODO: Submit to RunPod in background
-    # background_tasks.add_task(submit_training_job, training_run["id"])
+    # Submit to RunPod in background
+    background_tasks.add_task(submit_training_job, training_run["id"])
 
     return training_run
 
@@ -256,9 +258,17 @@ async def cancel_training_run(training_id: str):
     if training.data["status"] not in ["pending", "preparing", "queued", "training"]:
         raise HTTPException(status_code=400, detail="Training run cannot be cancelled in current state")
 
-    # TODO: Cancel RunPod job if running
-    # if training.data.get("runpod_job_id"):
-    #     cancel_runpod_job(training.data["runpod_job_id"])
+    # Cancel RunPod job if running
+    if training.data.get("runpod_job_id"):
+        try:
+            if runpod_service.is_configured(EndpointType.CLS_TRAINING):
+                await runpod_service.cancel_job(
+                    endpoint_type=EndpointType.CLS_TRAINING,
+                    job_id=training.data["runpod_job_id"],
+                )
+                logger.info(f"[CLS Training] Cancelled RunPod job: {training.data['runpod_job_id']}")
+        except Exception as e:
+            logger.warning(f"[CLS Training] Failed to cancel RunPod job: {e}")
 
     # Update status
     supabase_service.client.table("cls_training_runs").update({
@@ -322,6 +332,203 @@ async def get_training_checkpoints(training_id: str):
     checkpoints = [m for m in history if m.get("checkpoint_url")]
 
     return checkpoints
+
+
+# ===========================================
+# Background Tasks
+# ===========================================
+
+async def submit_training_job(training_run_id: str):
+    """
+    Submit training job to RunPod in background.
+
+    Fetches dataset, prepares training data in worker's expected format, and submits to CLS_TRAINING endpoint.
+    """
+    import random
+
+    try:
+        logger.info(f"[CLS Training] Submitting job for training run: {training_run_id}")
+
+        # Update status to preparing
+        supabase_service.client.table("cls_training_runs").update({
+            "status": "preparing",
+        }).eq("id", training_run_id).execute()
+
+        # Fetch training run
+        training_result = supabase_service.client.table("cls_training_runs").select(
+            "*"
+        ).eq("id", training_run_id).single().execute()
+
+        if not training_result.data:
+            raise Exception("Training run not found")
+
+        training_run = training_result.data
+        dataset_id = training_run["dataset_id"]
+        config = training_run.get("config", {})
+
+        # Fetch dataset classes
+        classes_result = supabase_service.client.table("cls_classes").select(
+            "id, name, display_name"
+        ).eq("dataset_id", dataset_id).eq("is_active", True).order("created_at").execute()
+
+        classes = classes_result.data or []
+        if len(classes) < 2:
+            raise Exception("Dataset must have at least 2 classes")
+
+        # Create class name list and ID to index mapping
+        class_names = [c.get("display_name") or c["name"] for c in classes]
+        class_id_to_index = {c["id"]: i for i, c in enumerate(classes)}
+
+        # Fetch labeled images with their labels
+        labels_result = supabase_service.client.table("cls_labels").select(
+            "image_id, class_id, cls_images!inner(id, image_url)"
+        ).eq("dataset_id", dataset_id).execute()
+
+        labels_data = labels_result.data or []
+        if not labels_data:
+            raise Exception("No labeled images found in dataset")
+
+        # Build image data list with URL and label
+        all_images = []
+        seen_images = set()
+
+        for label in labels_data:
+            image_id = label["image_id"]
+            class_id = label["class_id"]
+            cls_image = label.get("cls_images", {})
+
+            if not cls_image or image_id in seen_images:
+                continue
+
+            image_url = cls_image.get("image_url")
+            if not image_url:
+                continue
+
+            class_index = class_id_to_index.get(class_id)
+            if class_index is None:
+                continue
+
+            all_images.append({
+                "url": image_url,
+                "label": class_index,
+            })
+            seen_images.add(image_id)
+
+        if len(all_images) < 10:
+            raise Exception(f"Not enough labeled images ({len(all_images)}). Minimum 10 required.")
+
+        # Split into train/val sets
+        train_split = config.get("train_split", 0.8)
+        random.seed(42)  # Reproducible split
+        random.shuffle(all_images)
+
+        split_idx = int(len(all_images) * train_split)
+        train_urls = all_images[:split_idx]
+        val_urls = all_images[split_idx:]
+
+        # Ensure at least some validation samples
+        if len(val_urls) < 2:
+            # Move some from train to val
+            val_urls = all_images[-2:]
+            train_urls = all_images[:-2]
+
+        logger.info(f"[CLS Training] Prepared {len(train_urls)} train, {len(val_urls)} val images with {len(classes)} classes")
+
+        # Map model config to worker's expected format
+        model_type = training_run.get("model_type", "efficientnet")
+        model_size = training_run.get("model_size", "b0")
+
+        # Map model type + size to timm model name
+        model_name_map = {
+            ("efficientnet", "b0"): "efficientnet_b0",
+            ("efficientnet", "b1"): "efficientnet_b1",
+            ("efficientnet", "b2"): "efficientnet_b2",
+            ("efficientnet", "s"): "efficientnetv2_rw_s",
+            ("efficientnet", "m"): "efficientnetv2_rw_m",
+            ("vit", "tiny"): "vit_tiny_patch16_224",
+            ("vit", "small"): "vit_small_patch16_224",
+            ("vit", "base"): "vit_base_patch16_224",
+            ("convnext", "tiny"): "convnext_tiny",
+            ("convnext", "small"): "convnext_small",
+            ("convnext", "base"): "convnext_base",
+            ("swin", "tiny"): "swin_tiny_patch4_window7_224",
+            ("swin", "small"): "swin_small_patch4_window7_224",
+            ("resnet", "50"): "resnet50",
+            ("resnet", "101"): "resnet101",
+        }
+        model_name = model_name_map.get((model_type.lower(), model_size.lower()), "efficientnet_b0")
+
+        # Map loss function
+        loss_map = {
+            "cross_entropy": "cross_entropy",
+            "label_smoothing": "label_smoothing",
+            "focal": "focal",
+            "arcface": "arcface",
+            "cosface": "cosface",
+            "circle": "circle",
+        }
+        loss = loss_map.get(config.get("loss_function", "cross_entropy"), "label_smoothing")
+
+        # Prepare RunPod input in worker's expected format
+        runpod_input = {
+            "training_run_id": training_run_id,
+            "dataset": {
+                "train_urls": train_urls,
+                "val_urls": val_urls,
+                "class_names": class_names,
+            },
+            "config": {
+                "model_name": model_name,
+                "epochs": config.get("epochs", 30),
+                "batch_size": config.get("batch_size", 32),
+                "learning_rate": config.get("learning_rate", 0.001),
+                "weight_decay": config.get("weight_decay", 0.01),
+                "optimizer": config.get("optimizer", "adamw"),
+                "scheduler": "cosine_warmup",
+                "warmup_epochs": config.get("warmup_epochs", 5),
+                "loss": loss,
+                "loss_smoothing": config.get("label_smoothing", 0.1),
+                "augmentation": config.get("augmentation_preset", "sota"),
+                "use_mixup": config.get("augmentation_preset") in ["sota", "heavy"],
+                "use_amp": config.get("mixed_precision", True),
+                "use_ema": True,
+                "early_stopping": True,
+                "patience": config.get("early_stopping_patience", 10),
+            },
+            "supabase_url": settings.supabase_url,
+            "supabase_key": settings.supabase_service_role_key,
+        }
+
+        # Check if CLS_TRAINING endpoint is configured
+        if not runpod_service.is_configured(EndpointType.CLS_TRAINING):
+            raise Exception("CLS_TRAINING endpoint not configured")
+
+        # Submit job to RunPod
+        runpod_response = await runpod_service.submit_job(
+            endpoint_type=EndpointType.CLS_TRAINING,
+            input_data=runpod_input,
+        )
+
+        runpod_job_id = runpod_response.get("id")
+        if not runpod_job_id:
+            raise Exception(f"Failed to get RunPod job ID: {runpod_response}")
+
+        logger.info(f"[CLS Training] RunPod job submitted: {runpod_job_id}")
+
+        # Update training run with RunPod job ID and status
+        supabase_service.client.table("cls_training_runs").update({
+            "status": "queued",
+            "runpod_job_id": runpod_job_id,
+        }).eq("id", training_run_id).execute()
+
+    except Exception as e:
+        logger.error(f"[CLS Training] Failed to submit job: {e}")
+
+        # Update training run as failed
+        supabase_service.client.table("cls_training_runs").update({
+            "status": "failed",
+            "error_message": str(e),
+        }).eq("id", training_run_id).execute()
 
 
 # ===========================================
