@@ -12,11 +12,27 @@ SAFE: Uses TEST_BARCODE_PREFIX to isolate from real data
 
 import asyncio
 import uuid
+import os
 from datetime import datetime
 
 # Test configuration
 TEST_BARCODE_PREFIX = "TEST_BULK_"  # All test barcodes start with this
 NUM_TEST_PRODUCTS = 5
+
+# Auth credentials from environment
+AUTH_USERNAME = os.getenv("BUYBUDDY_USERNAME", "ersel")
+AUTH_PASSWORD = os.getenv("BUYBUDDY_PASSWORD", "1234")
+
+
+async def get_auth_token(client, api_base: str) -> str:
+    """Login and get auth token."""
+    response = await client.post(
+        f"{api_base}/auth/login",
+        json={"username": AUTH_USERNAME, "password": AUTH_PASSWORD}
+    )
+    if response.status_code != 200:
+        raise Exception(f"Login failed: {response.text}")
+    return response.json()["token"]
 
 
 async def run_bulk_update_test():
@@ -37,6 +53,14 @@ async def run_bulk_update_test():
 
         try:
             # ============================================
+            # STEP 0: Authenticate
+            # ============================================
+            print("STEP 0: Authenticating...")
+            token = await get_auth_token(client, API_BASE)
+            headers = {"Authorization": f"Bearer {token}"}
+            print(f"  Authenticated as: {AUTH_USERNAME}\n")
+
+            # ============================================
             # STEP 1: Create test products
             # ============================================
             print("STEP 1: Creating test products...")
@@ -55,7 +79,8 @@ async def run_bulk_update_test():
 
                 response = await client.post(
                     f"{API_BASE}/products",
-                    json=product_data
+                    json=product_data,
+                    headers=headers
                 )
 
                 if response.status_code == 200:
@@ -73,7 +98,7 @@ async def run_bulk_update_test():
             # ============================================
             print("STEP 2: Testing /system-fields endpoint...")
 
-            response = await client.get(f"{API_BASE}/products/bulk-update/system-fields")
+            response = await client.get(f"{API_BASE}/products/bulk-update/system-fields", headers=headers)
             if response.status_code == 200:
                 fields = response.json()
                 print(f"  Found {len(fields)} system fields")
@@ -134,7 +159,8 @@ async def run_bulk_update_test():
 
             response = await client.post(
                 f"{API_BASE}/products/bulk-update/preview",
-                json=preview_request
+                json=preview_request,
+                headers=headers
             )
 
             if response.status_code == 200:
@@ -182,7 +208,8 @@ async def run_bulk_update_test():
 
             response = await client.post(
                 f"{API_BASE}/products/bulk-update/execute",
-                json=execute_request
+                json=execute_request,
+                headers=headers
             )
 
             if response.status_code == 200:
@@ -207,7 +234,8 @@ async def run_bulk_update_test():
             for i, barcode in enumerate(test_barcodes):
                 response = await client.get(
                     f"{API_BASE}/products",
-                    params={"search": barcode, "limit": 1}
+                    params={"search": barcode, "limit": 1},
+                    headers=headers
                 )
 
                 if response.status_code == 200:
@@ -258,7 +286,8 @@ async def run_bulk_update_test():
 
             response = await client.post(
                 f"{API_BASE}/products/bulk-update/preview",
-                json=preview_request
+                json=preview_request,
+                headers=headers
             )
 
             if response.status_code == 200:
@@ -284,7 +313,7 @@ async def run_bulk_update_test():
 
             for product_id in created_product_ids:
                 try:
-                    response = await client.delete(f"{API_BASE}/products/{product_id}")
+                    response = await client.delete(f"{API_BASE}/products/{product_id}", headers=headers)
                     if response.status_code == 200:
                         print(f"  Deleted: {product_id[:8]}...")
                     else:

@@ -401,18 +401,20 @@ class ImportURLsRequest(BaseModel):
     folder: Optional[str] = None
     skip_duplicates: bool = True
     dataset_id: Optional[str] = None
+    label: Optional[str] = None  # Custom label for all imported images
 
 
 class ImportFromProductsRequest(BaseModel):
     """Import images from Products module."""
     product_ids: Optional[list[str]] = None  # Specific products
 
-    # Label strategy
-    label_source: Literal["category", "brand", "product_name", "manual"] = "category"
+    # Label strategy: "product_id" | "category" | "brand" | "product_name" | "custom" | "none"
+    label_source: str = "product_id"
+    custom_label: Optional[str] = None  # Custom label when label_source is "custom"
 
     # Image types
-    image_types: list[Literal["synthetic", "real", "augmented"]] = ["synthetic", "real"]
-    max_frames_per_product: int = 5
+    image_types: list[str] = ["synthetic", "real"]
+    max_frames_per_product: int = 50
 
     # Options
     skip_duplicates: bool = True
@@ -428,11 +430,12 @@ class ImportFromCutoutsRequest(BaseModel):
     """Import images from Cutouts module."""
     cutout_ids: Optional[list[str]] = None
 
-    # Label strategy
-    label_source: Literal["matched_product_category", "matched_product_brand", "manual"] = "matched_product_category"
+    # Label strategy: "matched_product_id" | "custom" | "none"
+    label_source: str = "matched_product_id"
+    custom_label: Optional[str] = None  # Custom label when label_source is "custom"
 
     # Options
-    only_matched: bool = True
+    only_matched: bool = False
     skip_duplicates: bool = True
     dataset_id: Optional[str] = None
 
@@ -444,6 +447,7 @@ class ImportFromODRequest(BaseModel):
     # Options
     skip_duplicates: bool = True
     dataset_id: Optional[str] = None
+    label: Optional[str] = None  # Custom label for all imported images
 
 
 class ImportLabeledDatasetRequest(BaseModel):

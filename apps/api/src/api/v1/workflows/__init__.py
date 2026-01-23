@@ -20,11 +20,9 @@ from .models import router as models_router
 
 router = APIRouter()
 
-# Include sub-routers
-router.include_router(workflows_router, tags=["Workflows"])
-router.include_router(executions_router, tags=["Workflow Executions"])
-router.include_router(models_router, prefix="/models", tags=["Workflow Models"])
 
+# IMPORTANT: Define static routes BEFORE including sub-routers with dynamic paths
+# This ensures /health, /blocks, /stats are matched before /{workflow_id} catch-all
 
 # Health check endpoint for workflows module
 @router.get("/health")
@@ -147,3 +145,10 @@ async def get_workflows_stats() -> dict:
                 "embedding_trained": 0,
             },
         }
+
+
+# Include sub-routers AFTER static routes
+# ORDER MATTERS: models before workflows because workflows has /{workflow_id} catch-all
+router.include_router(models_router, prefix="/models", tags=["Workflow Models"])
+router.include_router(executions_router, tags=["Workflow Executions"])
+router.include_router(workflows_router, tags=["Workflows"])

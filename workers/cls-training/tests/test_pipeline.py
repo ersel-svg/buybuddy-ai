@@ -185,31 +185,32 @@ def test_loss_functions():
     """Test all loss functions."""
     from src.losses import get_loss, AVAILABLE_LOSSES
     import torch
+    import torch.nn.functional as F
 
     batch_size = 4
     num_classes = 10
+    embedding_dim = 256
 
     # Dummy inputs
     logits = torch.randn(batch_size, num_classes)
     targets = torch.randint(0, num_classes, (batch_size,))
-    targets_soft = torch.softmax(torch.randn(batch_size, num_classes), dim=1)
+    embeddings = F.normalize(torch.randn(batch_size, embedding_dim), dim=1)
 
     tested = []
     for loss_name in AVAILABLE_LOSSES:
-        loss_fn = get_loss(loss_name, num_classes=num_classes)
-
-        # Test with hard targets
-        try:
+        # Metric losses need embedding_dim and embeddings
+        if loss_name in ["arcface", "cosface"]:
+            loss_fn = get_loss(loss_name, num_classes=num_classes, embedding_dim=embedding_dim)
+            loss = loss_fn(embeddings, targets)
+        elif loss_name == "circle":
+            loss_fn = get_loss(loss_name, num_classes=num_classes)
+            loss = loss_fn(embeddings, targets)
+        else:
+            loss_fn = get_loss(loss_name, num_classes=num_classes)
             loss = loss_fn(logits, targets)
-            assert loss.dim() == 0, f"Loss should be scalar for {loss_name}"
-            tested.append(loss_name)
-        except Exception as e:
-            # Some losses need soft targets
-            try:
-                loss = loss_fn(logits, targets_soft)
-                tested.append(loss_name)
-            except:
-                raise
+
+        assert loss.dim() == 0, f"Loss should be scalar for {loss_name}"
+        tested.append(loss_name)
 
     return f"Tested {len(tested)} losses: {', '.join(tested)}"
 
@@ -402,12 +403,15 @@ def test_single_training_step():
     train_dataset = TensorDataset(x, y)
     train_loader = DataLoader(train_dataset, batch_size=2)
 
-    # Single epoch
-    train_loss, train_acc = trainer._train_epoch(train_loader, 0)
+    # Initialize scheduler (required before train_epoch)
+    trainer._create_scheduler(len(train_loader))
 
-    assert isinstance(train_loss, float)
-    assert isinstance(train_acc, float)
-    return f"loss={train_loss:.4f}, acc={train_acc:.1f}%"
+    # Single epoch - note: method is train_epoch, not _train_epoch
+    metrics = trainer.train_epoch(train_loader, 0)
+
+    assert isinstance(metrics["train_loss"], float)
+    assert isinstance(metrics["train_acc"], float)
+    return f"loss={metrics['train_loss']:.4f}, acc={metrics['train_acc']:.1f}%"
 
 
 def test_handler_import():

@@ -372,6 +372,57 @@ class ApiClient {
     return this.request(`/api/v1/products/${id}/frames${params}`);
   }
 
+  // ===========================================
+  // Product Images Browse (for CLS Visual Picker)
+  // ===========================================
+
+  async browseProductImages(params: {
+    page?: number;
+    limit?: number;
+    categories?: string[];
+    brands?: string[];
+    statuses?: string[];
+    image_types?: string[];
+    search?: string;
+  }): Promise<{
+    images: {
+      id: string;
+      image_url: string;
+      product_id: string;
+      product_name: string | null;
+      brand_name: string | null;
+      category: string | null;
+      image_type: string;
+      status: string | null;
+    }[];
+    total: number;
+    page: number;
+    limit: number;
+    has_more: boolean;
+    filters: {
+      categories: string[];
+      brands: string[];
+      statuses: string[];
+      image_types: string[];
+    };
+  }> {
+    return this.request("/api/v1/products/images/browse", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  async getProductImageFilterOptions(): Promise<{
+    categories: string[];
+    brands: string[];
+    statuses: string[];
+    image_types: string[];
+  }> {
+    // Filter options are included in browse response
+    const result = await this.browseProductImages({ page: 1, limit: 1 });
+    return result.filters;
+  }
+
   async deleteProductFrames(
     id: string,
     frameIds: string[]
@@ -987,8 +1038,21 @@ class ApiClient {
     has_embedding?: boolean;
     is_matched?: boolean;
     predicted_upc?: string;
+    // NEW: Visual picker filters
+    matched_category?: string;
+    matched_brand?: string;
+    date_from?: string;
+    date_to?: string;
+    search?: string;
   }): Promise<CutoutsResponse> {
     return this.request<CutoutsResponse>("/api/v1/cutouts", { params });
+  }
+
+  async getCutoutFilterOptions(): Promise<{
+    categories: string[];
+    brands: string[];
+  }> {
+    return this.request("/api/v1/cutouts/filter-options");
   }
 
   async getCutout(id: string): Promise<CutoutImage> {
@@ -3203,14 +3267,15 @@ class ApiClient {
     return this.request(`/api/v1/classification/images/${id}`);
   }
 
-  async uploadCLSImage(file: File, folder?: string): Promise<{
+  async uploadCLSImage(file: File, datasetId?: string, label?: string | null): Promise<{
     id: string;
     filename: string;
     image_url: string;
   }> {
     const formData = new FormData();
     formData.append("file", file);
-    if (folder) formData.append("folder", folder);
+    if (datasetId) formData.append("dataset_id", datasetId);
+    if (label) formData.append("label", label);
 
     const response = await fetch(`${this.baseUrl}/api/v1/classification/images`, {
       method: "POST",
@@ -3418,8 +3483,8 @@ class ApiClient {
   async removeImagesFromCLSDataset(datasetId: string, imageIds: string[]): Promise<{
     removed: number;
   }> {
-    return this.request(`/api/v1/classification/datasets/${datasetId}/images`, {
-      method: "DELETE",
+    return this.request(`/api/v1/classification/datasets/${datasetId}/images/remove`, {
+      method: "POST",
       body: { image_ids: imageIds },
     });
   }
@@ -3800,6 +3865,7 @@ class ApiClient {
     folder?: string;
     skip_duplicates?: boolean;
     dataset_id?: string;
+    label?: string | null; // Custom label for all imported images
   }): Promise<{
     success: boolean;
     images_imported: number;
@@ -3807,7 +3873,7 @@ class ApiClient {
     duplicates_found: number;
     errors: string[];
   }> {
-    return this.request("/api/v1/classification/images/import/urls", {
+    return this.request("/api/v1/classification/images/import/url", {
       method: "POST",
       body: params,
     });
@@ -3815,7 +3881,8 @@ class ApiClient {
 
   async importCLSImagesFromProducts(params: {
     product_ids?: string[];
-    label_source?: "category" | "brand" | "product_name" | "manual";
+    label_source?: string; // "product_id" | "category" | "brand" | "product_name" | "custom" | "none"
+    custom_label?: string | null; // Custom label when label_source is "custom"
     image_types?: string[];
     max_frames_per_product?: number;
     skip_duplicates?: boolean;
@@ -3838,7 +3905,8 @@ class ApiClient {
 
   async importCLSImagesFromCutouts(params: {
     cutout_ids?: string[];
-    label_source?: "matched_product_category" | "matched_product_brand" | "manual";
+    label_source?: string; // "matched_product_id" | "custom" | "none"
+    custom_label?: string | null; // Custom label when label_source is "custom"
     only_matched?: boolean;
     skip_duplicates?: boolean;
     dataset_id?: string;
@@ -3859,15 +3927,52 @@ class ApiClient {
     od_image_ids?: string[];
     skip_duplicates?: boolean;
     dataset_id?: string;
+    label?: string | null; // Custom label for all imported images
   }): Promise<{
     success: boolean;
     images_imported: number;
     images_skipped: number;
     errors: string[];
   }> {
-    return this.request("/api/v1/classification/images/import/od", {
+    return this.request("/api/v1/classification/images/import/od-images", {
       method: "POST",
       body: params,
+    });
+  }
+
+  // ===========================================
+  // Bulk IDs (for Select All Filtered)
+  // ===========================================
+
+  async getProductBulkIds(params: {
+    search?: string;
+    category?: string;
+    brand?: string;
+    has_image?: boolean;
+    limit?: number;
+  }): Promise<{ ids: string[]; total: number }> {
+    return this.request("/api/v1/classification/images/bulk-ids/products", {
+      params,
+    });
+  }
+
+  async getCutoutBulkIds(params: {
+    search?: string;
+    is_matched?: boolean;
+    limit?: number;
+  }): Promise<{ ids: string[]; total: number }> {
+    return this.request("/api/v1/classification/images/bulk-ids/cutouts", {
+      params,
+    });
+  }
+
+  async getODImageBulkIds(params: {
+    search?: string;
+    folder?: string;
+    limit?: number;
+  }): Promise<{ ids: string[]; total: number }> {
+    return this.request("/api/v1/classification/images/bulk-ids/od-images", {
+      params,
     });
   }
 
@@ -3948,6 +4053,273 @@ class ApiClient {
     completed_at?: string;
   }> {
     return this.request(`/api/v1/classification/ai/jobs/${jobId}`);
+  }
+
+  // ===========================================
+  // Workflow API Methods
+  // ===========================================
+
+  // Workflows CRUD
+  async getWorkflows(params?: {
+    status?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    items: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      status: string;
+      definition: { nodes: unknown[]; edges: unknown[] };
+      created_at: string;
+      updated_at: string;
+    }>;
+    total: number;
+  }> {
+    return this.request("/api/v1/workflows", { params });
+  }
+
+  async getWorkflow(id: string): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    status: string;
+    definition: { nodes: unknown[]; edges: unknown[] };
+    created_at: string;
+    updated_at: string;
+  }> {
+    return this.request(`/api/v1/workflows/${id}`);
+  }
+
+  async createWorkflow(data: {
+    name: string;
+    description?: string;
+    definition?: { nodes: unknown[]; edges: unknown[] };
+  }): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    status: string;
+    definition: { nodes: unknown[]; edges: unknown[] };
+    created_at: string;
+    updated_at: string;
+  }> {
+    return this.request("/api/v1/workflows", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async updateWorkflow(
+    id: string,
+    data: {
+      name?: string;
+      description?: string;
+      status?: string;
+      definition?: { nodes: unknown[]; edges: unknown[] };
+    }
+  ): Promise<{
+    id: string;
+    name: string;
+    description?: string;
+    status: string;
+    definition: { nodes: unknown[]; edges: unknown[] };
+    created_at: string;
+    updated_at: string;
+  }> {
+    return this.request(`/api/v1/workflows/${id}`, {
+      method: "PUT",
+      body: data,
+    });
+  }
+
+  async deleteWorkflow(id: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/workflows/${id}`, { method: "DELETE" });
+  }
+
+  // Workflow Executions
+  async getWorkflowExecutions(params?: {
+    workflow_id?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    items: Array<{
+      id: string;
+      workflow_id: string;
+      workflow_name?: string;
+      status: string;
+      inputs: Record<string, unknown>;
+      outputs?: Record<string, unknown>;
+      error_message?: string;
+      started_at?: string;
+      completed_at?: string;
+      created_at: string;
+      total_duration_ms?: number;
+    }>;
+    total: number;
+  }> {
+    return this.request("/api/v1/workflows/executions", { params });
+  }
+
+  async getWorkflowExecution(executionId: string): Promise<{
+    id: string;
+    workflow_id: string;
+    workflow_name?: string;
+    status: string;
+    inputs: Record<string, unknown>;
+    outputs?: Record<string, unknown>;
+    error_message?: string;
+    node_outputs?: Record<string, unknown>;
+    node_errors?: Record<string, string>;
+    started_at?: string;
+    completed_at?: string;
+    created_at: string;
+    total_duration_ms?: number;
+  }> {
+    return this.request(`/api/v1/workflows/executions/${executionId}`);
+  }
+
+  async executeWorkflow(
+    workflowId: string,
+    inputs: Record<string, unknown>
+  ): Promise<{
+    id: string;
+    workflow_id: string;
+    status: string;
+    inputs: Record<string, unknown>;
+    created_at: string;
+  }> {
+    return this.request(`/api/v1/workflows/${workflowId}/execute`, {
+      method: "POST",
+      body: { inputs },
+    });
+  }
+
+  async cancelExecution(executionId: string): Promise<{ status: string }> {
+    return this.request(`/api/v1/workflows/executions/${executionId}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  // Workflow Models
+  async getWorkflowModels(params?: {
+    model_type?: string;
+    include_inactive?: boolean;
+  }): Promise<{
+    detection: {
+      pretrained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean }>;
+      trained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean; checkpoint_url?: string }>;
+    };
+    classification: {
+      pretrained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean }>;
+      trained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean; checkpoint_url?: string }>;
+    };
+    embedding: {
+      pretrained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean }>;
+      trained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean; checkpoint_url?: string }>;
+    };
+    segmentation: {
+      pretrained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean }>;
+      trained: Array<{ id: string; name: string; description?: string; model_type: string; is_active: boolean; checkpoint_url?: string }>;
+    };
+  }> {
+    return this.request("/api/v1/workflows/models", { params });
+  }
+
+  // Get flattened list of all models for workflow blocks
+  async getWorkflowModelsList(params?: {
+    model_type?: string;
+    include_inactive?: boolean;
+  }): Promise<{
+    items: Array<{
+      id: string;
+      name: string;
+      model_type: string;
+      category: string;
+      source: "pretrained" | "trained";
+      is_active: boolean;
+      is_default?: boolean;
+      created_at?: string;
+    }>;
+    total: number;
+  }> {
+    const data = await this.getWorkflowModels(params);
+    const items: Array<{
+      id: string;
+      name: string;
+      model_type: string;
+      category: string;
+      source: "pretrained" | "trained";
+      is_active: boolean;
+      is_default?: boolean;
+      created_at?: string;
+    }> = [];
+
+    // Flatten the nested structure
+    for (const category of ["detection", "classification", "embedding", "segmentation"] as const) {
+      const categoryData = data[category];
+      if (categoryData) {
+        for (const model of categoryData.pretrained || []) {
+          items.push({
+            id: model.id,
+            name: model.name,
+            model_type: model.model_type,
+            category,
+            source: "pretrained",
+            is_active: model.is_active,
+            is_default: false,
+          });
+        }
+        for (const model of categoryData.trained || []) {
+          items.push({
+            id: model.id,
+            name: model.name,
+            model_type: model.model_type,
+            category,
+            source: "trained",
+            is_active: model.is_active,
+            is_default: false,
+          });
+        }
+      }
+    }
+
+    return { items, total: items.length };
+  }
+
+  // Block Registry
+  async getWorkflowBlocks(): Promise<
+    Array<{
+      type: string;
+      display_name: string;
+      description: string;
+      category: string;
+      input_ports: Array<{
+        name: string;
+        type: string;
+        required: boolean;
+        description?: string;
+      }>;
+      output_ports: Array<{
+        name: string;
+        type: string;
+        description?: string;
+      }>;
+      config_schema: Record<string, unknown>;
+    }>
+  > {
+    const response = await this.request<{ blocks: Array<{
+      type: string;
+      display_name: string;
+      description: string;
+      category: string;
+      input_ports: Array<{ name: string; type: string; required: boolean; description?: string }>;
+      output_ports: Array<{ name: string; type: string; description?: string }>;
+      config_schema: Record<string, unknown>;
+    }>; categories: Record<string, unknown> }>("/api/v1/workflows/blocks");
+    return response.blocks;
   }
 }
 

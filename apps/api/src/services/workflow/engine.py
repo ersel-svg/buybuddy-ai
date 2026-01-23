@@ -120,6 +120,9 @@ class WorkflowEngine:
                 "error_node_id": None,
             }
 
+        # Build input mappings from edges (React Flow style)
+        edge_inputs = self._build_edge_inputs(edges)
+
         # Execute nodes in order
         metrics = {}
         error_info = None
@@ -128,7 +131,8 @@ class WorkflowEngine:
             node_id = node["id"]
             node_type = node["type"]
             node_config = node.get("config", {})
-            node_inputs_config = node.get("inputs", {})
+            # Merge edge-based inputs with explicit node inputs (explicit takes precedence)
+            node_inputs_config = {**edge_inputs.get(node_id, {}), **node.get("inputs", {})}
 
             # Get block handler
             block = self._blocks.get(node_type)
@@ -259,6 +263,42 @@ class WorkflowEngine:
             raise WorkflowExecutionError("Workflow contains a cycle")
 
         return result
+
+    def _build_edge_inputs(self, edges: list[dict]) -> dict[str, dict[str, str]]:
+        """
+        Build input mappings from edges (React Flow style).
+
+        Converts edges like:
+            {source: "input_1", target: "detect_1", sourceHandle: "image", targetHandle: "image"}
+        To input mappings like:
+            {"detect_1": {"image": "$nodes.input_1.image"}}
+        """
+        edge_inputs: dict[str, dict[str, str]] = {}
+
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            source_handle = edge.get("sourceHandle") or edge.get("source_handle")
+            target_handle = edge.get("targetHandle") or edge.get("target_handle")
+
+            if not source or not target:
+                continue
+
+            # Default handles if not specified
+            if not source_handle:
+                source_handle = "output"
+            if not target_handle:
+                target_handle = "input"
+
+            # Build reference string ($nodes.node_id.output_port format)
+            ref = f"$nodes.{source}.{source_handle}"
+
+            # Add to target node's inputs
+            if target not in edge_inputs:
+                edge_inputs[target] = {}
+            edge_inputs[target][target_handle] = ref
+
+        return edge_inputs
 
     def _resolve_inputs(
         self,

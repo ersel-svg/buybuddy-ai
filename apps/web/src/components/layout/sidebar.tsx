@@ -24,6 +24,10 @@ import {
   Image as ImageIconOD,
   PenTool,
   FolderOpen,
+  // Workflows icons
+  Workflow,
+  Play,
+  Boxes,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -158,6 +162,26 @@ const navigationGroups = [
         name: "Training",
         href: "/classification/training",
         icon: Brain,
+      },
+    ],
+  },
+  {
+    title: "Workflows",
+    items: [
+      {
+        name: "Pipelines",
+        href: "/workflows",
+        icon: Workflow,
+      },
+      {
+        name: "Executions",
+        href: "/workflows/executions",
+        icon: Play,
+      },
+      {
+        name: "Models",
+        href: "/workflows/models",
+        icon: Boxes,
       },
     ],
   },

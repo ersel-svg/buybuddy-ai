@@ -1,0 +1,673 @@
+"use client";
+
+import { useState, useCallback, useRef, useEffect } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  Panel,
+  addEdge,
+  applyNodeChanges,
+  applyEdgeChanges,
+  type Connection,
+  type Node,
+  type Edge,
+  type NodeChange,
+  type EdgeChange,
+  ReactFlowProvider,
+  useReactFlow,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+
+import { apiClient } from "@/lib/api-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  ArrowLeft,
+  Save,
+  Play,
+  Loader2,
+  Settings,
+  Layers,
+  Cpu,
+  ScanLine,
+  Box,
+  GitBranch,
+  Image,
+  Filter,
+  Grid,
+  FileJson,
+  Scissors,
+  EyeOff,
+  PenTool,
+  Search,
+  GripVertical,
+} from "lucide-react";
+
+// Node data type
+interface WorkflowNodeData extends Record<string, unknown> {
+  label: string;
+  type: string;
+  category: string;
+  config?: Record<string, unknown>;
+  model_id?: string;
+}
+
+// Custom node type
+type WorkflowNode = Node<WorkflowNodeData>;
+
+// Block category colors
+const categoryColors: Record<string, string> = {
+  input: "#3b82f6",
+  model: "#8b5cf6",
+  transform: "#10b981",
+  logic: "#f59e0b",
+  output: "#ef4444",
+};
+
+// Block icons
+const blockIcons: Record<string, React.ReactNode> = {
+  image_input: <Image className="h-4 w-4" />,
+  detection: <ScanLine className="h-4 w-4" />,
+  classification: <Layers className="h-4 w-4" />,
+  embedding: <Cpu className="h-4 w-4" />,
+  similarity_search: <Search className="h-4 w-4" />,
+  crop: <Scissors className="h-4 w-4" />,
+  blur_region: <EyeOff className="h-4 w-4" />,
+  draw_boxes: <PenTool className="h-4 w-4" />,
+  segmentation: <Box className="h-4 w-4" />,
+  condition: <GitBranch className="h-4 w-4" />,
+  filter: <Filter className="h-4 w-4" />,
+  grid_builder: <Grid className="h-4 w-4" />,
+  json_output: <FileJson className="h-4 w-4" />,
+};
+
+// Custom node component
+function WorkflowNodeComponent({
+  data,
+  selected,
+}: {
+  data: WorkflowNodeData;
+  selected?: boolean;
+}) {
+  const color = categoryColors[data.category] || "#6b7280";
+  const icon = blockIcons[data.type] || <Box className="h-4 w-4" />;
+
+  return (
+    <div
+      className={`px-4 py-3 rounded-lg border-2 bg-card shadow-md min-w-[160px] transition-all ${
+        selected ? "ring-2 ring-primary ring-offset-2" : ""
+      }`}
+      style={{ borderColor: color }}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className="p-1.5 rounded"
+          style={{ backgroundColor: `${color}20`, color }}
+        >
+          {icon}
+        </div>
+        <span className="font-medium text-sm">{data.label}</span>
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = {
+  workflowNode: WorkflowNodeComponent,
+};
+
+// Block definition type
+interface BlockDef {
+  type: string;
+  display_name: string;
+  description: string;
+  category: string;
+}
+
+// Block palette component
+function BlockPalette({
+  blocks,
+  onDragStart,
+}: {
+  blocks: BlockDef[];
+  onDragStart: (event: React.DragEvent, block: BlockDef) => void;
+}) {
+  const categories = ["input", "model", "transform", "logic", "output"];
+  const categoryLabels: Record<string, string> = {
+    input: "Input",
+    model: "Models",
+    transform: "Transform",
+    logic: "Logic",
+    output: "Output",
+  };
+
+  return (
+    <div className="w-64 border-r bg-muted/30 flex flex-col">
+      <div className="p-3 border-b">
+        <h3 className="font-semibold text-sm">Blocks</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Drag blocks to canvas
+        </p>
+      </div>
+      <ScrollArea className="flex-1">
+        <div className="p-2 space-y-3">
+          {categories.map((category) => {
+            const safeBlocks = Array.isArray(blocks) ? blocks : [];
+            const categoryBlocks = safeBlocks.filter((b) => b.category === category);
+            if (categoryBlocks.length === 0) return null;
+
+            return (
+              <div key={category}>
+                <div
+                  className="text-xs font-medium uppercase tracking-wide mb-1.5 px-1"
+                  style={{ color: categoryColors[category] }}
+                >
+                  {categoryLabels[category]}
+                </div>
+                <div className="space-y-1">
+                  {categoryBlocks.map((block) => (
+                    <div
+                      key={block.type}
+                      draggable
+                      onDragStart={(e) => onDragStart(e, block)}
+                      className="flex items-center gap-2 p-2 rounded-md border bg-card hover:bg-accent cursor-grab active:cursor-grabbing transition-colors"
+                    >
+                      <GripVertical className="h-3 w-3 text-muted-foreground" />
+                      <div
+                        className="p-1 rounded"
+                        style={{
+                          backgroundColor: `${categoryColors[category]}20`,
+                          color: categoryColors[category],
+                        }}
+                      >
+                        {blockIcons[block.type] || <Box className="h-3 w-3" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium truncate">
+                          {block.display_name}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+// Main editor component
+function WorkflowEditorContent() {
+  const params = useParams();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const { screenToFlowPosition } = useReactFlow();
+
+  const workflowId = params.id as string;
+
+  // State with proper types - use useState instead of useNodesState for better control
+  const [nodes, setNodes] = useState<WorkflowNode[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
+  const [hasChanges, setHasChanges] = useState(false);
+
+  // Fetch workflow
+  const { data: workflow, isLoading: workflowLoading } = useQuery({
+    queryKey: ["workflow", workflowId],
+    queryFn: () => apiClient.getWorkflow(workflowId),
+    enabled: !!workflowId,
+  });
+
+  // Fetch blocks registry
+  const { data: blocks } = useQuery({
+    queryKey: ["workflow-blocks"],
+    queryFn: () => apiClient.getWorkflowBlocks(),
+  });
+
+  // Fetch models for model blocks (flattened list)
+  const { data: models } = useQuery({
+    queryKey: ["workflow-models-list"],
+    queryFn: () => apiClient.getWorkflowModelsList(),
+  });
+
+  // Get block category
+  const getBlockCategory = useCallback(
+    (type: string): string => {
+      const block = blocks?.find((b) => b.type === type);
+      return block?.category || "logic";
+    },
+    [blocks]
+  );
+
+  // Load workflow definition into React Flow
+  useEffect(() => {
+    if (workflow?.definition) {
+      const defNodes = workflow.definition.nodes as Array<{
+        id: string;
+        type: string;
+        position: { x: number; y: number };
+        data?: { label?: string; config?: Record<string, unknown>; model_id?: string };
+      }>;
+      const defEdges = workflow.definition.edges as Array<{
+        id: string;
+        source: string;
+        target: string;
+        sourceHandle?: string;
+        targetHandle?: string;
+      }>;
+
+      const flowNodes: WorkflowNode[] = (defNodes || []).map((node) => ({
+        id: node.id,
+        type: "workflowNode",
+        position: node.position,
+        data: {
+          label: node.data?.label || node.type,
+          type: node.type,
+          category: getBlockCategory(node.type),
+          config: node.data?.config || {},
+          model_id: node.data?.model_id,
+        },
+      }));
+
+      const flowEdges: Edge[] = (defEdges || []).map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle,
+      }));
+
+      setNodes(flowNodes);
+      setEdges(flowEdges);
+    }
+  }, [workflow, getBlockCategory]);
+
+  // Save workflow mutation
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const definition = {
+        nodes: nodes.map((node) => ({
+          id: node.id,
+          type: node.data.type,
+          position: node.position,
+          data: {
+            label: node.data.label,
+            config: node.data.config || {},
+            model_id: node.data.model_id,
+          },
+        })),
+        edges: edges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle,
+          targetHandle: edge.targetHandle,
+        })),
+      };
+      return apiClient.updateWorkflow(workflowId, { definition });
+    },
+    onSuccess: () => {
+      toast.success("Workflow saved");
+      setHasChanges(false);
+      queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to save: ${error.message}`);
+    },
+  });
+
+  // Execute workflow mutation
+  const executeMutation = useMutation({
+    mutationFn: () => apiClient.executeWorkflow(workflowId, {}),
+    onSuccess: (data) => {
+      toast.success("Workflow execution started");
+      router.push(`/workflows/executions?execution_id=${data.id}`);
+    },
+    onError: (error: Error) => {
+      toast.error(`Failed to execute: ${error.message}`);
+    },
+  });
+
+  // Handle node changes
+  const onNodesChange = useCallback(
+    (changes: NodeChange<WorkflowNode>[]) => {
+      setNodes((nds) => applyNodeChanges(changes, nds));
+      setHasChanges(true);
+    },
+    []
+  );
+
+  // Handle edge changes
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      setEdges((eds) => applyEdgeChanges(changes, eds));
+      setHasChanges(true);
+    },
+    []
+  );
+
+  // Handle edge connection
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      setEdges((eds) => addEdge({ ...connection, id: `e-${Date.now()}` }, eds));
+      setHasChanges(true);
+    },
+    []
+  );
+
+  // Handle node selection
+  const onNodeClick = useCallback((_: React.MouseEvent, node: WorkflowNode) => {
+    setSelectedNode(node);
+  }, []);
+
+  // Handle drag start from palette
+  const onDragStart = (event: React.DragEvent, block: BlockDef) => {
+    event.dataTransfer.setData("application/reactflow", JSON.stringify(block));
+    event.dataTransfer.effectAllowed = "move";
+  };
+
+  // Handle drop on canvas
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+
+      const data = event.dataTransfer.getData("application/reactflow");
+      if (!data) return;
+
+      const block = JSON.parse(data) as BlockDef;
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+
+      const newNode: WorkflowNode = {
+        id: `node-${Date.now()}`,
+        type: "workflowNode",
+        position,
+        data: {
+          label: block.display_name,
+          type: block.type,
+          category: block.category,
+          config: {},
+        },
+      };
+
+      setNodes((nds) => [...nds, newNode]);
+      setHasChanges(true);
+    },
+    [screenToFlowPosition]
+  );
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }, []);
+
+  // Status badge
+  const statusConfig: Record<string, { label: string; color: string }> = {
+    draft: { label: "Draft", color: "bg-yellow-100 text-yellow-800" },
+    active: { label: "Active", color: "bg-green-100 text-green-800" },
+    archived: { label: "Archived", color: "bg-gray-100 text-gray-800" },
+  };
+
+  if (workflowLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!workflow) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen gap-4">
+        <p className="text-muted-foreground">Workflow not found</p>
+        <Button variant="outline" onClick={() => router.push("/workflows")}>
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Back to Workflows
+        </Button>
+      </div>
+    );
+  }
+
+  const status = statusConfig[workflow.status] || statusConfig.draft;
+
+  return (
+    <div className="h-screen flex flex-col">
+      {/* Header */}
+      <div className="h-14 border-b bg-background flex items-center justify-between px-4 shrink-0">
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => router.push("/workflows")}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <Separator orientation="vertical" className="h-6" />
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-semibold">{workflow.name}</h1>
+              <Badge className={status.color}>{status.label}</Badge>
+              {hasChanges && (
+                <Badge variant="outline" className="text-orange-600 border-orange-300">
+                  Unsaved
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => saveMutation.mutate()}
+            disabled={!hasChanges || saveMutation.isPending}
+          >
+            {saveMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-2" />
+            )}
+            Save
+          </Button>
+          <Button
+            onClick={() => executeMutation.mutate()}
+            disabled={executeMutation.isPending || nodes.length === 0}
+          >
+            {executeMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4 mr-2" />
+            )}
+            Execute
+          </Button>
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Block palette */}
+        <BlockPalette blocks={(blocks as BlockDef[]) || []} onDragStart={onDragStart} />
+
+        {/* Canvas */}
+        <div className="flex-1" ref={reactFlowWrapper}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={onNodeClick}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            nodeTypes={nodeTypes}
+            fitView
+            snapToGrid
+            snapGrid={[16, 16]}
+            deleteKeyCode={["Backspace", "Delete"]}
+          >
+            <Background gap={16} />
+            <Controls />
+            <MiniMap
+              nodeColor={(node) => {
+                const nodeData = node.data as WorkflowNodeData | undefined;
+                return categoryColors[nodeData?.category || ""] || "#6b7280";
+              }}
+              maskColor="rgba(0, 0, 0, 0.1)"
+              className="!bg-card border"
+            />
+            <Panel position="bottom-left" className="text-xs text-muted-foreground">
+              {nodes.length} nodes, {edges.length} connections
+            </Panel>
+          </ReactFlow>
+        </div>
+
+        {/* Node config sheet */}
+        <Sheet open={!!selectedNode} onOpenChange={() => setSelectedNode(null)}>
+          <SheetContent className="w-80">
+            <SheetHeader>
+              <SheetTitle className="flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Node Configuration
+              </SheetTitle>
+              <SheetDescription>Configure the selected node</SheetDescription>
+            </SheetHeader>
+
+            {selectedNode && (
+              <div className="mt-4 space-y-4">
+                <div className="space-y-2">
+                  <Label>Node Type</Label>
+                  <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
+                    {blockIcons[selectedNode.data.type] || <Box className="h-4 w-4" />}
+                    <span className="text-sm font-medium">
+                      {selectedNode.data.label}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Label</Label>
+                  <Input
+                    value={selectedNode.data.label}
+                    onChange={(e) => {
+                      const newLabel = e.target.value;
+                      setNodes((nds) =>
+                        nds.map((n) =>
+                          n.id === selectedNode.id
+                            ? { ...n, data: { ...n.data, label: newLabel } }
+                            : n
+                        )
+                      );
+                      setHasChanges(true);
+                    }}
+                  />
+                </div>
+
+                {/* Model selection for model blocks */}
+                {["detection", "classification", "embedding"].includes(
+                  selectedNode.data.type
+                ) && (
+                  <div className="space-y-2">
+                    <Label>Model</Label>
+                    <Select
+                      value={selectedNode.data.model_id || ""}
+                      onValueChange={(value) => {
+                        setNodes((nds) =>
+                          nds.map((n) =>
+                            n.id === selectedNode.id
+                              ? { ...n, data: { ...n.data, model_id: value } }
+                              : n
+                          )
+                        );
+                        setHasChanges(true);
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select model..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {models?.items
+                          ?.filter((m) => m.category === selectedNode.data.type)
+                          .map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              <div className="flex items-center gap-2">
+                                <span>{model.name}</span>
+                                {model.is_default && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    Default
+                                  </Badge>
+                                )}
+                              </div>
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <Separator />
+
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => {
+                    setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
+                    setEdges((eds) =>
+                      eds.filter(
+                        (e) =>
+                          e.source !== selectedNode.id &&
+                          e.target !== selectedNode.id
+                      )
+                    );
+                    setSelectedNode(null);
+                    setHasChanges(true);
+                  }}
+                >
+                  Delete Node
+                </Button>
+              </div>
+            )}
+          </SheetContent>
+        </Sheet>
+      </div>
+    </div>
+  );
+}
+
+// Wrap with ReactFlowProvider
+export default function WorkflowEditorPage() {
+  return (
+    <ReactFlowProvider>
+      <WorkflowEditorContent />
+    </ReactFlowProvider>
+  );
+}

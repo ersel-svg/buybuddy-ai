@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, use, useMemo, useEffect } from "react";
+import { useState, use, useMemo, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -87,9 +87,13 @@ import {
   History,
   SplitSquareVertical,
   Brain,
+  CheckSquare,
+  Square,
+  X,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { CLSImportModal } from "@/components/cls/import-modal";
 
 // Debounce hook
 function useDebounce<T>(value: T, delay: number): T {
@@ -160,11 +164,14 @@ export default function CLSDatasetDetailPage({
   const [filterSplit, setFilterSplit] = useState<string>("all");
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
 
-  // Add images sheet state
+  // Add images sheet state (legacy)
   const [isAddImagesSheetOpen, setIsAddImagesSheetOpen] = useState(false);
   const [availableImagesPage, setAvailableImagesPage] = useState(1);
   const [availableSearch, setAvailableSearch] = useState("");
   const [selectedToAdd, setSelectedToAdd] = useState<Set<string>>(new Set());
+
+  // Import modal state (new visual picker)
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   // Classes tab state
   const [classSearch, setClassSearch] = useState("");
@@ -349,6 +356,32 @@ export default function CLSDatasetDetailPage({
     setFormDisplayName("");
     setFormColor(PRESET_COLORS[0]);
   };
+
+  // Selection handlers for images
+  const selectAllInPage = useCallback(() => {
+    if (!imagesData?.images) return;
+    const imageIds = imagesData.images.map((img: DatasetImage) => img.image_id);
+    setSelectedImages(new Set(imageIds));
+  }, [imagesData]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedImages(new Set());
+  }, []);
+
+  // Single image delete mutation
+  const deleteSingleImageMutation = useMutation({
+    mutationFn: async (imageId: string) => {
+      return apiClient.removeImagesFromCLSDataset(datasetId, [imageId]);
+    },
+    onSuccess: () => {
+      toast.success("Image removed from dataset");
+      queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
+    },
+    onError: (error) => {
+      toast.error(`Failed to remove image: ${error.message}`);
+    },
+  });
 
   // Filter classes
   const filteredClasses = useMemo(() => {
@@ -576,24 +609,48 @@ export default function CLSDatasetDetailPage({
               </Select>
             </div>
             <div className="flex gap-2">
+              {/* Selection buttons */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={selectAllInPage}
+                disabled={!imagesData?.images?.length}
+              >
+                <CheckSquare className="h-4 w-4 mr-2" />
+                Select Page
+              </Button>
               {selectedImages.size > 0 && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => {
-                    if (confirm(`Remove ${selectedImages.size} images from dataset?`)) {
-                      removeImagesMutation.mutate(Array.from(selectedImages));
-                    }
-                  }}
-                  disabled={removeImagesMutation.isPending}
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Remove ({selectedImages.size})
-                </Button>
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearSelection}
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Clear ({selectedImages.size})
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => {
+                      if (confirm(`Remove ${selectedImages.size} images from dataset?`)) {
+                        removeImagesMutation.mutate(Array.from(selectedImages));
+                      }
+                    }}
+                    disabled={removeImagesMutation.isPending}
+                  >
+                    {removeImagesMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 mr-2" />
+                    )}
+                    Remove ({selectedImages.size})
+                  </Button>
+                </>
               )}
-              <Button onClick={() => setIsAddImagesSheetOpen(true)}>
+              <Button onClick={() => setIsImportModalOpen(true)}>
                 <Plus className="h-4 w-4 mr-2" />
-                Add Images
+                Import Images
               </Button>
             </div>
           </div>
@@ -608,9 +665,9 @@ export default function CLSDatasetDetailPage({
               <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium">No images in this dataset</h3>
               <p className="text-muted-foreground mt-1">Add images to start labeling</p>
-              <Button className="mt-4" onClick={() => setIsAddImagesSheetOpen(true)}>
+              <Button className="mt-4" onClick={() => setIsImportModalOpen(true)}>
                 <Plus className="h-4 w-4 mr-2" />
-                Add Images
+                Import Images
               </Button>
             </div>
           ) : (
@@ -619,7 +676,7 @@ export default function CLSDatasetDetailPage({
                 {imagesData.images.map((img: DatasetImage) => (
                   <Card
                     key={img.id}
-                    className={`group relative cursor-pointer transition-all ${
+                    className={`group relative cursor-pointer transition-all hover:shadow-md ${
                       selectedImages.has(img.image_id) ? "ring-2 ring-primary" : ""
                     }`}
                     onClick={() => {
@@ -641,12 +698,59 @@ export default function CLSDatasetDetailPage({
                         sizes="(max-width: 768px) 50vw, 16vw"
                       />
                       {/* Selection checkbox */}
-                      <div className="absolute top-2 left-2">
+                      <div className="absolute top-2 left-2 z-10">
                         <Checkbox
                           checked={selectedImages.has(img.image_id)}
                           className="bg-background/80"
                           onClick={(e) => e.stopPropagation()}
                         />
+                      </div>
+                      {/* Actions menu */}
+                      <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                            <Button variant="secondary" size="icon" className="h-7 w-7">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenuItem
+                              onClick={() => {
+                                const newSelected = new Set(selectedImages);
+                                if (newSelected.has(img.image_id)) {
+                                  newSelected.delete(img.image_id);
+                                } else {
+                                  newSelected.add(img.image_id);
+                                }
+                                setSelectedImages(newSelected);
+                              }}
+                            >
+                              {selectedImages.has(img.image_id) ? (
+                                <>
+                                  <Square className="h-4 w-4 mr-2" />
+                                  Deselect
+                                </>
+                              ) : (
+                                <>
+                                  <CheckSquare className="h-4 w-4 mr-2" />
+                                  Select
+                                </>
+                              )}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onClick={() => {
+                                if (confirm("Remove this image from dataset?")) {
+                                  deleteSingleImageMutation.mutate(img.image_id);
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Remove from Dataset
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                       {/* Label badge */}
                       {img.labels && img.labels.length > 0 && (
@@ -661,7 +765,7 @@ export default function CLSDatasetDetailPage({
                       )}
                       {/* Split badge */}
                       {img.split && (
-                        <div className="absolute top-2 right-2">
+                        <div className="absolute top-8 right-2">
                           <Badge variant="secondary" className="text-xs">
                             {img.split}
                           </Badge>
@@ -1123,6 +1227,17 @@ export default function CLSDatasetDetailPage({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Import Modal (Visual Picker) */}
+      <CLSImportModal
+        open={isImportModalOpen}
+        onOpenChange={setIsImportModalOpen}
+        datasetId={datasetId}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
+        }}
+      />
     </div>
   );
 }

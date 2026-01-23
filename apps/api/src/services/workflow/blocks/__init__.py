@@ -9,17 +9,27 @@ from ..base import BaseBlock
 
 # Import block implementations
 from .input_blocks import ImageInputBlock, ParameterInputBlock
-from .placeholder_blocks import (
+
+# Model blocks (real implementations)
+from .model_blocks import (
     DetectionBlock,
     ClassificationBlock,
     EmbeddingBlock,
     SimilaritySearchBlock,
+)
+
+# Transform blocks (real implementations)
+from .transform_blocks import (
     CropBlock,
-    SegmentationBlock,
     BlurRegionBlock,
+    DrawBoxesBlock,
+    SegmentationBlock,
+)
+
+# Logic and output blocks (placeholders for now)
+from .placeholder_blocks import (
     ConditionBlock,
     FilterBlock,
-    DrawBoxesBlock,
     GridBuilderBlock,
     JsonOutputBlock,
 )

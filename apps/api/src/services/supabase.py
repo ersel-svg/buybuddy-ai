@@ -2723,9 +2723,23 @@ class SupabaseService:
         has_embedding: Optional[bool] = None,
         is_matched: Optional[bool] = None,
         predicted_upc: Optional[str] = None,
+        # NEW: Visual picker filters
+        matched_category: Optional[str] = None,
+        matched_brand: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get cutout images with pagination and filters."""
-        query = self.client.table("cutout_images").select("*", count="exact")
+        # Determine if we need to JOIN with products table
+        needs_product_join = matched_category or matched_brand or search
+        
+        if needs_product_join:
+            # Use JOIN query for product filters
+            select_fields = "*, products!left(id, product_name, brand_name, category)"
+            query = self.client.table("cutout_images").select(select_fields, count="exact")
+        else:
+            query = self.client.table("cutout_images").select("*", count="exact")
 
         if has_embedding is not None:
             query = query.eq("has_embedding", has_embedding)
@@ -2735,6 +2749,30 @@ class SupabaseService:
             query = query.is_("matched_product_id", "null")
         if predicted_upc:
             query = query.eq("predicted_upc", predicted_upc)
+        
+        # Date range filters
+        if date_from:
+            query = query.gte("synced_at", f"{date_from}T00:00:00")
+        if date_to:
+            query = query.lte("synced_at", f"{date_to}T23:59:59")
+        
+        # Product-based filters (requires matched cutouts)
+        if matched_category:
+            query = query.not_.is_("matched_product_id", "null")
+            query = query.eq("products.category", matched_category)
+        
+        if matched_brand:
+            query = query.not_.is_("matched_product_id", "null")
+            query = query.eq("products.brand_name", matched_brand)
+        
+        if search:
+            search_term = f"%{search}%"
+            # Search in predicted_upc or matched product name
+            query = query.or_(
+                f"predicted_upc.ilike.{search_term},"
+                f"products.product_name.ilike.{search_term},"
+                f"products.brand_name.ilike.{search_term}"
+            )
 
         # Pagination
         start = (page - 1) * limit
@@ -2742,8 +2780,17 @@ class SupabaseService:
         query = query.range(start, end).order("synced_at", desc=True)
 
         response = query.execute()
+        
+        # Extract cutout data, flatten product info if joined
+        items = []
+        for row in response.data or []:
+            item = {k: v for k, v in row.items() if k != "products"}
+            if "products" in row and row["products"]:
+                item["matched_product"] = row["products"]
+            items.append(item)
+        
         return {
-            "items": response.data,
+            "items": items,
             "total": response.count or 0,
             "page": page,
             "limit": limit,

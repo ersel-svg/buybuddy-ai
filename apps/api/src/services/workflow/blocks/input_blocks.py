@@ -54,8 +54,8 @@ class ImageInputBlock(BaseBlock):
             from PIL import Image
 
             if image_url:
-                # Fetch image from URL
-                async with httpx.AsyncClient() as client:
+                # Fetch image from URL (follow redirects for CDN/storage URLs)
+                async with httpx.AsyncClient(follow_redirects=True) as client:
                     response = await client.get(image_url, timeout=30.0)
                     response.raise_for_status()
                     image_data = BytesIO(response.content)

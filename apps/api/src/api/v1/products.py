@@ -191,6 +191,49 @@ class ExportRequest(BaseModel):
 
 
 # ===========================================
+# Product Images Browse Schemas
+# ===========================================
+
+
+class ProductImageBrowseRequest(BaseModel):
+    """Request for browsing product images (visual picker)."""
+    
+    page: int = 1
+    limit: int = 50
+    
+    # Filters
+    categories: Optional[List[str]] = None
+    brands: Optional[List[str]] = None
+    statuses: Optional[List[str]] = None  # product status filter
+    image_types: Optional[List[str]] = None  # synthetic, real, augmented
+    search: Optional[str] = None  # search in product name, brand, barcode
+
+
+class ProductImageBrowseItem(BaseModel):
+    """Single product image in browse results."""
+    
+    id: str  # product_images.id
+    image_url: str
+    product_id: str
+    product_name: Optional[str] = None
+    brand_name: Optional[str] = None
+    category: Optional[str] = None
+    image_type: str
+    status: Optional[str] = None  # product status
+
+
+class ProductImageBrowseResponse(BaseModel):
+    """Browse response with images and filter options."""
+    
+    images: List[ProductImageBrowseItem]
+    total: int
+    page: int
+    limit: int
+    has_more: bool
+    filters: dict  # Available filter options
+
+
+# ===========================================
 # Dependency
 # ===========================================
 
@@ -587,6 +630,125 @@ async def get_filter_options(
         visibility_score_min=visibility_score_min,
         visibility_score_max=visibility_score_max,
         exclude_dataset_id=exclude_dataset_id,
+    )
+
+
+@router.post("/images/browse", response_model=ProductImageBrowseResponse)
+async def browse_product_images(
+    request: ProductImageBrowseRequest,
+    db: SupabaseService = Depends(get_supabase),
+) -> ProductImageBrowseResponse:
+    """
+    Browse all product images with filters - designed for visual picker UI.
+    
+    Returns a paginated list of product images with their associated product info.
+    Useful for selecting specific images to add to classification datasets.
+    """
+    offset = (request.page - 1) * request.limit
+    
+    # Build query with JOIN to products table
+    query = db.client.table("product_images").select(
+        "id, image_url, image_type, product_id, products!inner(id, product_name, brand_name, category, status)"
+    )
+    
+    # Apply image_type filter
+    if request.image_types:
+        query = query.in_("image_type", request.image_types)
+    
+    # Apply product filters via the JOIN
+    if request.categories:
+        query = query.in_("products.category", request.categories)
+    
+    if request.brands:
+        query = query.in_("products.brand_name", request.brands)
+    
+    if request.statuses:
+        query = query.in_("products.status", request.statuses)
+    
+    if request.search:
+        # Search in product name, brand, or barcode
+        search_term = f"%{request.search}%"
+        query = query.or_(
+            f"products.product_name.ilike.{search_term},"
+            f"products.brand_name.ilike.{search_term},"
+            f"products.barcode.ilike.{search_term}"
+        )
+    
+    # Get total count first
+    count_query = db.client.table("product_images").select(
+        "id", count="exact"
+    )
+    if request.image_types:
+        count_query = count_query.in_("image_type", request.image_types)
+    
+    # For count with product filters, we need to use the same JOIN
+    count_result = db.client.table("product_images").select(
+        "id, products!inner(id)",
+        count="exact"
+    )
+    if request.image_types:
+        count_result = count_result.in_("image_type", request.image_types)
+    if request.categories:
+        count_result = count_result.in_("products.category", request.categories)
+    if request.brands:
+        count_result = count_result.in_("products.brand_name", request.brands)
+    if request.statuses:
+        count_result = count_result.in_("products.status", request.statuses)
+    if request.search:
+        search_term = f"%{request.search}%"
+        count_result = count_result.or_(
+            f"products.product_name.ilike.{search_term},"
+            f"products.brand_name.ilike.{search_term},"
+            f"products.barcode.ilike.{search_term}"
+        )
+    
+    count_response = count_result.execute()
+    total = count_response.count or 0
+    
+    # Execute paginated query
+    query = query.order("product_id").range(offset, offset + request.limit - 1)
+    response = query.execute()
+    
+    # Transform results
+    images = []
+    for row in response.data or []:
+        product = row.get("products", {})
+        images.append(ProductImageBrowseItem(
+            id=row["id"],
+            image_url=row.get("image_url") or "",
+            product_id=row["product_id"],
+            product_name=product.get("product_name"),
+            brand_name=product.get("brand_name"),
+            category=product.get("category"),
+            image_type=row.get("image_type", "synthetic"),
+            status=product.get("status"),
+        ))
+    
+    # Get filter options (distinct values)
+    filters = {
+        "categories": [],
+        "brands": [],
+        "statuses": ["pending", "approved", "rejected"],
+        "image_types": ["synthetic", "real", "augmented"],
+    }
+    
+    # Fetch distinct categories and brands
+    try:
+        cat_result = db.client.table("products").select("category").not_.is_("category", "null").execute()
+        filters["categories"] = sorted(list(set(r["category"] for r in cat_result.data if r.get("category"))))
+        
+        brand_result = db.client.table("products").select("brand_name").not_.is_("brand_name", "null").execute()
+        filters["brands"] = sorted(list(set(r["brand_name"] for r in brand_result.data if r.get("brand_name"))))
+    except Exception:
+        pass  # Keep empty lists if query fails
+    
+    return ProductImageBrowseResponse(
+        images=images,
+        total=total,
+        page=request.page,
+        limit=request.limit,
+        has_more=(offset + request.limit) < total,
+        filters=filters,
     )
 
 

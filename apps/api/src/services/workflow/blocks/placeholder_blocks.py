@@ -1,408 +1,20 @@
 """
-Workflow Blocks - Placeholder Blocks
+Workflow Blocks - Logic and Output Blocks
 
-Placeholder implementations for blocks that will be fully implemented in later weeks.
-These provide the structure and interface while returning mock data.
+Logic and control flow blocks.
 """
 
 import time
 from typing import Any
 
-from ..base import BaseBlock, BlockResult, ExecutionContext, ModelBlock
-
-
-class DetectionBlock(ModelBlock):
-    """
-    Detection Block - Placeholder
-
-    Will support both pretrained (YOLO) and trained (RF-DETR, RT-DETR) models.
-    Full implementation in Week 2.
-    """
-
-    block_type = "detection"
-    display_name = "Object Detection"
-    description = "Detect objects in images using YOLO or trained models"
-    model_type = "detection"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": True, "description": "Input image"},
-    ]
-    output_ports = [
-        {"name": "detections", "type": "array", "description": "List of detected objects"},
-        {"name": "annotated_image", "type": "image", "description": "Image with bounding boxes"},
-        {"name": "count", "type": "number", "description": "Number of detections"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "model_id": {"type": "string", "description": "Model ID"},
-            "model_source": {"type": "string", "enum": ["pretrained", "trained"]},
-            "confidence": {"type": "number", "default": 0.5},
-            "nms_threshold": {"type": "number", "default": 0.4},
-            "classes": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["model_id", "model_source"],
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock detection data."""
-        start_time = time.time()
-
-        # TODO: Implement actual detection in Week 2
-        # For now, return placeholder data
-
-        image = inputs.get("image")
-        model_id = config.get("model_id", "unknown")
-
-        mock_detections = [
-            {
-                "class_name": "placeholder",
-                "confidence": 0.95,
-                "bbox": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},
-            }
-        ]
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={
-                "detections": mock_detections,
-                "annotated_image": image,  # Pass through for now
-                "count": len(mock_detections),
-            },
-            duration_ms=round(duration, 2),
-            metrics={
-                "model_id": model_id,
-                "detection_count": len(mock_detections),
-                "placeholder": True,
-            },
-        )
-
-
-class ClassificationBlock(ModelBlock):
-    """
-    Classification Block - Placeholder
-
-    Will support trained classification models (ViT, ConvNeXt, etc.)
-    Full implementation in Week 2.
-    """
-
-    block_type = "classification"
-    display_name = "Classification"
-    description = "Classify images using trained models"
-    model_type = "classification"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": False},
-        {"name": "images", "type": "array", "required": False, "description": "Array of images"},
-    ]
-    output_ports = [
-        {"name": "predictions", "type": "array", "description": "Classification predictions"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "model_id": {"type": "string"},
-            "model_source": {"type": "string", "enum": ["pretrained", "trained"]},
-            "top_k": {"type": "number", "default": 1},
-        },
-        "required": ["model_id"],
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock classification data."""
-        start_time = time.time()
-
-        images = inputs.get("images", [])
-        if not images and inputs.get("image"):
-            images = [inputs["image"]]
-
-        mock_predictions = []
-        for _ in images:
-            mock_predictions.append({
-                "class_name": "placeholder",
-                "confidence": 0.9,
-                "top_k": [{"class_name": "placeholder", "confidence": 0.9}],
-            })
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"predictions": mock_predictions},
-            duration_ms=round(duration, 2),
-            metrics={"placeholder": True},
-        )
-
-
-class EmbeddingBlock(ModelBlock):
-    """
-    Embedding Block - Placeholder
-
-    Will support pretrained (DINOv2, CLIP) and trained embedding models.
-    Full implementation in Week 2.
-    """
-
-    block_type = "embedding"
-    display_name = "Embedding"
-    description = "Extract embeddings from images"
-    model_type = "embedding"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": False},
-        {"name": "images", "type": "array", "required": False},
-    ]
-    output_ports = [
-        {"name": "embeddings", "type": "array", "description": "Embedding vectors"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "model_id": {"type": "string"},
-            "model_source": {"type": "string", "enum": ["pretrained", "trained"]},
-        },
-        "required": ["model_id"],
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock embeddings."""
-        start_time = time.time()
-
-        images = inputs.get("images", [])
-        if not images and inputs.get("image"):
-            images = [inputs["image"]]
-
-        # Mock embeddings (768-dim for DINOv2-base)
-        mock_embeddings = [[0.0] * 768 for _ in images]
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"embeddings": mock_embeddings},
-            duration_ms=round(duration, 2),
-            metrics={"embedding_count": len(mock_embeddings), "placeholder": True},
-        )
-
-
-class SimilaritySearchBlock(BaseBlock):
-    """
-    Similarity Search Block - Placeholder
-
-    Will search Qdrant for similar products.
-    Full implementation in Week 2.
-    """
-
-    block_type = "similarity_search"
-    display_name = "Similarity Search"
-    description = "Search for similar products in vector database"
-
-    input_ports = [
-        {"name": "embeddings", "type": "array", "required": True},
-    ]
-    output_ports = [
-        {"name": "matches", "type": "array", "description": "Matching products"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "collection": {"type": "string"},
-            "top_k": {"type": "number", "default": 5},
-            "threshold": {"type": "number", "default": 0.7},
-        },
-        "required": ["collection"],
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock matches."""
-        start_time = time.time()
-
-        embeddings = inputs.get("embeddings", [])
-
-        mock_matches = []
-        for _ in embeddings:
-            mock_matches.append({
-                "product_id": "placeholder-id",
-                "similarity": 0.85,
-                "product_info": {"name": "Placeholder Product"},
-                "identifiers": {},
-            })
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"matches": mock_matches},
-            duration_ms=round(duration, 2),
-            metrics={"matched_count": len(mock_matches), "placeholder": True},
-        )
-
-
-class CropBlock(BaseBlock):
-    """
-    Crop Block - Placeholder
-
-    Will crop regions from images based on detections.
-    Full implementation in Week 3.
-    """
-
-    block_type = "crop"
-    display_name = "Crop"
-    description = "Crop regions from image based on detections"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": True},
-        {"name": "detections", "type": "array", "required": True},
-    ]
-    output_ports = [
-        {"name": "crops", "type": "array", "description": "Cropped image regions"},
-        {"name": "crop_metadata", "type": "array", "description": "Metadata for each crop"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "padding": {"type": "number", "default": 0},
-            "min_size": {"type": "number", "default": 32},
-        },
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock crops."""
-        start_time = time.time()
-
-        detections = inputs.get("detections", [])
-        image = inputs.get("image")
-
-        # For placeholder, just duplicate the image for each detection
-        crops = [image] * len(detections)
-        metadata = [{"index": i, "detection": d} for i, d in enumerate(detections)]
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"crops": crops, "crop_metadata": metadata},
-            duration_ms=round(duration, 2),
-            metrics={"crop_count": len(crops), "placeholder": True},
-        )
-
-
-class SegmentationBlock(ModelBlock):
-    """
-    Segmentation Block - Placeholder
-
-    Will support SAM and YOLO-seg models.
-    Full implementation in Week 3.
-    """
-
-    block_type = "segmentation"
-    display_name = "Segmentation"
-    description = "Segment objects in images"
-    model_type = "segmentation"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": True},
-        {"name": "detections", "type": "array", "required": False},
-    ]
-    output_ports = [
-        {"name": "masks", "type": "array", "description": "Segmentation masks"},
-        {"name": "masked_image", "type": "image", "description": "Image with masks applied"},
-    ]
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns mock segmentation data."""
-        start_time = time.time()
-
-        image = inputs.get("image")
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"masks": [], "masked_image": image},
-            duration_ms=round(duration, 2),
-            metrics={"placeholder": True},
-        )
-
-
-class BlurRegionBlock(BaseBlock):
-    """
-    Blur Region Block - Placeholder
-
-    Will blur specified regions (for privacy, etc.)
-    Full implementation in Week 3.
-    """
-
-    block_type = "blur_region"
-    display_name = "Blur Region"
-    description = "Blur specified regions in an image"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": True},
-        {"name": "regions", "type": "array", "required": True, "description": "Regions to blur (detections or masks)"},
-    ]
-    output_ports = [
-        {"name": "image", "type": "image", "description": "Image with blurred regions"},
-    ]
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "blur_type": {"type": "string", "enum": ["gaussian", "pixelate", "black"], "default": "gaussian"},
-            "intensity": {"type": "number", "default": 21},
-        },
-    }
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns image unchanged."""
-        start_time = time.time()
-
-        image = inputs.get("image")
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"image": image},
-            duration_ms=round(duration, 2),
-            metrics={"placeholder": True},
-        )
+from ..base import BaseBlock, BlockResult, ExecutionContext
 
 
 class ConditionBlock(BaseBlock):
     """
-    Condition Block - Placeholder
+    Condition Block
 
-    Will implement if-else branching.
-    Full implementation in Week 4.
+    If-else branching based on expression evaluation.
     """
 
     block_type = "condition"
@@ -420,8 +32,14 @@ class ConditionBlock(BaseBlock):
         "type": "object",
         "properties": {
             "expression": {"type": "string", "description": "Expression to evaluate"},
+            "operator": {
+                "type": "string",
+                "enum": ["equals", "not_equals", "greater_than", "less_than", "contains", "is_empty", "is_not_empty"],
+                "default": "is_not_empty",
+            },
+            "compare_value": {"type": "string", "description": "Value to compare against"},
         },
-        "required": ["expression"],
+        "required": ["operator"],
     }
 
     async def execute(
@@ -430,26 +48,57 @@ class ConditionBlock(BaseBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Placeholder: Always returns true path."""
+        """Evaluate condition and route output."""
         start_time = time.time()
 
         value = inputs.get("value")
+        operator = config.get("operator", "is_not_empty")
+        compare_value = config.get("compare_value")
+
+        # Evaluate condition
+        result = False
+
+        if operator == "equals":
+            result = str(value) == str(compare_value)
+        elif operator == "not_equals":
+            result = str(value) != str(compare_value)
+        elif operator == "greater_than":
+            try:
+                result = float(value) > float(compare_value)
+            except (ValueError, TypeError):
+                result = False
+        elif operator == "less_than":
+            try:
+                result = float(value) < float(compare_value)
+            except (ValueError, TypeError):
+                result = False
+        elif operator == "contains":
+            result = str(compare_value) in str(value) if value else False
+        elif operator == "is_empty":
+            result = not value or (isinstance(value, (list, dict)) and len(value) == 0)
+        elif operator == "is_not_empty":
+            result = bool(value) and not (isinstance(value, (list, dict)) and len(value) == 0)
 
         duration = (time.time() - start_time) * 1000
 
         return BlockResult(
-            outputs={"true_output": value, "false_output": None},
+            outputs={
+                "true_output": value if result else None,
+                "false_output": None if result else value,
+            },
             duration_ms=round(duration, 2),
-            metrics={"condition_result": True, "placeholder": True},
+            metrics={
+                "condition_result": result,
+                "operator": operator,
+            },
         )
 
 
 class FilterBlock(BaseBlock):
     """
-    Filter Block - Placeholder
+    Filter Block
 
-    Will filter arrays based on expression.
-    Full implementation in Week 4.
+    Filter array items based on field value or expression.
     """
 
     block_type = "filter"
@@ -466,9 +115,16 @@ class FilterBlock(BaseBlock):
     config_schema = {
         "type": "object",
         "properties": {
-            "expression": {"type": "string"},
+            "field": {"type": "string", "description": "Field to filter on (e.g., 'confidence')"},
+            "operator": {
+                "type": "string",
+                "enum": ["equals", "not_equals", "greater_than", "less_than", "contains", "in_list"],
+                "default": "greater_than",
+            },
+            "value": {"type": "string", "description": "Value to compare against"},
+            "class_filter": {"type": "array", "items": {"type": "string"}, "description": "Filter by class names"},
         },
-        "required": ["expression"],
+        "required": ["operator"],
     }
 
     async def execute(
@@ -477,66 +133,81 @@ class FilterBlock(BaseBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Placeholder: Passes all items."""
+        """Filter items based on criteria."""
         start_time = time.time()
 
         items = inputs.get("items", [])
+        if not items:
+            return BlockResult(
+                outputs={"passed": [], "rejected": []},
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+                metrics={"passed_count": 0, "rejected_count": 0},
+            )
+
+        field = config.get("field")
+        operator = config.get("operator", "greater_than")
+        compare_value = config.get("value")
+        class_filter = config.get("class_filter")
+
+        passed = []
+        rejected = []
+
+        for item in items:
+            # Class filter
+            if class_filter:
+                item_class = item.get("class_name") if isinstance(item, dict) else None
+                if item_class not in class_filter:
+                    rejected.append(item)
+                    continue
+
+            # Field filter
+            if field:
+                item_value = item.get(field) if isinstance(item, dict) else None
+
+                if operator == "equals":
+                    passes = str(item_value) == str(compare_value)
+                elif operator == "not_equals":
+                    passes = str(item_value) != str(compare_value)
+                elif operator == "greater_than":
+                    try:
+                        passes = float(item_value) > float(compare_value)
+                    except (ValueError, TypeError):
+                        passes = False
+                elif operator == "less_than":
+                    try:
+                        passes = float(item_value) < float(compare_value)
+                    except (ValueError, TypeError):
+                        passes = False
+                elif operator == "contains":
+                    passes = str(compare_value) in str(item_value) if item_value else False
+                elif operator == "in_list":
+                    list_values = [v.strip() for v in str(compare_value).split(",")]
+                    passes = str(item_value) in list_values
+                else:
+                    passes = True
+
+                if passes:
+                    passed.append(item)
+                else:
+                    rejected.append(item)
+            else:
+                # No field specified, pass all
+                passed.append(item)
 
         duration = (time.time() - start_time) * 1000
 
         return BlockResult(
-            outputs={"passed": items, "rejected": []},
+            outputs={"passed": passed, "rejected": rejected},
             duration_ms=round(duration, 2),
-            metrics={"passed_count": len(items), "placeholder": True},
-        )
-
-
-class DrawBoxesBlock(BaseBlock):
-    """
-    Draw Boxes Block - Placeholder
-
-    Will draw bounding boxes on images.
-    Full implementation in Week 3.
-    """
-
-    block_type = "draw_boxes"
-    display_name = "Draw Boxes"
-    description = "Draw bounding boxes on image"
-
-    input_ports = [
-        {"name": "image", "type": "image", "required": True},
-        {"name": "detections", "type": "array", "required": True},
-    ]
-    output_ports = [
-        {"name": "image", "type": "image", "description": "Image with boxes drawn"},
-    ]
-
-    async def execute(
-        self,
-        inputs: dict[str, Any],
-        config: dict[str, Any],
-        context: ExecutionContext,
-    ) -> BlockResult:
-        """Placeholder: Returns image unchanged."""
-        start_time = time.time()
-
-        image = inputs.get("image")
-
-        duration = (time.time() - start_time) * 1000
-
-        return BlockResult(
-            outputs={"image": image},
-            duration_ms=round(duration, 2),
-            metrics={"placeholder": True},
+            metrics={"passed_count": len(passed), "rejected_count": len(rejected)},
         )
 
 
 class GridBuilderBlock(BaseBlock):
     """
-    Grid Builder Block - Placeholder
+    Grid Builder Block
 
-    Will build realogram/planogram grid from detection results.
-    Full implementation in Week 4.
+    Builds realogram/planogram grid from detection and matching results.
     """
 
     block_type = "grid_builder"
@@ -544,15 +215,22 @@ class GridBuilderBlock(BaseBlock):
     description = "Build realogram/planogram grid from detections"
 
     input_ports = [
-        {"name": "shelves", "type": "array", "required": False},
-        {"name": "slots", "type": "array", "required": False},
-        {"name": "matches", "type": "array", "required": False},
-        {"name": "voids", "type": "array", "required": False},
+        {"name": "shelves", "type": "array", "required": False, "description": "Shelf detections"},
+        {"name": "slots", "type": "array", "required": False, "description": "Slot detections"},
+        {"name": "matches", "type": "array", "required": False, "description": "Product matches"},
+        {"name": "voids", "type": "array", "required": False, "description": "Empty slot detections"},
     ]
     output_ports = [
         {"name": "grid", "type": "array", "description": "2D grid representation"},
         {"name": "realogram", "type": "object", "description": "Full realogram data"},
     ]
+    config_schema = {
+        "type": "object",
+        "properties": {
+            "sort_by": {"type": "string", "enum": ["position", "confidence"], "default": "position"},
+            "group_by_shelf": {"type": "boolean", "default": True},
+        },
+    }
 
     async def execute(
         self,
@@ -560,32 +238,101 @@ class GridBuilderBlock(BaseBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Placeholder: Returns empty grid."""
+        """Build grid from detections and matches."""
         start_time = time.time()
+
+        shelves = inputs.get("shelves", [])
+        slots = inputs.get("slots", [])
+        matches = inputs.get("matches", [])
+        voids = inputs.get("voids", [])
+
+        grid = []
+        cells = []
+
+        # Sort shelves by y position (top to bottom)
+        sorted_shelves = sorted(
+            shelves,
+            key=lambda s: s.get("bbox", {}).get("y1", 0) if isinstance(s.get("bbox"), dict) else 0
+        )
+
+        for shelf_idx, shelf in enumerate(sorted_shelves):
+            shelf_bbox = shelf.get("bbox", {})
+            shelf_y1 = shelf_bbox.get("y1", 0) if isinstance(shelf_bbox, dict) else 0
+            shelf_y2 = shelf_bbox.get("y2", 1) if isinstance(shelf_bbox, dict) else 1
+
+            # Find slots within this shelf
+            shelf_slots = []
+            for slot in slots:
+                slot_bbox = slot.get("bbox", {})
+                slot_y = (slot_bbox.get("y1", 0) + slot_bbox.get("y2", 0)) / 2 if isinstance(slot_bbox, dict) else 0
+                if shelf_y1 <= slot_y <= shelf_y2:
+                    shelf_slots.append(slot)
+
+            # Sort slots by x position (left to right)
+            shelf_slots.sort(
+                key=lambda s: s.get("bbox", {}).get("x1", 0) if isinstance(s.get("bbox"), dict) else 0
+            )
+
+            # Build row
+            row = []
+            for slot_idx, slot in enumerate(shelf_slots):
+                # Find matching product
+                slot_match = None
+                for match_group in matches:
+                    if isinstance(match_group, list) and len(match_group) > 0:
+                        slot_match = match_group[0]
+                        break
+                    elif isinstance(match_group, dict):
+                        slot_match = match_group
+                        break
+
+                cell = {
+                    "row": shelf_idx,
+                    "col": slot_idx,
+                    "slot_id": slot.get("id", slot_idx),
+                    "product": slot_match.get("product_id") if slot_match else None,
+                    "similarity": slot_match.get("similarity") if slot_match else None,
+                    "is_void": slot.get("class_name") == "void" or slot_match is None,
+                }
+                row.append(cell)
+                cells.append(cell)
+
+            if row:
+                grid.append(row)
+
+        # Count totals
+        total_products = sum(1 for c in cells if c.get("product"))
+        total_voids = sum(1 for c in cells if c.get("is_void"))
+
+        realogram = {
+            "rows": len(grid),
+            "cols": max(len(row) for row in grid) if grid else 0,
+            "cells": cells,
+            "total_products": total_products,
+            "total_voids": total_voids,
+            "shelves": len(shelves),
+            "slots": len(slots),
+        }
 
         duration = (time.time() - start_time) * 1000
 
         return BlockResult(
-            outputs={
-                "grid": [],
-                "realogram": {
-                    "rows": 0,
-                    "cols": 0,
-                    "cells": [],
-                    "total_products": 0,
-                    "total_voids": 0,
-                },
-            },
+            outputs={"grid": grid, "realogram": realogram},
             duration_ms=round(duration, 2),
-            metrics={"placeholder": True},
+            metrics={
+                "grid_rows": len(grid),
+                "total_cells": len(cells),
+                "products": total_products,
+                "voids": total_voids,
+            },
         )
 
 
 class JsonOutputBlock(BaseBlock):
     """
-    JSON Output Block - Placeholder
+    JSON Output Block
 
-    Will format output as JSON.
+    Formats data as JSON output.
     """
 
     block_type = "json_output"
@@ -598,6 +345,13 @@ class JsonOutputBlock(BaseBlock):
     output_ports = [
         {"name": "json", "type": "object", "description": "JSON formatted output"},
     ]
+    config_schema = {
+        "type": "object",
+        "properties": {
+            "include_metadata": {"type": "boolean", "default": False},
+            "flatten": {"type": "boolean", "default": False},
+        },
+    }
 
     async def execute(
         self,
@@ -605,14 +359,26 @@ class JsonOutputBlock(BaseBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Pass through data as JSON."""
+        """Format data as JSON."""
         start_time = time.time()
 
         data = inputs.get("data")
+        include_metadata = config.get("include_metadata", False)
+
+        output = data
+
+        if include_metadata:
+            output = {
+                "data": data,
+                "metadata": {
+                    "workflow_id": context.workflow_id,
+                    "execution_id": context.execution_id,
+                },
+            }
 
         duration = (time.time() - start_time) * 1000
 
         return BlockResult(
-            outputs={"json": data},
+            outputs={"json": output},
             duration_ms=round(duration, 2),
         )

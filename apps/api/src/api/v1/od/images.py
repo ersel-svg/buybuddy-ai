@@ -1282,48 +1282,136 @@ class BuyBuddySyncRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 
-@router.post("/buybuddy/sync")
-async def sync_from_buybuddy(
-    request: BuyBuddySyncRequest,
-    supabase: SupabaseService = Depends(get_supabase),
-):
-    """Sync images from BuyBuddy to OD system."""
-    if not buybuddy_service.is_configured():
-        raise HTTPException(status_code=400, detail="BuyBuddy API not configured")
+async def _run_buybuddy_sync(job_id: str, request_data: dict, resume_checkpoint=None):
+    """
+    Background task to run BuyBuddy sync with progress tracking.
+
+    Args:
+        job_id: The job ID
+        request_data: Sync configuration
+        resume_checkpoint: Optional BuyBuddySyncCheckpoint to resume from
+    """
+    import time
+    from datetime import datetime, timezone
+    from services.import_checkpoint import checkpoint_service, BuyBuddySyncCheckpoint
+
+    start_time = time.time()
+
+    # Initialize or use existing checkpoint
+    if resume_checkpoint:
+        checkpoint = resume_checkpoint
+        logger.info(f"Resuming BuyBuddy sync job {job_id} from {len(checkpoint.synced_ids)} images")
+    else:
+        checkpoint = BuyBuddySyncCheckpoint(job_id=job_id)
+
+    def update_job(progress: int, stage: str, message: str, status: str = "running",
+                   synced: int = 0, skipped: int = 0, total: int = 0):
+        """Helper to update job progress."""
+        elapsed = time.time() - start_time
+        speed = synced / elapsed if elapsed > 0 and synced > 0 else 0
+        remaining = total - synced - skipped if total > 0 else 0
+        eta = remaining / speed if speed > 0 else 0
+
+        result_data = {
+            "stage": stage,
+            "message": message,
+            "can_resume": True,
+            "synced": synced,
+            "skipped": skipped,
+            "total_found": total,
+            "images_per_second": round(speed, 2),
+            "eta_seconds": int(eta),
+            "elapsed_seconds": int(elapsed),
+            "started_at": datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+        }
+
+        # Preserve checkpoint in result
+        result_data["checkpoint"] = checkpoint.to_dict()
+
+        try:
+            supabase_service.client.table("jobs").update({
+                "status": status,
+                "progress": progress,
+                "result": result_data,
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to update job progress: {e}")
+
+    def fail_job(error: str):
+        """Helper to mark job as failed with resume capability."""
+        checkpoint_service.save_buybuddy_checkpoint(checkpoint)
+        try:
+            supabase_service.client.table("jobs").update({
+                "status": "failed",
+                "error": error,
+                "result": {
+                    "stage": "failed",
+                    "error": error,
+                    "can_resume": True,
+                    "checkpoint": checkpoint.to_dict(),
+                    "synced_count": len(checkpoint.synced_ids),
+                    "total_images": checkpoint.total_images,
+                }
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to update job failure status: {e}")
 
     try:
-        # Fetch images from BuyBuddy
+        update_job(5, "fetching", "Fetching images from BuyBuddy API...")
+
+        # Step 1: Get total count and fetch images
         images = await buybuddy_service.sync_od_images(
-            start_date=request.start_date,
-            end_date=request.end_date,
-            store_id=request.store_id,
-            is_annotated=request.is_annotated,
-            is_approved=request.is_approved,
-            max_images=request.max_images,
+            start_date=request_data.get("start_date"),
+            end_date=request_data.get("end_date"),
+            store_id=request_data.get("store_id"),
+            is_annotated=request_data.get("is_annotated"),
+            is_approved=request_data.get("is_approved"),
+            max_images=request_data.get("max_images"),
         )
 
         if not images:
-            return {
-                "synced": 0,
-                "skipped": 0,
-                "errors": [],
-                "message": "No images found matching criteria"
-            }
+            supabase_service.client.table("jobs").update({
+                "status": "completed",
+                "progress": 100,
+                "result": {
+                    "stage": "completed",
+                    "success": True,
+                    "synced": 0,
+                    "skipped": 0,
+                    "total_found": 0,
+                    "message": "No images found matching criteria",
+                }
+            }).eq("id", job_id).execute()
+            return
 
-        # Get all existing buybuddy_image_ids in batches (Supabase has URL length limits)
+        checkpoint.total_images = len(images)
+        update_job(10, "checking", f"Found {len(images)} images, checking for duplicates...",
+                  synced=0, skipped=0, total=len(images))
+
+        # Step 2: Check existing images (batched)
         bb_ids = [img["buybuddy_image_id"] for img in images]
         existing_ids = set()
         BATCH_SIZE = 100
+
         for i in range(0, len(bb_ids), BATCH_SIZE):
             batch = bb_ids[i:i + BATCH_SIZE]
-            existing_result = supabase.client.table("od_images").select("buybuddy_image_id").in_(
-                "buybuddy_image_id", batch
-            ).execute()
-            existing_ids.update(r["buybuddy_image_id"] for r in (existing_result.data or []))
+            try:
+                existing_result = supabase_service.client.table("od_images").select(
+                    "buybuddy_image_id"
+                ).in_("buybuddy_image_id", batch).execute()
+                existing_ids.update(r["buybuddy_image_id"] for r in (existing_result.data or []))
+            except Exception as e:
+                logger.warning(f"Error checking existing IDs: {e}")
 
-        # Prepare batch insert data
-        new_images = []
+        # If resuming, add already synced IDs to existing
+        if resume_checkpoint:
+            existing_ids.update(checkpoint.synced_ids)
+
         skipped = len(existing_ids)
+
+        # Step 3: Prepare new images
+        new_images = []
+        tags = request_data.get("tags")
 
         for img in images:
             if img["buybuddy_image_id"] in existing_ids:
@@ -1336,16 +1424,14 @@ async def sync_from_buybuddy(
                 "filename": filename,
                 "image_url": image_url,
                 "buybuddy_image_id": img["buybuddy_image_id"],
-                "source": "upload",
+                "source": "buybuddy_sync",  # Fixed: was "upload"
                 "status": "pending",
                 "width": 0,
                 "height": 0,
-                # Direct columns for filtering
                 "merchant_id": img.get("merchant_id"),
                 "merchant_name": img.get("merchant_name"),
                 "store_id": img.get("store_id"),
                 "store_name": img.get("store_name"),
-                # Full metadata for reference
                 "metadata": {
                     "source_type": "buybuddy",
                     "image_type": img.get("image_type"),
@@ -1360,65 +1446,254 @@ async def sync_from_buybuddy(
                     "is_approved": img.get("is_approved"),
                     "annotation_id": img.get("annotation_id"),
                     "inserted_at": img.get("inserted_at"),
-                }
+                },
             }
 
-            if request.tags:
-                image_data["tags"] = request.tags
+            if tags:
+                image_data["tags"] = tags
 
             new_images.append(image_data)
 
-        # Batch insert (100 at a time)
+        if not new_images:
+            supabase_service.client.table("jobs").update({
+                "status": "completed",
+                "progress": 100,
+                "result": {
+                    "stage": "completed",
+                    "success": True,
+                    "synced": 0,
+                    "skipped": skipped,
+                    "total_found": len(images),
+                    "message": f"All {skipped} images already exist",
+                }
+            }).eq("id", job_id).execute()
+            return
+
+        update_job(15, "syncing", f"Syncing {len(new_images)} new images...",
+                  synced=0, skipped=skipped, total=len(images))
+
+        # Step 4: Insert in batches with progress updates
         synced = 0
-        errors = []
-        BATCH_SIZE = 100
+        INSERT_BATCH_SIZE = 100
 
-        for i in range(0, len(new_images), BATCH_SIZE):
-            batch = new_images[i:i + BATCH_SIZE]
+        for i in range(0, len(new_images), INSERT_BATCH_SIZE):
+            batch = new_images[i:i + INSERT_BATCH_SIZE]
+
             try:
-                result = supabase.client.table("od_images").insert(batch).execute()
-                synced += len(result.data) if result.data else 0
+                result = supabase_service.client.table("od_images").insert(batch).execute()
+                batch_synced = len(result.data) if result.data else 0
+                synced += batch_synced
+
+                # Update checkpoint
+                for img in batch[:batch_synced]:
+                    checkpoint.synced_ids.add(img["buybuddy_image_id"])
+
+                # Update progress (15-85%)
+                progress = 15 + int((synced / len(new_images)) * 70) if new_images else 85
+                update_job(
+                    progress, "syncing",
+                    f"Synced {synced}/{len(new_images)} images...",
+                    synced=synced, skipped=skipped, total=len(images)
+                )
+
+                # Save checkpoint periodically
+                if synced % 500 == 0:
+                    checkpoint_service.save_buybuddy_checkpoint(checkpoint)
+
             except Exception as e:
-                errors.append(f"Batch {i//BATCH_SIZE + 1}: {str(e)}")
+                logger.error(f"Batch insert failed: {e}")
+                for img in batch:
+                    checkpoint.failed_ids[img["buybuddy_image_id"]] = str(e)
 
-        # Add to dataset if specified
-        if request.dataset_id and synced > 0:
+        # Step 5: Link to dataset if specified
+        dataset_id = request_data.get("dataset_id")
+        if dataset_id and synced > 0:
+            update_job(88, "linking", "Adding images to dataset...",
+                      synced=synced, skipped=skipped, total=len(images))
+
             try:
-                # Get IDs of newly inserted images (batch to avoid URL length limits)
-                synced_bb_ids = [img["buybuddy_image_id"] for img in new_images[:synced]]
+                # Get IDs of newly inserted images
+                synced_bb_ids = list(checkpoint.synced_ids)
                 new_ids_data = []
+
                 for i in range(0, len(synced_bb_ids), BATCH_SIZE):
                     batch = synced_bb_ids[i:i + BATCH_SIZE]
-                    batch_result = supabase.client.table("od_images").select("id").in_(
+                    batch_result = supabase_service.client.table("od_images").select("id").in_(
                         "buybuddy_image_id", batch
                     ).execute()
                     new_ids_data.extend(batch_result.data or [])
 
                 if new_ids_data:
                     dataset_links = [
-                        {"dataset_id": request.dataset_id, "image_id": r["id"], "status": "pending"}
+                        {"dataset_id": dataset_id, "image_id": r["id"], "status": "pending"}
                         for r in new_ids_data
                     ]
-                    # Batch insert dataset links
+
                     for i in range(0, len(dataset_links), BATCH_SIZE):
                         batch = dataset_links[i:i + BATCH_SIZE]
                         try:
-                            supabase.client.table("od_dataset_images").insert(batch).execute()
+                            supabase_service.client.table("od_dataset_images").insert(batch).execute()
                         except Exception:
                             pass  # Ignore duplicate key errors
-            except Exception as e:
-                errors.append(f"Dataset linking: {str(e)}")
 
-        return {
+            except Exception as e:
+                logger.warning(f"Dataset linking failed: {e}")
+
+        # Step 6: Complete
+        final_result = {
+            "stage": "completed",
+            "success": True,
             "synced": synced,
             "skipped": skipped,
             "total_found": len(images),
-            "errors": errors[:10] if errors else [],
-            "message": f"Synced {synced} images, skipped {skipped} duplicates"
+            "failed": len(checkpoint.failed_ids),
+            "errors": list(checkpoint.failed_ids.values())[:20] if checkpoint.failed_ids else [],
+            "message": f"Synced {synced} images, skipped {skipped} duplicates",
         }
 
+        supabase_service.client.table("jobs").update({
+            "status": "completed",
+            "progress": 100,
+            "result": final_result,
+        }).eq("id", job_id).execute()
+
+        logger.info(f"BuyBuddy sync job {job_id} completed: {synced} synced, {skipped} skipped")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to sync from BuyBuddy: {str(e)}")
+        import traceback
+        logger.exception(f"BuyBuddy sync job {job_id} failed: {e}")
+        fail_job(f"Unexpected error: {str(e)}")
+
+
+@router.post("/buybuddy/sync")
+async def sync_from_buybuddy(request: BuyBuddySyncRequest):
+    """Start a background BuyBuddy sync job. Returns job ID for tracking."""
+    import asyncio
+
+    if not buybuddy_service.is_configured():
+        raise HTTPException(status_code=400, detail="BuyBuddy API not configured")
+
+    # Create job record
+    job_data = {
+        "type": "buybuddy_sync",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "start_date": request.start_date,
+            "end_date": request.end_date,
+            "store_id": request.store_id,
+            "is_annotated": request.is_annotated,
+            "is_approved": request.is_approved,
+            "max_images": request.max_images,
+            "dataset_id": request.dataset_id,
+            "tags": request.tags,
+        }
+    }
+
+    try:
+        job_result = supabase_service.client.table("jobs").insert(job_data).execute()
+        job = job_result.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
+
+    # Prepare request data for background task
+    request_data = {
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "store_id": request.store_id,
+        "is_annotated": request.is_annotated,
+        "is_approved": request.is_approved,
+        "max_images": request.max_images,
+        "dataset_id": request.dataset_id,
+        "tags": request.tags,
+    }
+
+    # Start background task
+    asyncio.create_task(_run_buybuddy_sync(job["id"], request_data))
+
+    return {
+        "job_id": job["id"],
+        "status": "started",
+        "message": "BuyBuddy sync started. Use job_id to track progress.",
+    }
+
+
+@router.get("/buybuddy/sync/{job_id}")
+async def get_buybuddy_sync_status(job_id: str):
+    """Get the status of a BuyBuddy sync job."""
+    result = supabase_service.client.table("jobs").select("*").eq("id", job_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = result.data
+    job_result = job.get("result", {})
+
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "progress": job["progress"],
+        "result": job_result,
+        "error": job.get("error"),
+        "created_at": job["created_at"],
+        "can_resume": job_result.get("can_resume", False) if job_result else False,
+    }
+
+
+@router.post("/buybuddy/sync/{job_id}/retry")
+async def retry_buybuddy_sync(job_id: str):
+    """Retry a failed BuyBuddy sync job."""
+    import asyncio
+    from services.import_checkpoint import checkpoint_service
+
+    result = supabase_service.client.table("jobs").select("*").eq("id", job_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = result.data
+
+    if job["type"] != "buybuddy_sync":
+        raise HTTPException(status_code=400, detail="Job is not a BuyBuddy sync")
+
+    if job["status"] not in ["failed", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Cannot retry job with status: {job['status']}")
+
+    config = job.get("config", {})
+
+    # Try to load checkpoint
+    checkpoint = checkpoint_service.load_buybuddy_checkpoint(job_id)
+
+    # Update job status
+    resume_progress = 0
+    if checkpoint and checkpoint.can_resume():
+        synced_count = len(checkpoint.synced_ids)
+        total = checkpoint.total_images
+        resume_progress = 15 + int((synced_count / total) * 70) if total > 0 else 15
+
+    supabase_service.client.table("jobs").update({
+        "status": "running",
+        "error": None,
+        "progress": resume_progress,
+    }).eq("id", job_id).execute()
+
+    # Start background task
+    asyncio.create_task(_run_buybuddy_sync(job_id, config, checkpoint))
+
+    if checkpoint and checkpoint.can_resume():
+        return {
+            "job_id": job_id,
+            "status": "resumed",
+            "message": f"Resuming from {len(checkpoint.synced_ids)} synced images",
+            "resumed_from_checkpoint": True,
+        }
+    else:
+        return {
+            "job_id": job_id,
+            "status": "restarted",
+            "message": "Starting fresh sync",
+            "resumed_from_checkpoint": False,
+        }
 
 
 # ===========================================

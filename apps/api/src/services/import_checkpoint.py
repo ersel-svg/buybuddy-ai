@@ -122,6 +122,55 @@ class StreamingCheckpoint:
         return self.total_images > 0
 
 
+@dataclass
+class BuyBuddySyncCheckpoint:
+    """Checkpoint for BuyBuddy sync jobs (image-level granularity).
+
+    Tracks which images have been synced to allow resume after failures.
+    """
+
+    job_id: str
+    total_images: int = 0
+
+    # Progress tracking
+    synced_ids: set[str] = field(default_factory=set)  # buybuddy_image_ids that were synced
+    failed_ids: dict[str, str] = field(default_factory=dict)  # {bb_id: error}
+
+    # For resume - store last pagination offset
+    last_offset: int = 0
+
+    # Metadata
+    last_updated: str = ""
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict."""
+        return {
+            "job_id": self.job_id,
+            "total_images": self.total_images,
+            "synced_ids": list(self.synced_ids),  # set -> list for JSON
+            "failed_ids": self.failed_ids,
+            "last_offset": self.last_offset,
+            "last_updated": self.last_updated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BuyBuddySyncCheckpoint":
+        """Create from dict (e.g., loaded from DB)."""
+        cp = cls(
+            job_id=data.get("job_id", ""),
+            total_images=data.get("total_images", 0),
+            failed_ids=data.get("failed_ids", {}),
+            last_offset=data.get("last_offset", 0),
+            last_updated=data.get("last_updated", ""),
+        )
+        cp.synced_ids = set(data.get("synced_ids", []))  # list -> set
+        return cp
+
+    def can_resume(self) -> bool:
+        """BuyBuddy sync can resume as long as we have total_images."""
+        return self.total_images > 0
+
+
 class ImportCheckpointService:
     """Manages import checkpoints with persistent storage."""
 
@@ -269,6 +318,62 @@ class ImportCheckpointService:
                 return StreamingCheckpoint.from_dict(result.data["result"]["checkpoint"])
         except Exception as e:
             logger.warning(f"Failed to load streaming checkpoint from DB: {e}")
+
+        return None
+
+    def save_buybuddy_checkpoint(self, checkpoint: "BuyBuddySyncCheckpoint") -> None:
+        """Save BuyBuddy sync checkpoint to DB.
+
+        Similar to streaming checkpoint - no file needed, stores in job result.
+        """
+        from services.supabase import supabase_service
+
+        checkpoint.last_updated = datetime.utcnow().isoformat()
+        logger.debug(f"Saving BuyBuddy checkpoint: {len(checkpoint.synced_ids)}/{checkpoint.total_images} images")
+
+        try:
+            # Get existing result to preserve other fields
+            existing_result = {}
+            try:
+                existing = supabase_service.client.table("jobs").select("result").eq("id", checkpoint.job_id).single().execute()
+                if existing.data and existing.data.get("result"):
+                    existing_result = existing.data["result"]
+            except Exception:
+                pass
+
+            # Merge checkpoint data with existing result
+            merged_result = {
+                **existing_result,
+                "stage": "syncing",
+                "checkpoint": checkpoint.to_dict(),
+                "can_resume": True,
+                "synced_count": len(checkpoint.synced_ids),
+                "failed_count": len(checkpoint.failed_ids),
+            }
+
+            supabase_service.client.table("jobs").update({
+                "result": merged_result
+            }).eq("id", checkpoint.job_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to save BuyBuddy checkpoint to DB: {e}")
+
+    def load_buybuddy_checkpoint(self, job_id: str) -> Optional["BuyBuddySyncCheckpoint"]:
+        """Load BuyBuddy sync checkpoint from DB."""
+        from services.supabase import supabase_service
+
+        try:
+            result = (
+                supabase_service.client.table("jobs")
+                .select("result")
+                .eq("id", job_id)
+                .single()
+                .execute()
+            )
+
+            if result.data and result.data.get("result", {}).get("checkpoint"):
+                return BuyBuddySyncCheckpoint.from_dict(result.data["result"]["checkpoint"])
+        except Exception as e:
+            logger.warning(f"Failed to load BuyBuddy checkpoint from DB: {e}")
 
         return None
 

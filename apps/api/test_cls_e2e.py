@@ -97,7 +97,7 @@ def main():
             for i, color in enumerate(colors):
                 img_buffer = create_test_image(224, 224, color)
                 files = {'file': (f'test_image_{i+1}.jpg', img_buffer, 'image/jpeg')}
-                r = requests.post(f"{BASE_URL}/classification/images/upload", files=files)
+                r = requests.post(f"{BASE_URL}/classification/images", files=files)
 
                 if r.status_code == 200:
                     data = r.json()
@@ -160,7 +160,7 @@ def main():
         def test_add_images():
             image_ids = [img["id"] for img in images]
             data = {"image_ids": image_ids}
-            r = requests.post(f"{BASE_URL}/classification/datasets/{dataset_id}/images", json=data)
+            r = requests.post(f"{BASE_URL}/classification/datasets/{dataset_id}/images/add", json=data)
             assert r.status_code == 200, f"Status: {r.status_code}, Response: {r.text}"
             result = r.json()
             print(f"  Added: {result.get('added', 0)} images")

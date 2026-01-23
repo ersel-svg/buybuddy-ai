@@ -297,20 +297,20 @@ async def preview_bulk_update(request: PreviewRequest):
                 detail=f"Invalid target field: {mapping.target_field}"
             )
 
-    # Extract all identifier values from rows
+    # Extract all identifier values from rows (exact match, preserve case)
     identifier_values = []
     for row in request.rows:
         value = row.get(request.identifier_column)
         if value:
-            identifier_values.append(str(value).strip().lower())
+            identifier_values.append(str(value).strip())
 
     # Fetch all products matching these identifiers
     products = await supabase_service.get_products_by_barcodes(identifier_values)
 
-    # Build lookup table for fast matching
+    # Build lookup table for fast matching (exact barcode match)
     product_lookup: dict[str, dict] = {}
     for product in products:
-        barcode = product.get("barcode", "").strip().lower()
+        barcode = product.get("barcode", "").strip()
         if barcode:
             product_lookup[barcode] = product
 
@@ -341,7 +341,7 @@ async def preview_bulk_update(request: PreviewRequest):
             ))
             continue
 
-        normalized_identifier = str(identifier_value).strip().lower()
+        normalized_identifier = str(identifier_value).strip()
         product = product_lookup.get(normalized_identifier)
 
         if not product:
@@ -403,7 +403,7 @@ async def preview_bulk_update(request: PreviewRequest):
                 else:
                     product_field_changes.append(target_field)
 
-        # Only add to matches if there are actual changes and no errors
+        # Add to matches if there are actual changes and no errors
         if (product_field_changes or identifier_field_changes) and not row_has_errors:
             matches.append(ProductChange(
                 row_index=row_index,
@@ -415,9 +415,14 @@ async def preview_bulk_update(request: PreviewRequest):
                 identifier_field_changes=identifier_field_changes
             ))
 
+    # Calculate matched = total rows - not_found
+    # This represents all products that were found in the database
+    # (regardless of whether they have changes or not)
+    matched_count = len(request.rows) - len(not_found)
+
     summary = PreviewSummary(
         total_rows=len(request.rows),
-        matched=len(matches) + len([e for e in validation_errors]),
+        matched=matched_count,
         not_found=len(not_found),
         validation_errors=len(validation_errors),
         will_update=len(matches)

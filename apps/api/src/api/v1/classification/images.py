@@ -181,8 +181,10 @@ async def upload_image(
     file: UploadFile = File(...),
     folder: Optional[str] = Form(None),
     skip_duplicates: bool = Form(False),
+    dataset_id: Optional[str] = Form(None),
+    label: Optional[str] = Form(None),
 ):
-    """Upload a single image with duplicate detection."""
+    """Upload a single image with duplicate detection and optional labeling."""
     from PIL import Image
 
     content = await file.read()
@@ -200,6 +202,36 @@ async def upload_image(
         existing = supabase_service.client.table("cls_images").select("id").eq("file_hash", file_hash).execute()
         if existing.data:
             raise HTTPException(status_code=409, detail="Duplicate image already exists")
+
+    # Get or create class if label provided
+    class_id = None
+    if label and dataset_id:
+        existing_class = supabase_service.client.table("cls_dataset_classes").select("id").eq("dataset_id", dataset_id).eq("name", label).execute()
+        if existing_class.data:
+            class_id = existing_class.data[0]["id"]
+        else:
+            # Generate a new UUID for the class
+            new_class_id = str(uuid4())
+            
+            # Insert into cls_dataset_classes
+            supabase_service.client.table("cls_dataset_classes").insert({
+                "id": new_class_id,
+                "dataset_id": dataset_id,
+                "name": label,
+                "display_name": label,
+            }).execute()
+            
+            # Also insert into cls_classes for foreign key compatibility
+            try:
+                supabase_service.client.table("cls_classes").insert({
+                    "id": new_class_id,
+                    "name": label,
+                    "display_name": label,
+                }).execute()
+            except Exception as e:
+                logger.warning(f"Could not insert into cls_classes (may already exist): {e}")
+            
+            class_id = new_class_id
 
     # Generate filename
     ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
@@ -227,12 +259,29 @@ async def upload_image(
         "file_size_bytes": len(content),
         "source": "upload",
         "folder": folder,
-        "status": "pending",
+        "status": "labeled" if class_id else "pending",
         "file_hash": file_hash,
         "phash": phash,
     }
 
     result = supabase_service.client.table("cls_images").insert(image_data).execute()
+    image_id = result.data[0]["id"]
+
+    # Add to dataset if specified
+    if dataset_id:
+        supabase_service.client.table("cls_dataset_images").insert({
+            "dataset_id": dataset_id,
+            "image_id": image_id,
+            "status": "labeled" if class_id else "pending",
+        }).execute()
+
+        # Create label if class determined
+        if class_id:
+            supabase_service.client.table("cls_labels").insert({
+                "dataset_id": dataset_id,
+                "image_id": image_id,
+                "class_id": class_id,
+            }).execute()
 
     return result.data[0]
 
@@ -352,9 +401,43 @@ async def import_from_urls(data: ImportURLsRequest, background_tasks: Background
     images_imported = 0
     images_skipped = 0
     duplicates_found = 0
+    labels_created = 0
+    classes_created = 0
     errors = []
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    # Get or create class if label provided
+    class_id = None
+    if data.label and data.dataset_id:
+        existing_class = supabase_service.client.table("cls_dataset_classes").select("id").eq("dataset_id", data.dataset_id).eq("name", data.label).execute()
+        if existing_class.data:
+            class_id = existing_class.data[0]["id"]
+        else:
+            # Generate a new UUID for the class
+            import uuid
+            new_class_id = str(uuid.uuid4())
+            
+            # Insert into cls_dataset_classes
+            supabase_service.client.table("cls_dataset_classes").insert({
+                "id": new_class_id,
+                "dataset_id": data.dataset_id,
+                "name": data.label,
+                "display_name": data.label,
+            }).execute()
+            
+            # Also insert into cls_classes for foreign key compatibility
+            try:
+                supabase_service.client.table("cls_classes").insert({
+                    "id": new_class_id,
+                    "name": data.label,
+                    "display_name": data.label,
+                }).execute()
+            except Exception as e:
+                logger.warning(f"Could not insert into cls_classes (may already exist): {e}")
+            
+            class_id = new_class_id
+            classes_created += 1
+
+    async with httpx.AsyncClient(timeout=120) as client:
         for url in data.urls[:100]:  # Limit to 100
             try:
                 response = await client.get(url)
@@ -394,7 +477,7 @@ async def import_from_urls(data: ImportURLsRequest, background_tasks: Background
                     "file_size_bytes": len(content),
                     "source": "url_import",
                     "folder": data.folder,
-                    "status": "pending",
+                    "status": "labeled" if class_id else "pending",
                     "file_hash": file_hash,
                     "phash": calculate_phash(content),
                     "metadata": {"source_url": url},
@@ -404,240 +487,7 @@ async def import_from_urls(data: ImportURLsRequest, background_tasks: Background
 
                 # Add to dataset if specified
                 if data.dataset_id and result.data:
-                    supabase_service.client.table("cls_dataset_images").insert({
-                        "dataset_id": data.dataset_id,
-                        "image_id": result.data[0]["id"],
-                        "status": "pending",
-                    }).execute()
-
-                images_imported += 1
-
-            except Exception as e:
-                logger.error(f"Failed to import {url}: {e}")
-                errors.append(f"{url}: {str(e)}")
-                images_skipped += 1
-
-    return ImportResultResponse(
-        success=True,
-        images_imported=images_imported,
-        images_skipped=images_skipped,
-        duplicates_found=duplicates_found,
-        errors=errors,
-    )
-
-
-@router.post("/import/products", response_model=ImportResultResponse)
-async def import_from_products(data: ImportFromProductsRequest, background_tasks: BackgroundTasks):
-    """Import images from Products module."""
-    images_imported = 0
-    images_skipped = 0
-    duplicates_found = 0
-    labels_created = 0
-    classes_created = 0
-    errors = []
-
-    try:
-        # Get products
-        query = supabase_service.client.table("products").select("*")
-
-        if data.product_ids:
-            query = query.in_("id", data.product_ids)
-        else:
-            if data.status:
-                query = query.eq("status", data.status)
-            if data.category:
-                query = query.eq("category", data.category)
-            if data.brand:
-                query = query.eq("brand_name", data.brand)
-
-        products_result = query.limit(1000).execute()
-        products = products_result.data or []
-
-        # Get or create classes based on label strategy
-        class_cache = {}
-
-        for product in products:
-            # Determine label based on strategy
-            if data.label_source == "category":
-                label_value = product.get("category")
-            elif data.label_source == "brand":
-                label_value = product.get("brand_name")
-            elif data.label_source == "product_name":
-                label_value = product.get("name")
-            else:
-                label_value = None
-
-            # Get or create class
-            class_id = None
-            if label_value and label_value not in class_cache:
-                existing_class = supabase_service.client.table("cls_classes").select("id").eq("name", label_value).execute()
-                if existing_class.data:
-                    class_cache[label_value] = existing_class.data[0]["id"]
-                else:
-                    new_class = supabase_service.client.table("cls_classes").insert({
-                        "name": label_value,
-                        "display_name": label_value,
-                    }).execute()
-                    class_cache[label_value] = new_class.data[0]["id"]
-                    classes_created += 1
-
-            if label_value:
-                class_id = class_cache.get(label_value)
-
-            # Get product images
-            images_query = supabase_service.client.table("product_images").select("*").eq("product_id", product["id"])
-
-            if data.image_types:
-                images_query = images_query.in_("image_type", data.image_types)
-
-            images_query = images_query.limit(data.max_frames_per_product)
-            product_images = images_query.execute()
-
-            for pimg in product_images.data or []:
-                try:
-                    # Check for duplicates by source reference
-                    if data.skip_duplicates:
-                        existing = supabase_service.client.table("cls_images").select("id").eq("source_type", "product").eq("source_id", pimg["id"]).execute()
-                        if existing.data:
-                            duplicates_found += 1
-                            images_skipped += 1
-                            continue
-
-                    # Create classification image
-                    image_data = {
-                        "filename": pimg.get("image_path", "").split("/")[-1] or f"{uuid4()}.jpg",
-                        "image_url": pimg.get("image_url"),
-                        "source": "products_import",
-                        "source_type": "product",
-                        "source_id": pimg["id"],
-                        "status": "labeled" if class_id else "pending",
-                        "metadata": {
-                            "product_id": product["id"],
-                            "product_name": product.get("name"),
-                            "image_type": pimg.get("image_type"),
-                        },
-                    }
-
-                    result = supabase_service.client.table("cls_images").insert(image_data).execute()
                     image_id = result.data[0]["id"]
-                    images_imported += 1
-
-                    # Add to dataset if specified
-                    if data.dataset_id:
-                        supabase_service.client.table("cls_dataset_images").insert({
-                            "dataset_id": data.dataset_id,
-                            "image_id": image_id,
-                            "status": "labeled" if class_id else "pending",
-                        }).execute()
-
-                        # Create label if class determined
-                        if class_id:
-                            supabase_service.client.table("cls_labels").insert({
-                                "dataset_id": data.dataset_id,
-                                "image_id": image_id,
-                                "class_id": class_id,
-                            }).execute()
-                            labels_created += 1
-
-                except Exception as e:
-                    logger.error(f"Failed to import product image: {e}")
-                    errors.append(str(e))
-                    images_skipped += 1
-
-    except Exception as e:
-        logger.error(f"Failed to import from products: {e}")
-        errors.append(str(e))
-
-    return ImportResultResponse(
-        success=True,
-        images_imported=images_imported,
-        images_skipped=images_skipped,
-        duplicates_found=duplicates_found,
-        labels_created=labels_created,
-        classes_created=classes_created,
-        errors=errors,
-    )
-
-
-@router.post("/import/cutouts", response_model=ImportResultResponse)
-async def import_from_cutouts(data: ImportFromCutoutsRequest, background_tasks: BackgroundTasks):
-    """Import images from Cutouts module."""
-    images_imported = 0
-    images_skipped = 0
-    duplicates_found = 0
-    labels_created = 0
-    classes_created = 0
-    errors = []
-
-    try:
-        # Get cutouts
-        query = supabase_service.client.table("cutout_images").select("*, matched_product:products(*)")
-
-        if data.cutout_ids:
-            query = query.in_("id", data.cutout_ids)
-        elif data.only_matched:
-            query = query.not_.is_("matched_product_id", "null")
-
-        cutouts_result = query.limit(5000).execute()
-        cutouts = cutouts_result.data or []
-
-        class_cache = {}
-
-        for cutout in cutouts:
-            matched_product = cutout.get("matched_product")
-
-            # Determine label based on strategy
-            label_value = None
-            if matched_product:
-                if data.label_source == "matched_product_category":
-                    label_value = matched_product.get("category")
-                elif data.label_source == "matched_product_brand":
-                    label_value = matched_product.get("brand_name")
-
-            # Get or create class
-            class_id = None
-            if label_value and label_value not in class_cache:
-                existing_class = supabase_service.client.table("cls_classes").select("id").eq("name", label_value).execute()
-                if existing_class.data:
-                    class_cache[label_value] = existing_class.data[0]["id"]
-                else:
-                    new_class = supabase_service.client.table("cls_classes").insert({
-                        "name": label_value,
-                        "display_name": label_value,
-                    }).execute()
-                    class_cache[label_value] = new_class.data[0]["id"]
-                    classes_created += 1
-
-            if label_value:
-                class_id = class_cache.get(label_value)
-
-            try:
-                # Check for duplicates
-                if data.skip_duplicates:
-                    existing = supabase_service.client.table("cls_images").select("id").eq("source_type", "cutout").eq("source_id", cutout["id"]).execute()
-                    if existing.data:
-                        duplicates_found += 1
-                        images_skipped += 1
-                        continue
-
-                image_data = {
-                    "filename": f"cutout_{cutout['id']}.jpg",
-                    "image_url": cutout.get("image_url"),
-                    "source": "cutouts_import",
-                    "source_type": "cutout",
-                    "source_id": cutout["id"],
-                    "status": "labeled" if class_id else "pending",
-                    "metadata": {
-                        "external_id": cutout.get("external_id"),
-                        "matched_product_id": cutout.get("matched_product_id"),
-                    },
-                }
-
-                result = supabase_service.client.table("cls_images").insert(image_data).execute()
-                image_id = result.data[0]["id"]
-                images_imported += 1
-
-                if data.dataset_id:
                     supabase_service.client.table("cls_dataset_images").insert({
                         "dataset_id": data.dataset_id,
                         "image_id": image_id,
@@ -652,17 +502,478 @@ async def import_from_cutouts(data: ImportFromCutoutsRequest, background_tasks: 
                         }).execute()
                         labels_created += 1
 
+                images_imported += 1
+
             except Exception as e:
-                logger.error(f"Failed to import cutout: {e}")
-                errors.append(str(e))
+                logger.error(f"Failed to import {url}: {e}")
+                errors.append(f"{url}: {str(e)}")
                 images_skipped += 1
+
+    return ImportResultResponse(
+        success=len(errors) == 0,
+        images_imported=images_imported,
+        images_skipped=images_skipped,
+        duplicates_found=duplicates_found,
+        labels_created=labels_created,
+        classes_created=classes_created,
+        errors=errors,
+    )
+
+
+@router.post("/import/products", response_model=ImportResultResponse)
+async def import_from_products(data: ImportFromProductsRequest, background_tasks: BackgroundTasks):
+    """Import images from Products module - OPTIMIZED with batch inserts."""
+    images_imported = 0
+    images_skipped = 0
+    duplicates_found = 0
+    labels_created = 0
+    classes_created = 0
+    errors = []
+
+    logger.info(f"Starting product import: {len(data.product_ids or [])} products, image_types={data.image_types}, label_source={data.label_source}")
+
+    try:
+        # Process product_ids in batches of 100 to avoid Supabase limitations
+        product_ids = data.product_ids or []
+        batch_size = 100
+        all_products = []
+        
+        if product_ids:
+            for i in range(0, len(product_ids), batch_size):
+                batch_ids = product_ids[i:i + batch_size]
+                batch_result = supabase_service.client.table("products").select("*").in_("id", batch_ids).execute()
+                all_products.extend(batch_result.data or [])
+        else:
+            query = supabase_service.client.table("products").select("*")
+            if data.status:
+                query = query.eq("status", data.status)
+            if data.category:
+                query = query.eq("category", data.category)
+            if data.brand:
+                query = query.eq("brand_name", data.brand)
+            products_result = query.limit(1000).execute()
+            all_products = products_result.data or []
+
+        logger.info(f"Total products to process: {len(all_products)}")
+
+        # Fetch all product_images in batches
+        all_product_images = []
+        product_ids_to_fetch = [p["id"] for p in all_products]
+        
+        for i in range(0, len(product_ids_to_fetch), batch_size):
+            batch_ids = product_ids_to_fetch[i:i + batch_size]
+            images_query = supabase_service.client.table("product_images").select("*").in_("product_id", batch_ids)
+            if data.image_types:
+                images_query = images_query.in_("image_type", data.image_types)
+            images_result = images_query.limit(10000).execute()
+            all_product_images.extend(images_result.data or [])
+
+        logger.info(f"Total product images found: {len(all_product_images)}")
+
+        # Get existing duplicates in one query if skip_duplicates is enabled
+        existing_source_ids = set()
+        if data.skip_duplicates and all_product_images:
+            all_source_ids = [img["id"] for img in all_product_images]
+            for i in range(0, len(all_source_ids), 500):
+                batch_ids = all_source_ids[i:i + 500]
+                existing = supabase_service.client.table("cls_images").select("source_id").eq("source_type", "product").in_("source_id", batch_ids).execute()
+                existing_source_ids.update(e["source_id"] for e in (existing.data or []))
+            logger.info(f"Found {len(existing_source_ids)} existing duplicates")
+
+        # Group images by product_id
+        images_by_product = {}
+        for img in all_product_images:
+            pid = img.get("product_id")
+            if pid not in images_by_product:
+                images_by_product[pid] = []
+            images_by_product[pid].append(img)
+
+        # Get or create classes - batch fetch existing classes first
+        class_cache = {}
+        unique_labels = set()
+        
+        for product in all_products:
+            label_value = None
+            if data.label_source == "product_id":
+                label_value = product.get("id")
+            elif data.label_source == "category":
+                label_value = product.get("category")
+            elif data.label_source == "brand":
+                label_value = product.get("brand_name")
+            elif data.label_source == "product_name":
+                label_value = product.get("product_name") or product.get("name")
+            elif data.label_source == "custom" and data.custom_label:
+                label_value = data.custom_label
+            if label_value:
+                unique_labels.add(str(label_value))
+
+        # Batch fetch existing classes
+        if unique_labels and data.dataset_id:
+            label_list = list(unique_labels)
+            for i in range(0, len(label_list), 100):
+                batch_labels = label_list[i:i + 100]
+                existing_classes = supabase_service.client.table("cls_dataset_classes").select("id, name").eq("dataset_id", data.dataset_id).in_("name", batch_labels).execute()
+                for cls in (existing_classes.data or []):
+                    class_cache[cls["name"]] = cls["id"]
+        
+        # Create missing classes in batch
+        missing_labels = unique_labels - set(class_cache.keys())
+        if missing_labels and data.dataset_id:
+            import uuid
+            new_classes_dataset = []
+            new_classes_global = []
+            for label in missing_labels:
+                new_id = str(uuid.uuid4())
+                class_cache[label] = new_id
+                new_classes_dataset.append({
+                    "id": new_id,
+                    "dataset_id": data.dataset_id,
+                    "name": label,
+                    "display_name": label,
+                })
+                new_classes_global.append({
+                    "id": new_id,
+                    "name": label,
+                    "display_name": label,
+                })
+            
+            # Batch insert classes
+            if new_classes_dataset:
+                supabase_service.client.table("cls_dataset_classes").insert(new_classes_dataset).execute()
+                classes_created += len(new_classes_dataset)
+                try:
+                    supabase_service.client.table("cls_classes").insert(new_classes_global).execute()
+                except Exception as e:
+                    logger.warning(f"Some classes may already exist in cls_classes: {e}")
+
+        logger.info(f"Class cache ready with {len(class_cache)} classes")
+
+        # Prepare batch data for inserts
+        images_to_insert = []
+        image_metadata_map = []  # Track product_id, class_id for each image
+        
+        for product in all_products:
+            label_value = None
+            if data.label_source == "product_id":
+                label_value = str(product.get("id"))
+            elif data.label_source == "category":
+                label_value = str(product.get("category")) if product.get("category") else None
+            elif data.label_source == "brand":
+                label_value = str(product.get("brand_name")) if product.get("brand_name") else None
+            elif data.label_source == "product_name":
+                label_value = str(product.get("product_name") or product.get("name")) if (product.get("product_name") or product.get("name")) else None
+            elif data.label_source == "custom" and data.custom_label:
+                label_value = data.custom_label
+            
+            class_id = class_cache.get(label_value) if label_value else None
+            product_images = images_by_product.get(product["id"], [])[:data.max_frames_per_product]
+
+            for pimg in product_images:
+                # Skip duplicates
+                if data.skip_duplicates and pimg["id"] in existing_source_ids:
+                    duplicates_found += 1
+                    images_skipped += 1
+                    continue
+
+                images_to_insert.append({
+                    "filename": pimg.get("image_path", "").split("/")[-1] or f"{uuid4()}.jpg",
+                    "image_url": pimg.get("image_url"),
+                    "source": "products_import",
+                    "source_type": "product",
+                    "source_id": pimg["id"],
+                    "status": "labeled" if class_id else "pending",
+                    "metadata": {
+                        "product_id": product["id"],
+                        "product_name": product.get("product_name") or product.get("name"),
+                        "image_type": pimg.get("image_type"),
+                    },
+                })
+                image_metadata_map.append({"class_id": class_id})
+
+        logger.info(f"Prepared {len(images_to_insert)} images for batch insert")
+
+        # Build source_id to metadata mapping for correct label assignment after insert
+        source_to_metadata = {}
+        for i, img_data in enumerate(images_to_insert):
+            source_to_metadata[img_data["source_id"]] = image_metadata_map[i]
+
+        # Batch insert images (in chunks of 250 for reliability)
+        insert_batch_size = 250
+        all_inserted_images = []
+
+        for i in range(0, len(images_to_insert), insert_batch_size):
+            batch = images_to_insert[i:i + insert_batch_size]
+            try:
+                result = supabase_service.client.table("cls_images").insert(batch).execute()
+                all_inserted_images.extend(result.data or [])
+                logger.info(f"Inserted batch {i//insert_batch_size + 1}: {len(result.data or [])} images")
+            except Exception as e:
+                logger.error(f"Batch insert failed: {e}")
+                errors.append(f"Batch insert error: {str(e)}")
+
+        images_imported = len(all_inserted_images)
+
+        # Batch insert dataset images and labels using source_id mapping (fixes index mismatch bug)
+        if data.dataset_id and all_inserted_images:
+            dataset_images_to_insert = []
+            labels_to_insert = []
+
+            for img in all_inserted_images:
+                # Use source_id to get correct metadata (not positional index)
+                metadata = source_to_metadata.get(img.get("source_id"), {})
+                class_id = metadata.get("class_id")
+
+                dataset_images_to_insert.append({
+                    "dataset_id": data.dataset_id,
+                    "image_id": img["id"],
+                    "status": "labeled" if class_id else "pending",
+                })
+
+                if class_id:
+                    labels_to_insert.append({
+                        "dataset_id": data.dataset_id,
+                        "image_id": img["id"],
+                        "class_id": class_id,
+                    })
+
+            # Batch insert dataset images
+            for i in range(0, len(dataset_images_to_insert), insert_batch_size):
+                batch = dataset_images_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_dataset_images").insert(batch).execute()
+                except Exception as e:
+                    logger.error(f"Dataset images batch insert failed: {e}")
+                    errors.append(f"Dataset images error: {str(e)}")
+
+            # Batch insert labels
+            for i in range(0, len(labels_to_insert), insert_batch_size):
+                batch = labels_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_labels").insert(batch).execute()
+                    labels_created += len(batch)
+                except Exception as e:
+                    logger.error(f"Labels batch insert failed: {e}")
+                    errors.append(f"Labels error: {str(e)}")
+
+        # Update dataset stats
+        if data.dataset_id:
+            try:
+                supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": data.dataset_id}).execute()
+            except Exception as e:
+                logger.warning(f"Failed to update dataset stats: {e}")
+
+        logger.info(f"Product import completed: imported={images_imported}, skipped={images_skipped}, duplicates={duplicates_found}, labels={labels_created}")
+
+    except Exception as e:
+        logger.error(f"Failed to import from products: {e}")
+        errors.append(str(e))
+
+    return ImportResultResponse(
+        success=len(errors) == 0,
+        images_imported=images_imported,
+        images_skipped=images_skipped,
+        duplicates_found=duplicates_found,
+        labels_created=labels_created,
+        classes_created=classes_created,
+        errors=errors,
+    )
+
+
+@router.post("/import/cutouts", response_model=ImportResultResponse)
+async def import_from_cutouts(data: ImportFromCutoutsRequest, background_tasks: BackgroundTasks):
+    """Import images from Cutouts module - OPTIMIZED with batch inserts."""
+    images_imported = 0
+    images_skipped = 0
+    duplicates_found = 0
+    labels_created = 0
+    classes_created = 0
+    errors = []
+
+    try:
+        # Fetch cutouts in batches if cutout_ids provided
+        cutouts = []
+        if data.cutout_ids:
+            batch_size = 100
+            for i in range(0, len(data.cutout_ids), batch_size):
+                batch_ids = data.cutout_ids[i:i + batch_size]
+                batch_result = supabase_service.client.table("cutout_images").select("*, matched_product:products(*)").in_("id", batch_ids).execute()
+                cutouts.extend(batch_result.data or [])
+        else:
+            query = supabase_service.client.table("cutout_images").select("*, matched_product:products(*)")
+            if data.only_matched:
+                query = query.not_.is_("matched_product_id", "null")
+            cutouts_result = query.limit(5000).execute()
+            cutouts = cutouts_result.data or []
+
+        logger.info(f"Total cutouts to process: {len(cutouts)}")
+
+        # Get existing duplicates in one query
+        existing_source_ids = set()
+        if data.skip_duplicates and cutouts:
+            all_cutout_ids = [c["id"] for c in cutouts]
+            for i in range(0, len(all_cutout_ids), 500):
+                batch_ids = all_cutout_ids[i:i + 500]
+                existing = supabase_service.client.table("cls_images").select("source_id").eq("source_type", "cutout").in_("source_id", batch_ids).execute()
+                existing_source_ids.update(e["source_id"] for e in (existing.data or []))
+            logger.info(f"Found {len(existing_source_ids)} existing duplicates")
+
+        # Collect unique labels
+        unique_labels = set()
+        for cutout in cutouts:
+            matched_product = cutout.get("matched_product")
+            label_value = None
+            if data.label_source == "matched_product_id" and matched_product:
+                label_value = str(matched_product.get("id"))
+            elif data.label_source == "custom" and data.custom_label:
+                label_value = data.custom_label
+            if label_value:
+                unique_labels.add(label_value)
+
+        # Batch fetch/create classes
+        class_cache = {}
+        if unique_labels and data.dataset_id:
+            label_list = list(unique_labels)
+            for i in range(0, len(label_list), 100):
+                batch_labels = label_list[i:i + 100]
+                existing_classes = supabase_service.client.table("cls_dataset_classes").select("id, name").eq("dataset_id", data.dataset_id).in_("name", batch_labels).execute()
+                for cls in (existing_classes.data or []):
+                    class_cache[cls["name"]] = cls["id"]
+
+            # Create missing classes in batch
+            missing_labels = unique_labels - set(class_cache.keys())
+            if missing_labels:
+                import uuid
+                new_classes_dataset = []
+                new_classes_global = []
+                for label in missing_labels:
+                    new_id = str(uuid.uuid4())
+                    class_cache[label] = new_id
+                    new_classes_dataset.append({
+                        "id": new_id,
+                        "dataset_id": data.dataset_id,
+                        "name": label,
+                        "display_name": label,
+                    })
+                    new_classes_global.append({
+                        "id": new_id,
+                        "name": label,
+                        "display_name": label,
+                    })
+                if new_classes_dataset:
+                    supabase_service.client.table("cls_dataset_classes").insert(new_classes_dataset).execute()
+                    classes_created += len(new_classes_dataset)
+                    try:
+                        supabase_service.client.table("cls_classes").insert(new_classes_global).execute()
+                    except Exception as e:
+                        logger.warning(f"Some classes may already exist in cls_classes: {e}")
+
+        # Prepare batch data
+        images_to_insert = []
+        image_metadata_map = []
+
+        for cutout in cutouts:
+            if data.skip_duplicates and cutout["id"] in existing_source_ids:
+                duplicates_found += 1
+                images_skipped += 1
+                continue
+
+            matched_product = cutout.get("matched_product")
+            label_value = None
+            if data.label_source == "matched_product_id" and matched_product:
+                label_value = str(matched_product.get("id"))
+            elif data.label_source == "custom" and data.custom_label:
+                label_value = data.custom_label
+
+            class_id = class_cache.get(label_value) if label_value else None
+
+            images_to_insert.append({
+                "filename": f"cutout_{cutout['id']}.jpg",
+                "image_url": cutout.get("image_url"),
+                "source": "cutouts_import",
+                "source_type": "cutout",
+                "source_id": cutout["id"],
+                "status": "labeled" if class_id else "pending",
+                "metadata": {
+                    "external_id": cutout.get("external_id"),
+                    "matched_product_id": cutout.get("matched_product_id"),
+                },
+            })
+            image_metadata_map.append({"class_id": class_id})
+
+        logger.info(f"Prepared {len(images_to_insert)} cutouts for batch insert")
+
+        # Build source_id to metadata mapping for correct label assignment after insert
+        source_to_metadata = {}
+        for i, img_data in enumerate(images_to_insert):
+            source_to_metadata[img_data["source_id"]] = image_metadata_map[i]
+
+        # Batch insert images (in chunks of 250 for reliability)
+        insert_batch_size = 250
+        all_inserted_images = []
+
+        for i in range(0, len(images_to_insert), insert_batch_size):
+            batch = images_to_insert[i:i + insert_batch_size]
+            try:
+                result = supabase_service.client.table("cls_images").insert(batch).execute()
+                all_inserted_images.extend(result.data or [])
+            except Exception as e:
+                logger.error(f"Batch insert failed: {e}")
+                errors.append(f"Batch insert error: {str(e)}")
+
+        images_imported = len(all_inserted_images)
+
+        # Batch insert dataset images and labels using source_id mapping (fixes index mismatch bug)
+        if data.dataset_id and all_inserted_images:
+            dataset_images_to_insert = []
+            labels_to_insert = []
+
+            for img in all_inserted_images:
+                # Use source_id to get correct metadata (not positional index)
+                metadata = source_to_metadata.get(img.get("source_id"), {})
+                class_id = metadata.get("class_id")
+
+                dataset_images_to_insert.append({
+                    "dataset_id": data.dataset_id,
+                    "image_id": img["id"],
+                    "status": "labeled" if class_id else "pending",
+                })
+                if class_id:
+                    labels_to_insert.append({
+                        "dataset_id": data.dataset_id,
+                        "image_id": img["id"],
+                        "class_id": class_id,
+                    })
+
+            for i in range(0, len(dataset_images_to_insert), insert_batch_size):
+                batch = dataset_images_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_dataset_images").insert(batch).execute()
+                except Exception as e:
+                    logger.error(f"Dataset images batch insert failed: {e}")
+
+            for i in range(0, len(labels_to_insert), insert_batch_size):
+                batch = labels_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_labels").insert(batch).execute()
+                    labels_created += len(batch)
+                except Exception as e:
+                    logger.error(f"Labels batch insert failed: {e}")
+
+        # Update dataset stats
+        if data.dataset_id:
+            try:
+                supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": data.dataset_id}).execute()
+            except Exception as e:
+                logger.warning(f"Failed to update dataset stats: {e}")
+
+        logger.info(f"Cutouts import completed: imported={images_imported}, duplicates={duplicates_found}")
 
     except Exception as e:
         logger.error(f"Failed to import from cutouts: {e}")
         errors.append(str(e))
 
     return ImportResultResponse(
-        success=True,
+        success=len(errors) == 0,
         images_imported=images_imported,
         images_skipped=images_skipped,
         duplicates_found=duplicates_found,
@@ -674,70 +985,254 @@ async def import_from_cutouts(data: ImportFromCutoutsRequest, background_tasks: 
 
 @router.post("/import/od-images", response_model=ImportResultResponse)
 async def import_from_od(data: ImportFromODRequest, background_tasks: BackgroundTasks):
-    """Import images from Object Detection module."""
+    """Import images from Object Detection module - OPTIMIZED with batch inserts."""
     images_imported = 0
     images_skipped = 0
     duplicates_found = 0
+    labels_created = 0
+    classes_created = 0
     errors = []
 
-    try:
-        query = supabase_service.client.table("od_images").select("*")
-
-        if data.od_image_ids:
-            query = query.in_("id", data.od_image_ids)
-
-        od_images = query.limit(5000).execute()
-
-        for od_img in od_images.data or []:
+    # Get or create class if label provided
+    class_id = None
+    if data.label and data.dataset_id:
+        existing_class = supabase_service.client.table("cls_dataset_classes").select("id").eq("dataset_id", data.dataset_id).eq("name", data.label).execute()
+        if existing_class.data:
+            class_id = existing_class.data[0]["id"]
+        else:
+            import uuid
+            new_class_id = str(uuid.uuid4())
+            supabase_service.client.table("cls_dataset_classes").insert({
+                "id": new_class_id,
+                "dataset_id": data.dataset_id,
+                "name": data.label,
+                "display_name": data.label,
+            }).execute()
             try:
-                if data.skip_duplicates:
-                    existing = supabase_service.client.table("cls_images").select("id").eq("source_type", "od_image").eq("source_id", od_img["id"]).execute()
-                    if existing.data:
-                        duplicates_found += 1
-                        images_skipped += 1
-                        continue
-
-                image_data = {
-                    "filename": od_img.get("filename"),
-                    "original_filename": od_img.get("original_filename"),
-                    "image_url": od_img.get("image_url"),
-                    "width": od_img.get("width"),
-                    "height": od_img.get("height"),
-                    "file_size_bytes": od_img.get("file_size_bytes"),
-                    "source": "od_import",
-                    "source_type": "od_image",
-                    "source_id": od_img["id"],
-                    "folder": od_img.get("folder"),
-                    "status": "pending",
-                }
-
-                result = supabase_service.client.table("cls_images").insert(image_data).execute()
-                image_id = result.data[0]["id"]
-                images_imported += 1
-
-                if data.dataset_id:
-                    supabase_service.client.table("cls_dataset_images").insert({
-                        "dataset_id": data.dataset_id,
-                        "image_id": image_id,
-                        "status": "pending",
-                    }).execute()
-
+                supabase_service.client.table("cls_classes").insert({
+                    "id": new_class_id,
+                    "name": data.label,
+                    "display_name": data.label,
+                }).execute()
             except Exception as e:
-                logger.error(f"Failed to import OD image: {e}")
-                errors.append(str(e))
+                logger.warning(f"Could not insert into cls_classes (may already exist): {e}")
+            class_id = new_class_id
+            classes_created += 1
+
+    try:
+        # Fetch OD images in batches
+        all_od_images = []
+        if data.od_image_ids:
+            batch_size = 100
+            for i in range(0, len(data.od_image_ids), batch_size):
+                batch_ids = data.od_image_ids[i:i + batch_size]
+                batch_result = supabase_service.client.table("od_images").select("*").in_("id", batch_ids).execute()
+                all_od_images.extend(batch_result.data or [])
+        else:
+            od_images = supabase_service.client.table("od_images").select("*").limit(5000).execute()
+            all_od_images = od_images.data or []
+
+        logger.info(f"Total OD images to process: {len(all_od_images)}")
+
+        # Get existing duplicates in one query
+        existing_source_ids = set()
+        if data.skip_duplicates and all_od_images:
+            all_source_ids = [img["id"] for img in all_od_images]
+            for i in range(0, len(all_source_ids), 500):
+                batch_ids = all_source_ids[i:i + 500]
+                existing = supabase_service.client.table("cls_images").select("source_id").eq("source_type", "od_image").in_("source_id", batch_ids).execute()
+                existing_source_ids.update(e["source_id"] for e in (existing.data or []))
+            logger.info(f"Found {len(existing_source_ids)} existing duplicates")
+
+        # Prepare batch data
+        images_to_insert = []
+        for od_img in all_od_images:
+            if data.skip_duplicates and od_img["id"] in existing_source_ids:
+                duplicates_found += 1
                 images_skipped += 1
+                continue
+
+            images_to_insert.append({
+                "filename": od_img.get("filename"),
+                "original_filename": od_img.get("original_filename"),
+                "image_url": od_img.get("image_url"),
+                "width": od_img.get("width"),
+                "height": od_img.get("height"),
+                "file_size_bytes": od_img.get("file_size_bytes"),
+                "source": "od_import",
+                "source_type": "od_image",
+                "source_id": od_img["id"],
+                "folder": od_img.get("folder"),
+                "status": "labeled" if class_id else "pending",
+            })
+
+        logger.info(f"Prepared {len(images_to_insert)} OD images for batch insert")
+
+        # Batch insert images (in chunks of 250 for reliability)
+        insert_batch_size = 250
+        all_inserted_images = []
+
+        for i in range(0, len(images_to_insert), insert_batch_size):
+            batch = images_to_insert[i:i + insert_batch_size]
+            try:
+                result = supabase_service.client.table("cls_images").insert(batch).execute()
+                all_inserted_images.extend(result.data or [])
+            except Exception as e:
+                logger.error(f"Batch insert failed: {e}")
+                errors.append(f"Batch insert error: {str(e)}")
+
+        images_imported = len(all_inserted_images)
+
+        # Batch insert dataset images and labels
+        if data.dataset_id and all_inserted_images:
+            dataset_images_to_insert = []
+            labels_to_insert = []
+
+            for img in all_inserted_images:
+                dataset_images_to_insert.append({
+                    "dataset_id": data.dataset_id,
+                    "image_id": img["id"],
+                    "status": "labeled" if class_id else "pending",
+                })
+                if class_id:
+                    labels_to_insert.append({
+                        "dataset_id": data.dataset_id,
+                        "image_id": img["id"],
+                        "class_id": class_id,
+                    })
+
+            for i in range(0, len(dataset_images_to_insert), insert_batch_size):
+                batch = dataset_images_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_dataset_images").insert(batch).execute()
+                except Exception as e:
+                    logger.error(f"Dataset images batch insert failed: {e}")
+
+            for i in range(0, len(labels_to_insert), insert_batch_size):
+                batch = labels_to_insert[i:i + insert_batch_size]
+                try:
+                    supabase_service.client.table("cls_labels").insert(batch).execute()
+                    labels_created += len(batch)
+                except Exception as e:
+                    logger.error(f"Labels batch insert failed: {e}")
+
+        # Update dataset stats
+        if data.dataset_id:
+            try:
+                supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": data.dataset_id}).execute()
+            except Exception as e:
+                logger.warning(f"Failed to update dataset stats: {e}")
+
+        logger.info(f"OD import completed: imported={images_imported}, duplicates={duplicates_found}")
 
     except Exception as e:
         logger.error(f"Failed to import from OD: {e}")
         errors.append(str(e))
 
     return ImportResultResponse(
-        success=True,
+        success=len(errors) == 0,
         images_imported=images_imported,
         images_skipped=images_skipped,
         duplicates_found=duplicates_found,
+        labels_created=labels_created,
+        classes_created=classes_created,
         errors=errors,
     )
+
+
+# ===========================================
+# Bulk IDs Endpoints (for Select All Filtered)
+# ===========================================
+
+@router.get("/bulk-ids/products")
+async def get_product_bulk_ids(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    brand: Optional[str] = None,
+    has_image: bool = True,
+    limit: int = 10000,
+):
+    """Get all product IDs matching filters (for Select All Filtered feature)."""
+    query = supabase_service.client.table("products").select("id")
+
+    if has_image:
+        query = query.not_.is_("primary_image_url", "null")
+    if search:
+        query = query.or_(f"product_name.ilike.%{search}%,barcode.ilike.%{search}%")
+    if category and category != "all":
+        query = query.eq("category", category)
+    if brand and brand != "all":
+        query = query.eq("brand_name", brand)
+
+    result = query.limit(min(limit, 10000)).execute()
+    ids = [p["id"] for p in result.data or []]
+
+    return {
+        "ids": ids,
+        "total": len(ids),
+        "filters_applied": {
+            "search": search,
+            "category": category,
+            "brand": brand,
+            "has_image": has_image,
+        }
+    }
+
+
+@router.get("/bulk-ids/cutouts")
+async def get_cutout_bulk_ids(
+    search: Optional[str] = None,
+    is_matched: Optional[bool] = None,
+    limit: int = 10000,
+):
+    """Get all cutout IDs matching filters (for Select All Filtered feature)."""
+    query = supabase_service.client.table("cutout_images").select("id")
+
+    if search:
+        query = query.or_(f"predicted_upc.ilike.%{search}%,external_id.ilike.%{search}%")
+    if is_matched is True:
+        query = query.not_.is_("matched_product_id", "null")
+    elif is_matched is False:
+        query = query.is_("matched_product_id", "null")
+
+    result = query.limit(min(limit, 10000)).execute()
+    ids = [c["id"] for c in result.data or []]
+
+    return {
+        "ids": ids,
+        "total": len(ids),
+        "filters_applied": {
+            "search": search,
+            "is_matched": is_matched,
+        }
+    }
+
+
+@router.get("/bulk-ids/od-images")
+async def get_od_bulk_ids(
+    search: Optional[str] = None,
+    folder: Optional[str] = None,
+    limit: int = 10000,
+):
+    """Get all OD image IDs matching filters (for Select All Filtered feature)."""
+    query = supabase_service.client.table("od_images").select("id")
+
+    if search:
+        query = query.ilike("filename", f"%{search}%")
+    if folder:
+        query = query.eq("folder", folder)
+
+    result = query.limit(min(limit, 10000)).execute()
+    ids = [img["id"] for img in result.data or []]
+
+    return {
+        "ids": ids,
+        "total": len(ids),
+        "filters_applied": {
+            "search": search,
+            "folder": folder,
+        }
+    }
 
 
 # ===========================================

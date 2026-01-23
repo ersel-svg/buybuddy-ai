@@ -103,6 +103,12 @@ async def list_cutouts(
     has_embedding: Optional[bool] = None,
     is_matched: Optional[bool] = None,
     predicted_upc: Optional[str] = None,
+    # NEW: Matched product filters for visual picker
+    matched_category: Optional[str] = Query(None, description="Filter by matched product's category"),
+    matched_brand: Optional[str] = Query(None, description="Filter by matched product's brand"),
+    date_from: Optional[str] = Query(None, description="Filter cutouts synced after this date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter cutouts synced before this date (YYYY-MM-DD)"),
+    search: Optional[str] = Query(None, description="Search in matched product name or predicted UPC"),
     db: SupabaseService = Depends(get_supabase),
 ):
     """
@@ -112,6 +118,10 @@ async def list_cutouts(
     - has_embedding: Filter by whether cutout has embedding vector
     - is_matched: Filter by whether cutout has been matched to a product
     - predicted_upc: Filter by predicted UPC code
+    - matched_category: Filter by matched product's category
+    - matched_brand: Filter by matched product's brand
+    - date_from/date_to: Filter by sync date range
+    - search: Search in matched product name or predicted UPC
     """
     result = await db.get_cutouts(
         page=page,
@@ -119,8 +129,58 @@ async def list_cutouts(
         has_embedding=has_embedding,
         is_matched=is_matched,
         predicted_upc=predicted_upc,
+        matched_category=matched_category,
+        matched_brand=matched_brand,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
     )
     return result
+
+
+@router.get("/filter-options")
+async def get_cutout_filter_options(
+    db: SupabaseService = Depends(get_supabase),
+) -> dict:
+    """
+    Get available filter options for cutouts (for visual picker UI).
+    
+    Returns distinct categories and brands from matched products.
+    """
+    filters = {
+        "categories": [],
+        "brands": [],
+    }
+    
+    try:
+        # Get categories from matched products
+        cat_result = db.client.from_("cutout_images").select(
+            "matched_product_id, products!inner(category)"
+        ).not_.is_("matched_product_id", "null").execute()
+        
+        categories = set()
+        for row in cat_result.data or []:
+            product = row.get("products", {})
+            if product and product.get("category"):
+                categories.add(product["category"])
+        filters["categories"] = sorted(list(categories))
+        
+        # Get brands from matched products
+        brand_result = db.client.from_("cutout_images").select(
+            "matched_product_id, products!inner(brand_name)"
+        ).not_.is_("matched_product_id", "null").execute()
+        
+        brands = set()
+        for row in brand_result.data or []:
+            product = row.get("products", {})
+            if product and product.get("brand_name"):
+                brands.add(product["brand_name"])
+        filters["brands"] = sorted(list(brands))
+        
+    except Exception as e:
+        print(f"[Cutouts] Failed to get filter options: {e}")
+    
+    return filters
 
 
 @router.get("/stats")

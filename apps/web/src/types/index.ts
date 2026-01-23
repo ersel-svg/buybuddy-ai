@@ -1445,3 +1445,139 @@ export interface DuplicateCheckResponse {
   has_duplicate: boolean;
   existing_requests: ScanRequest[];
 }
+
+// ===========================================
+// Workflow Types
+// ===========================================
+
+export type WorkflowStatus = "draft" | "active" | "archived";
+export type ExecutionStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type BlockType =
+  | "image_input"
+  | "detection"
+  | "classification"
+  | "embedding"
+  | "similarity_search"
+  | "crop"
+  | "blur_region"
+  | "draw_boxes"
+  | "segmentation"
+  | "condition"
+  | "filter"
+  | "grid_builder"
+  | "json_output";
+
+export interface WorkflowNode {
+  id: string;
+  type: BlockType;
+  position: { x: number; y: number };
+  data: {
+    label: string;
+    config: Record<string, unknown>;
+    model_id?: string;
+  };
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+}
+
+export interface WorkflowDefinition {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description?: string;
+  status: WorkflowStatus;
+  definition: WorkflowDefinition;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowCreate {
+  name: string;
+  description?: string;
+  definition?: WorkflowDefinition;
+}
+
+export interface WorkflowUpdate {
+  name?: string;
+  description?: string;
+  status?: WorkflowStatus;
+  definition?: WorkflowDefinition;
+}
+
+export interface WorkflowsResponse {
+  items: Workflow[];
+  total: number;
+}
+
+export interface WorkflowExecution {
+  id: string;
+  workflow_id: string;
+  workflow_name?: string;
+  status: ExecutionStatus;
+  inputs: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  node_outputs?: Record<string, unknown>;
+  node_errors?: Record<string, string>;
+  total_duration_ms?: number;
+}
+
+export interface WorkflowExecutionCreate {
+  inputs: Record<string, unknown>;
+}
+
+export interface WorkflowExecutionsResponse {
+  items: WorkflowExecution[];
+  total: number;
+}
+
+export type ModelCategory = "detection" | "classification" | "embedding" | "segmentation";
+
+export interface WorkflowModel {
+  id: string;
+  name: string;
+  model_type: string;
+  category: ModelCategory;
+  source: "pretrained" | "trained";
+  is_active: boolean;
+  is_default: boolean;
+  config?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface WorkflowModelsResponse {
+  items: WorkflowModel[];
+  total: number;
+}
+
+export interface BlockDefinition {
+  type: BlockType;
+  display_name: string;
+  description: string;
+  category: string;
+  input_ports: Array<{
+    name: string;
+    type: string;
+    required: boolean;
+    description?: string;
+  }>;
+  output_ports: Array<{
+    name: string;
+    type: string;
+    description?: string;
+  }>;
+  config_schema: Record<string, unknown>;
+}

@@ -22,6 +22,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/executions", response_model=ExecutionListResponse)
+async def list_all_executions(
+    workflow_id: Optional[str] = Query(None, description="Filter by workflow ID"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List all executions across all workflows.
+    """
+    query = supabase_service.client.table("wf_executions").select(
+        "*, workflow:wf_workflows(name)", count="exact"
+    )
+
+    if workflow_id:
+        query = query.eq("workflow_id", workflow_id)
+    if status:
+        query = query.eq("status", status)
+
+    query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
+    result = query.execute()
+
+    executions = []
+    for ex in result.data or []:
+        workflow = ex.pop("workflow", None)
+        if workflow:
+            ex["workflow_name"] = workflow.get("name")
+        executions.append(ex)
+
+    return ExecutionListResponse(
+        executions=executions,
+        total=result.count or 0,
+    )
+
+
 @router.post("/{workflow_id}/run", response_model=ExecutionResponse)
 async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
     """
