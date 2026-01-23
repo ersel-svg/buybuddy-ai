@@ -148,13 +148,16 @@ class URLImageDataset(Dataset):
 
         # Apply transforms
         if self.transform is not None:
-            if hasattr(self.transform, '__call__'):
-                # Check if albumentations
-                if hasattr(self.transform, 'transforms'):
-                    transformed = self.transform(image=np.array(img))
-                    img = transformed["image"]
-                else:
-                    img = self.transform(img)
+            # Check if albumentations by checking the module name
+            is_albumentations = (
+                hasattr(self.transform, '__module__') and
+                'albumentations' in self.transform.__module__
+            )
+            if is_albumentations:
+                transformed = self.transform(image=np.array(img))
+                img = transformed["image"]
+            else:
+                img = self.transform(img)
 
         return img, label
 
