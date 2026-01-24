@@ -584,11 +584,15 @@ class ClassificationTrainer:
                 self.best_epoch = epoch + 1
 
                 if save_dir:
+                    # Save FP16 inference-only checkpoint for best model
+                    # (smaller file, uses EMA weights for better inference)
                     self._save_checkpoint(
                         os.path.join(save_dir, "best_model.pt"),
                         epoch,
                         val_metrics,
+                        inference_only=True,  # FP16 + EMA weights
                     )
+                    print(f"  New best model! Val Acc: {val_metrics['val_acc']:.2f}%")
 
             # Callback
             if callback:
@@ -613,12 +617,13 @@ class ClassificationTrainer:
 
         total_time = time.time() - start_time
 
-        # Final checkpoint
+        # Final checkpoint (full for potential resume, not inference_only)
         if save_dir:
             self._save_checkpoint(
                 os.path.join(save_dir, "final_model.pt"),
                 epoch,
                 val_metrics,
+                inference_only=False,
             )
 
         return {
@@ -634,20 +639,58 @@ class ClassificationTrainer:
         path: str,
         epoch: int,
         metrics: Dict[str, float],
+        inference_only: bool = False,
     ):
-        """Save model checkpoint."""
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "metrics": metrics,
-            "config": self.config.to_dict(),
-        }
+        """
+        Save model checkpoint.
 
-        if self.ema is not None:
-            checkpoint["ema_shadow"] = self.ema.shadow
+        Args:
+            path: Path to save checkpoint
+            epoch: Current epoch
+            metrics: Validation metrics
+            inference_only: If True, save FP16 inference-only checkpoint (smaller, faster)
+                           Uses EMA weights if available for better inference quality.
+        """
+        if inference_only:
+            # FP16 inference-only checkpoint (~50% smaller file size)
+            # Use EMA weights if available (usually better for inference)
+            if self.ema is not None:
+                model_weights = self.ema.shadow
+            else:
+                model_weights = self.model.state_dict()
 
-        torch.save(checkpoint, path)
+            # Convert to FP16 for smaller file size
+            inference_checkpoint = {
+                "model_state_dict": {
+                    k: v.half() if v.dtype == torch.float32 else v
+                    for k, v in model_weights.items()
+                },
+                "epoch": epoch,
+                "metrics": metrics,
+                "config": self.config.to_dict(),
+                "precision": "fp16",
+                "inference_only": True,
+                "used_ema": self.ema is not None,
+            }
+            torch.save(inference_checkpoint, path)
+
+            # Log file size
+            file_size_mb = os.path.getsize(path) / (1024 * 1024)
+            print(f"  Saved FP16 inference checkpoint: {file_size_mb:.1f} MB (EMA: {self.ema is not None})")
+        else:
+            # Full checkpoint for resuming training
+            checkpoint = {
+                "epoch": epoch,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "metrics": metrics,
+                "config": self.config.to_dict(),
+            }
+
+            if self.ema is not None:
+                checkpoint["ema_shadow"] = self.ema.shadow
+
+            torch.save(checkpoint, path)
 
 
 def compute_class_weights(

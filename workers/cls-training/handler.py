@@ -235,6 +235,58 @@ def supabase_update(
     return retry_request(do_request)
 
 
+def supabase_upload_streaming(
+    supabase_url: str,
+    supabase_key: str,
+    bucket: str,
+    path: str,
+    file_path: str,
+    content_type: str = "application/octet-stream",
+    timeout: int = 300,  # 5 minutes for large files
+):
+    """
+    Upload a file to Supabase Storage with streaming (memory efficient).
+
+    Unlike loading the entire file into RAM, this streams the file content
+    directly to the HTTP request, preventing RAM exhaustion for large models.
+
+    Args:
+        supabase_url: Supabase project URL
+        supabase_key: Service key
+        bucket: Storage bucket name
+        path: Path within bucket
+        file_path: Local file path to upload
+        content_type: MIME type
+        timeout: Request timeout in seconds
+    """
+    import httpx
+
+    file_size = os.path.getsize(file_path)
+    file_size_mb = file_size / (1024 * 1024)
+
+    # For very large files (> 100MB), increase timeout proportionally
+    if file_size_mb > 100:
+        timeout = max(timeout, int(file_size_mb * 3))  # ~3 seconds per MB
+        print(f"Large file ({file_size_mb:.1f}MB), timeout set to {timeout}s")
+
+    def do_request():
+        # Stream the file instead of loading into memory
+        with open(file_path, "rb") as f:
+            return httpx.post(
+                f"{supabase_url}/storage/v1/object/{bucket}/{path}",
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": content_type,
+                    "Content-Length": str(file_size),
+                },
+                content=f,  # Stream file handle directly
+                timeout=timeout,
+            )
+
+    return retry_request(do_request, max_retries=2)  # Fewer retries for large uploads
+
+
 def supabase_upload(
     supabase_url: str,
     supabase_key: str,
@@ -245,8 +297,8 @@ def supabase_upload(
     timeout: int = 300,  # 5 minutes for large files
 ):
     """
-    Upload a file to Supabase Storage with retry logic.
-    For files > 50MB, uses chunked upload.
+    Upload bytes data to Supabase Storage with retry logic.
+    For streaming large files, use supabase_upload_streaming() instead.
     """
     import httpx
 
@@ -788,26 +840,25 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             validation=validation,
         )
 
-        # Upload model to Supabase Storage (if configured) - with retry for large files
+        # Upload model to Supabase Storage (if configured) - using streaming for memory efficiency
         model_url = None
         model_storage_path = None
         if supabase_url and supabase_key:
             try:
                 model_path = os.path.join(save_dir, "best_model.pt")
                 if os.path.exists(model_path):
-                    with open(model_path, "rb") as f:
-                        model_data = f.read()
-
-                    file_size_mb = len(model_data) / (1024 * 1024)
-                    print(f"Uploading model ({file_size_mb:.1f}MB)...")
+                    file_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+                    print(f"Uploading model ({file_size_mb:.1f}MB) using streaming...")
 
                     # Storage path within cls-models bucket (private bucket)
                     model_storage_path = f"{training_run_id}/best_model.pt"
-                    response = supabase_upload(
+
+                    # Use streaming upload to avoid loading entire file into RAM
+                    response = supabase_upload_streaming(
                         supabase_url, supabase_key,
                         bucket="cls-models",
                         path=model_storage_path,
-                        data=model_data,
+                        file_path=model_path,
                         timeout=300,  # 5 minutes for large models
                     )
 
