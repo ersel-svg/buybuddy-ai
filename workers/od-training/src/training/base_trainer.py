@@ -766,15 +766,40 @@ class SOTABaseTrainer(ABC):
         )
         torch.save(checkpoint, checkpoint_path)
 
-        # Save best
+        # Save best (FP16 inference-only for fast upload & inference)
         if is_best:
             best_path = os.path.join(
                 self.output_config.checkpoint_dir,
                 "best_model.pt",
             )
-            torch.save(checkpoint, best_path)
+
+            # Create FP16 inference-only checkpoint (much smaller, faster upload)
+            # Use EMA weights if available (usually better for inference)
+            if self.ema is not None:
+                model_weights = self.ema.state_dict()
+            else:
+                model_weights = self.model.state_dict()
+
+            # Convert to FP16 for smaller file size (~50% reduction)
+            inference_checkpoint = {
+                "model_state_dict": {k: v.half() if v.dtype == torch.float32 else v
+                                     for k, v in model_weights.items()},
+                "epoch": epoch,
+                "metrics": metrics,
+                "best_map": self.best_map,
+                "config": {
+                    "training": asdict(self.training_config),
+                    "dataset": asdict(self.dataset_config),
+                },
+                "precision": "fp16",
+                "inference_only": True,
+            }
+            torch.save(inference_checkpoint, best_path)
             self.best_checkpoint_path = best_path
-            print(f"  New best model! mAP: {metrics.get('map', 0):.4f}")
+
+            # Log size reduction
+            file_size_mb = os.path.getsize(best_path) / (1024 * 1024)
+            print(f"  New best model! mAP: {metrics.get('map', 0):.4f} (FP16: {file_size_mb:.1f} MB)")
 
         # Save latest
         latest_path = os.path.join(

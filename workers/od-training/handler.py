@@ -301,6 +301,7 @@ def update_training_run(
     metrics: Optional[dict] = None,
     error: Optional[str] = None,
     model_url: Optional[str] = None,
+    class_mapping: Optional[Dict] = None,
     max_retries: int = 3,
 ):
     """
@@ -380,12 +381,13 @@ def update_training_run(
                                 "checkpoint_url": model_url,
                                 "map": update_data.get("best_map") or run_data.get("best_map"),
                                 "map_50": metrics.get("map_50") if metrics else None,
+                                "class_mapping": class_mapping or {},
                                 "class_count": class_count,
                                 "is_active": True,
                                 "created_at": datetime.now(timezone.utc).isoformat(),
                             }
                             client.table("od_trained_models").insert(model_data).execute()
-                            print(f"[INFO] Created trained model record: {model_data['id']} (class_count={class_count})")
+                            print(f"[INFO] Created trained model record: {model_data['id']} (class_count={class_count}, class_mapping_keys={len(class_mapping or {})})")
                     except Exception as model_err:
                         print(f"[WARNING] Failed to create trained model record: {model_err}")
 
@@ -465,16 +467,14 @@ def upload_model_to_supabase(
         try:
             print(f"[INFO] Upload attempt {attempt}/{max_retries}...")
 
-            # Read file content
+            # Stream upload - don't load entire file into RAM
             with open(model_path, "rb") as f:
-                file_content = f.read()
-
-            # Upload with retry
-            client.storage.from_("od-models").upload(
-                filename,
-                file_content,
-                {"content-type": "application/octet-stream"},
-            )
+                # Upload with streaming (more memory efficient for large files)
+                client.storage.from_("od-models").upload(
+                    filename,
+                    f,
+                    {"content-type": "application/octet-stream"},
+                )
 
             # Get public URL
             url = client.storage.from_("od-models").get_public_url(filename)
@@ -861,6 +861,7 @@ def handler(job: dict) -> dict:
             total_epochs=result.get("total_epochs", 0),
             metrics=result.get("best_metrics", {}),
             model_url=model_url,
+            class_mapping=url_dataset_data.get("class_mapping") if url_dataset_data else None,
         )
 
         # Clear current training run
