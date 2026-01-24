@@ -1,4 +1,5 @@
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+# Use RunPod's official image - optimized for their GPU infrastructure (including RTX 5090)
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /workspace
 
