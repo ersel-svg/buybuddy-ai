@@ -66,6 +66,7 @@ class ProductDataset(Dataset):
         frames_per_product: int = 1,
         http_timeout: float = 30.0,
         training_images: Optional[dict[str, list[dict]]] = None,
+        preload_config: Optional[dict[str, Any]] = None,  # NEW: Configurable preload settings
     ):
         """
         Initialize the dataset.
@@ -83,14 +84,28 @@ class ProductDataset(Dataset):
             frames_per_product: Frames to sample per product (legacy format)
             http_timeout: HTTP request timeout
             training_images: NEW FORMAT - Dict mapping product_id to list of images with URLs
+            preload_config: NEW - Configurable preload settings:
+                - enabled: Whether to preload (default: True)
+                - batched: Use batched mode with gc.collect (default: False)
+                - batch_size: Images per batch (default: 500)
+                - max_workers: Parallel threads (default: 32)
+                - http_timeout: Request timeout (default: 30)
+                - max_connections: HTTP connection pool size (default: 50)
         """
         self.products = products
         self.model_type = model_type
         self.augmentation_strength = augmentation_strength
         self.is_training = is_training
         self.frames_per_product = frames_per_product
-        self.http_timeout = http_timeout
         self.training_images = training_images
+
+        # Store preload config (with defaults for backward compatibility)
+        self.preload_config = preload_config or {}
+
+        # Read HTTP settings from config or use defaults
+        self.http_timeout = self.preload_config.get("http_timeout", http_timeout)
+        max_connections = self.preload_config.get("max_connections", 50)
+        max_keepalive = self.preload_config.get("max_keepalive_connections", 20)
 
         # Determine which format we're using
         self.use_new_format = training_images is not None and len(training_images) > 0
@@ -129,9 +144,10 @@ class ProductDataset(Dataset):
         self._setup_transforms()
 
         # HTTP client for downloading images (with connection pooling)
+        # Settings from preload_config or defaults
         self.http_client = httpx.Client(
-            timeout=http_timeout,
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            timeout=self.http_timeout,
+            limits=httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_keepalive),
         )
 
         # Image cache for prefetched images
@@ -159,28 +175,44 @@ class ProductDataset(Dataset):
 
     def prefetch_images(
         self,
-        max_workers: int = 32,
+        max_workers: int = None,
         progress_callback: Optional[callable] = None,
+        batch_size: int = None,
     ) -> int:
         """
         Prefetch all images in parallel for faster training.
 
-        Downloads all images concurrently and caches them in memory.
-        Call this before training starts.
+        Supports two modes (configurable via preload_config):
+        1. Single-pass mode (default): Downloads all images at once - faster for small datasets
+        2. Batched mode: Downloads in batches with gc.collect() - memory safe for large datasets
 
         Args:
-            max_workers: Number of parallel download threads (default 32)
+            max_workers: Number of parallel download threads (default from config or 32)
             progress_callback: Optional callback(current, total) for progress updates
+            batch_size: Images per batch for batched mode (default from config or 500)
+
+        Config options (via preload_config):
+            - batched: Use batched mode with gc.collect (default: False)
+            - batch_size: Images per batch (default: 500)
+            - max_workers: Parallel threads (default: 32)
 
         Returns:
             Number of successfully prefetched images
         """
+        import gc
+
+        # Read from config with fallback to parameters and defaults
+        use_batched = self.preload_config.get("batched", False)  # Default: single-pass (existing behavior)
+        max_workers = max_workers or self.preload_config.get("max_workers", 32)
+        batch_size = batch_size or self.preload_config.get("batch_size", 500)
+
         urls = [sample["url"] for sample in self.samples]
         total = len(urls)
         unique_urls = list(set(urls))
 
+        mode_str = "batched" if use_batched else "single-pass"
         print(f"Prefetching {len(unique_urls)} unique images ({total} total samples)...")
-        print(f"  Using {max_workers} parallel workers")
+        print(f"  Mode: {mode_str}, workers: {max_workers}, batch_size: {batch_size}")
 
         success_count = 0
         failed_urls = []
@@ -195,26 +227,58 @@ class ProductDataset(Dataset):
             except Exception as e:
                 return url, None
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(download_one, url): url for url in unique_urls}
+        if use_batched:
+            # BATCHED MODE: Process in batches with gc.collect() - memory safe for large datasets
+            total_urls = len(unique_urls)
+            for batch_start in range(0, total_urls, batch_size):
+                batch_urls = unique_urls[batch_start:batch_start + batch_size]
+                batch_num = batch_start // batch_size + 1
+                total_batches = (total_urls + batch_size - 1) // batch_size
 
-            for i, future in enumerate(as_completed(futures)):
-                url, image = future.result()
+                batch_success = 0
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(download_one, url): url for url in batch_urls}
 
-                if image is not None:
-                    with self._cache_lock:
-                        self._image_cache[url] = image
-                    success_count += 1
-                else:
-                    failed_urls.append(url)
+                    for future in as_completed(futures):
+                        url, image = future.result()
 
-                # Progress update every 100 images or at the end
-                if progress_callback and (i % 100 == 0 or i == len(unique_urls) - 1):
-                    progress_callback(i + 1, len(unique_urls))
+                        if image is not None:
+                            with self._cache_lock:
+                                self._image_cache[url] = image
+                            batch_success += 1
+                            success_count += 1
+                        else:
+                            failed_urls.append(url)
 
-                # Print progress every 500 images
-                if (i + 1) % 500 == 0:
-                    print(f"  Downloaded {i + 1}/{len(unique_urls)} images...")
+                # Progress update per batch
+                print(f"  Batch {batch_num}/{total_batches}: {success_count}/{total_urls} downloaded")
+                if progress_callback:
+                    progress_callback(success_count, total_urls)
+
+                # Free memory after each batch
+                gc.collect()
+        else:
+            # SINGLE-PASS MODE: Download all at once - faster for small datasets (existing behavior)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(download_one, url): url for url in unique_urls}
+
+                for i, future in enumerate(as_completed(futures)):
+                    url, image = future.result()
+
+                    if image is not None:
+                        with self._cache_lock:
+                            self._image_cache[url] = image
+                        success_count += 1
+                    else:
+                        failed_urls.append(url)
+
+                    # Progress update every 100 images or at the end
+                    if progress_callback and (i % 100 == 0 or i == len(unique_urls) - 1):
+                        progress_callback(i + 1, len(unique_urls))
+
+                    # Print progress every 500 images
+                    if (i + 1) % 500 == 0:
+                        print(f"  Downloaded {i + 1}/{len(unique_urls)} images...")
 
         self._prefetch_complete = True
 

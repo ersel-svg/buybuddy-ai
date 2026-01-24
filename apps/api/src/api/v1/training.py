@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from services.supabase import SupabaseService, supabase_service
 from services.runpod import RunpodService, runpod_service
 from auth.dependencies import get_current_user
+from schemas.data_loading import DataLoadingConfig
 
 # Router with authentication required for all endpoints
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -72,6 +73,36 @@ class TrainingConfigOverrides(BaseModel):
     use_llrd: Optional[bool] = None
     mixed_precision: Optional[bool] = None
     gradient_accumulation_steps: Optional[int] = Field(None, ge=1, le=16)
+
+    # Data loading configuration
+    data_loading: Optional[DataLoadingConfig] = Field(
+        None,
+        description="Image preloading and dataloader configuration"
+    )
+
+    # Scheduler parameters
+    scheduler_eta_min: Optional[float] = Field(
+        None,
+        ge=1e-8,
+        le=1e-4,
+        description="Scheduler minimum learning rate (eta_min)"
+    )
+
+    # Head learning rate multiplier
+    head_lr_multiplier: Optional[int] = Field(
+        None,
+        ge=1,
+        le=100,
+        description="Learning rate multiplier for head layers"
+    )
+
+    # Validation batch multiplier
+    val_batch_multiplier: Optional[int] = Field(
+        None,
+        ge=1,
+        le=4,
+        description="Validation batch size multiplier"
+    )
 
 
 class SOTALossConfig(BaseModel):

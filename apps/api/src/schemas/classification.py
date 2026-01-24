@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
+from schemas.data_loading import DataLoadingConfig
+
 
 # ===========================================
 # Image Schemas
@@ -306,6 +308,9 @@ class CLSTrainingConfig(BaseModel):
     early_stopping: bool = True
     early_stopping_patience: int = 15
     early_stopping_metric: str = "val_f1"
+
+    # Data loading configuration
+    data_loading: Optional[DataLoadingConfig] = None
 
 
 class CLSTrainingRunCreate(BaseModel):

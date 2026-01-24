@@ -368,13 +368,26 @@ class SOTABaseTrainer(ABC):
 
             print("[INFO] Using URL-based dataset loading")
 
+            # Get preload config from url_dataset_data or use defaults
+            # Config can be passed from API: url_dataset_data["preload_config"]
+            preload_config = url_dataset_data.get("preload_config", {})
+
+            # Determine preload behavior from config (default: enabled with batching)
+            preload_enabled = preload_config.get("enabled", True)
+
+            print(f"[INFO] Preload config: enabled={preload_enabled}, "
+                  f"batched={preload_config.get('batched', True)}, "
+                  f"batch_size={preload_config.get('batch_size', 500)}, "
+                  f"max_workers={preload_config.get('max_workers', 16)}")
+
             train_dataset = URLODDataset(
                 image_data=url_dataset_data["train_images"],
                 class_mapping=url_dataset_data["class_mapping"],
                 transform=train_pipeline,
                 img_size=self.training_config.img_size,
-                preload=False,  # Lazy loading - DataLoader handles prefetch
+                preload=preload_enabled,  # Configurable via preload_config
                 use_memory_cache=False,  # IMPORTANT: Prevents OOM - file cache only
+                preload_config=preload_config,  # NEW: Pass full preload config
             )
 
             val_dataset = URLODDataset(
@@ -382,8 +395,9 @@ class SOTABaseTrainer(ABC):
                 class_mapping=url_dataset_data["class_mapping"],
                 transform=val_pipeline,
                 img_size=self.training_config.img_size,
-                preload=False,  # Lazy loading - DataLoader handles prefetch
+                preload=preload_enabled,  # Configurable via preload_config
                 use_memory_cache=False,  # IMPORTANT: Prevents OOM - file cache only
+                preload_config=preload_config,  # NEW: Pass full preload config
             )
 
             # Auto-detect optimal num_workers based on available resources

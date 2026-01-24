@@ -235,6 +235,65 @@ def supabase_update(
     return retry_request(do_request)
 
 
+def save_metrics_to_history(
+    supabase_url: str,
+    supabase_key: str,
+    training_run_id: str,
+    epoch: int,
+    train_loss: float = None,
+    val_loss: float = None,
+    val_accuracy: float = None,
+    val_f1: float = None,
+    learning_rate: float = None,
+    timeout: int = 10,
+):
+    """
+    Save epoch metrics to training_metrics_history table using upsert.
+    This is more reliable than updating a JSONB array.
+    """
+    import httpx
+    from datetime import datetime
+
+    data = {
+        "training_run_id": training_run_id,
+        "training_type": "cls",
+        "epoch": epoch,
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "val_accuracy": val_accuracy,
+        "val_f1": val_f1,
+        "learning_rate": learning_rate,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    # Remove None values
+    data = {k: v for k, v in data.items() if v is not None}
+
+    def do_request():
+        return httpx.post(
+            f"{supabase_url}/rest/v1/training_metrics_history",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates",  # Upsert
+            },
+            json=data,
+            timeout=timeout,
+        )
+
+    try:
+        response = retry_request(do_request)
+        if response.status_code in (200, 201):
+            return True
+        else:
+            print(f"Failed to save metrics: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"Failed to save metrics to history: {e}")
+        return False
+
+
 def supabase_upload_streaming(
     supabase_url: str,
     supabase_key: str,
@@ -354,6 +413,13 @@ DEFAULT_CONFIG = {
     # Anti-overfitting parameters (API can override based on dataset size)
     "drop_rate": 0.1,
     "drop_path_rate": 0.1,
+    # NEW: Preload config (for dataset image prefetching)
+    "preload_config": {
+        "enabled": True,        # Prefetch images before training
+        "batched": False,       # Default: single-pass (existing behavior)
+        "batch_size": 500,      # Images per batch (if batched=True)
+        "max_workers": 8,       # Parallel download threads
+    },
 }
 
 
@@ -372,6 +438,7 @@ class URLImageDataset(Dataset):
         max_workers: int = 8,
         production_config: Optional[ProductionConfig] = None,
         stats: Optional[TrainingStats] = None,
+        preload_config: Optional[Dict[str, Any]] = None,  # NEW: Configurable preload settings
     ):
         """
         Args:
@@ -381,13 +448,23 @@ class URLImageDataset(Dataset):
             max_workers: Number of download workers
             production_config: Production settings for retry/timeout
             stats: TrainingStats for tracking failures
+            preload_config: NEW - Configurable preload settings:
+                - enabled: Whether to preload (default: True)
+                - batched: Use batched mode with gc.collect (default: False)
+                - batch_size: Images per batch (default: 500)
+                - max_workers: Parallel threads (override max_workers param)
         """
         self.image_data = image_data
         self.transform = transform
         self.cache_dir = cache_dir
-        self.max_workers = max_workers
         self.production_config = production_config or ProductionConfig()
         self.stats = stats
+
+        # Store preload config (with defaults for backward compatibility)
+        self.preload_config = preload_config or {}
+
+        # Read max_workers from config or use parameter
+        self.max_workers = self.preload_config.get("max_workers", max_workers)
 
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
@@ -459,9 +536,34 @@ class URLImageDataset(Dataset):
 
         return img
 
-    def preload(self, progress_callback=None):
-        """Pre-download all images in parallel."""
-        print(f"Pre-loading {len(self.image_data)} images...")
+    def preload(self, progress_callback=None, batch_size: int = None, max_workers: int = None):
+        """
+        Pre-download all images in parallel.
+
+        Supports two modes (configurable via preload_config):
+        1. Single-pass mode (default): Downloads all images at once - faster for small datasets
+        2. Batched mode: Downloads in batches with gc.collect() - memory safe for large datasets
+
+        Args:
+            progress_callback: Optional callback(loaded, total) for progress
+            batch_size: Images per batch for batched mode (default from config or 500)
+            max_workers: Parallel threads (default from config or self.max_workers)
+
+        Config options (via preload_config):
+            - batched: Use batched mode with gc.collect (default: False)
+            - batch_size: Images per batch (default: 500)
+            - max_workers: Parallel threads (default: 8)
+        """
+        import gc
+
+        # Read from config with fallback to parameters and defaults
+        use_batched = self.preload_config.get("batched", False)  # Default: single-pass (existing behavior)
+        batch_size = batch_size or self.preload_config.get("batch_size", 500)
+        max_workers = max_workers or self.max_workers
+
+        total = len(self.image_data)
+        mode_str = "batched" if use_batched else "single-pass"
+        print(f"Pre-loading {total} images ({mode_str}, batch_size={batch_size}, workers={max_workers})...")
 
         def download(item):
             url = item["url"]
@@ -472,15 +574,47 @@ class URLImageDataset(Dataset):
             except:
                 return False
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            results = list(executor.map(download, self.image_data))
+        total_loaded = 0
+        total_failed = 0
 
-        loaded = sum(results)
-        failed = len(self.image_data) - loaded
-        if failed > 0:
-            print(f"⚠️  {failed} images failed to load")
-        print(f"Pre-loaded {loaded}/{len(self.image_data)} images")
-        return loaded
+        if use_batched:
+            # BATCHED MODE: Process in batches with gc.collect() - memory safe for large datasets
+            for i in range(0, total, batch_size):
+                batch = self.image_data[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                total_batches = (total + batch_size - 1) // batch_size
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    results = list(executor.map(download, batch))
+
+                loaded = sum(results)
+                failed = len(batch) - loaded
+                total_loaded += loaded
+                total_failed += failed
+
+                # Progress update
+                print(f"  Batch {batch_num}/{total_batches}: {total_loaded}/{total} loaded ({total_failed} failed)")
+
+                if progress_callback:
+                    progress_callback(total_loaded, total)
+
+                # Free memory after each batch
+                gc.collect()
+        else:
+            # SINGLE-PASS MODE: Download all at once - faster for small datasets (existing behavior)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(download, self.image_data))
+
+            total_loaded = sum(results)
+            total_failed = total - total_loaded
+
+            if progress_callback:
+                progress_callback(total_loaded, total)
+
+        if total_failed > 0:
+            print(f"⚠️  {total_failed} images failed to load")
+        print(f"Pre-loaded {total_loaded}/{total} images")
+        return total_loaded
 
 
 def train_model(
@@ -546,22 +680,28 @@ def train_model(
     )
     val_transform = get_val_transforms(img_size=image_size)
 
-    # Create datasets
+    # Create datasets with preload config
     cache_dir = os.path.join(save_dir, "image_cache")
+    preload_config = full_config.get("preload_config", {})
+
     train_dataset = URLImageDataset(
         dataset["train_urls"],
         transform=train_transform,
         cache_dir=cache_dir,
+        preload_config=preload_config,  # NEW: Configurable preload settings
     )
     val_dataset = URLImageDataset(
         dataset["val_urls"],
         transform=val_transform,
         cache_dir=cache_dir,
+        preload_config=preload_config,  # NEW: Configurable preload settings
     )
 
-    # Pre-load images
-    train_dataset.preload()
-    val_dataset.preload()
+    # Pre-load images (if enabled in config)
+    preload_enabled = preload_config.get("enabled", True)
+    if preload_enabled:
+        train_dataset.preload()
+        val_dataset.preload()
 
     # Create data loaders
     train_loader = DataLoader(
@@ -800,9 +940,10 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # Progress callback for Supabase updates (with retry)
         best_val_acc_so_far = 0.0
+        best_f1_so_far = 0.0
 
         def progress_callback(epoch, metrics):
-            nonlocal best_val_acc_so_far
+            nonlocal best_val_acc_so_far, best_f1_so_far
             if supabase_url and supabase_key:
                 try:
                     update_data = {
@@ -811,54 +952,18 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
                     # Update best metrics if improved
                     val_acc = metrics.get("val_acc", metrics.get("accuracy", 0))
+                    val_f1 = metrics.get("val_f1", 0)
+
                     if val_acc > best_val_acc_so_far:
                         best_val_acc_so_far = val_acc
                         update_data["best_accuracy"] = val_acc
                         update_data["best_epoch"] = epoch + 1
 
-                    if metrics.get("val_f1"):
-                        update_data["best_f1"] = metrics["val_f1"]
+                    if val_f1 > best_f1_so_far:
+                        best_f1_so_far = val_f1
+                        update_data["best_f1"] = val_f1
 
-                    # === METRICS HISTORY TRACKING ===
-                    # Append current epoch metrics to metrics_history JSONB array
-                    try:
-                        from datetime import datetime
-                        import httpx
-
-                        # First, fetch current metrics_history
-                        headers = {
-                            "apikey": supabase_key,
-                            "Authorization": f"Bearer {supabase_key}",
-                        }
-                        fetch_url = f"{supabase_url}/rest/v1/cls_training_runs?id=eq.{training_run_id}&select=metrics_history"
-
-                        with httpx.Client(timeout=10) as client:
-                            response = client.get(fetch_url, headers=headers)
-                            if response.status_code == 200:
-                                data = response.json()
-                                if data and len(data) > 0:
-                                    metrics_history = data[0].get("metrics_history") or []
-                                else:
-                                    metrics_history = []
-                            else:
-                                metrics_history = []
-
-                        # Append new epoch metrics
-                        epoch_metrics = {
-                            "epoch": epoch + 1,
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "train_loss": metrics.get("train_loss"),
-                            "val_loss": metrics.get("val_loss"),
-                            "val_acc": val_acc,
-                            "val_f1": metrics.get("val_f1"),
-                            "learning_rate": metrics.get("learning_rate"),
-                        }
-                        metrics_history.append(epoch_metrics)
-                        update_data["metrics_history"] = metrics_history
-
-                    except Exception as e:
-                        print(f"Metrics history update failed: {e}")
-
+                    # Update training run status
                     supabase_update(
                         supabase_url, supabase_key,
                         table="cls_training_runs",
@@ -867,6 +972,21 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                         data=update_data,
                         timeout=15,
                     )
+
+                    # === SAVE METRICS TO HISTORY TABLE ===
+                    # Use unified training_metrics_history table with upsert
+                    save_metrics_to_history(
+                        supabase_url=supabase_url,
+                        supabase_key=supabase_key,
+                        training_run_id=training_run_id,
+                        epoch=epoch + 1,
+                        train_loss=metrics.get("train_loss"),
+                        val_loss=metrics.get("val_loss"),
+                        val_accuracy=val_acc,
+                        val_f1=val_f1 if val_f1 else None,
+                        learning_rate=metrics.get("learning_rate"),
+                    )
+
                 except Exception as e:
                     print(f"Progress update failed: {e}")
 
@@ -988,6 +1108,33 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"✓ Final status updated in Supabase: completed")
             except Exception as e:
                 print(f"⚠️  Failed to update final status: {e}")
+
+        # === CALL WEBHOOK TO CREATE TRAINED MODEL ===
+        api_url = job_input.get("api_url")
+        if api_url:
+            try:
+                import httpx
+                webhook_payload = {
+                    "training_run_id": training_run_id,
+                    "status": "completed",
+                    "model_url": model_url,
+                    "onnx_url": onnx_url,
+                    "confusion_matrix": results.get("confusion_matrix"),
+                    "per_class_metrics": results.get("per_class_metrics"),
+                }
+                with httpx.Client(timeout=30) as client:
+                    response = client.post(
+                        f"{api_url}/api/v1/classification/training/webhook",
+                        json=webhook_payload,
+                    )
+                    if response.status_code == 200:
+                        print(f"✓ Webhook called successfully - trained model created")
+                    else:
+                        print(f"⚠️  Webhook returned status {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"⚠️  Failed to call webhook: {e}")
+        else:
+            print("⚠️  No api_url provided - trained model will not be auto-created")
 
         return {
             "status": "COMPLETED",

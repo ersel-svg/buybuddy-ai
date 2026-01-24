@@ -99,6 +99,52 @@ def get_supabase_client():
     return _supabase_client
 
 
+def save_metrics_to_history(
+    training_run_id: str,
+    epoch: int,
+    train_loss: float = None,
+    val_loss: float = None,
+    map_score: float = None,
+    map50: float = None,
+    map75: float = None,
+    learning_rate: float = None,
+) -> bool:
+    """
+    Save epoch metrics to training_metrics_history table using upsert.
+    This is more reliable than updating a JSONB array.
+    """
+    client = get_supabase_client()
+    if not client:
+        return False
+
+    try:
+        data = {
+            "training_run_id": training_run_id,
+            "training_type": "od",
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "map": map_score,
+            "map50": map50,
+            "map75": map75,
+            "learning_rate": learning_rate,
+        }
+
+        # Remove None values
+        data = {k: v for k, v in data.items() if v is not None}
+
+        # Upsert to training_metrics_history
+        client.table("training_metrics_history").upsert(
+            data,
+            on_conflict="training_run_id,training_type,epoch"
+        ).execute()
+
+        return True
+    except Exception as e:
+        print(f"Failed to save metrics to history: {e}")
+        return False
+
+
 def convert_frontend_augmentation_config(aug_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convert frontend augmentation_config format to backend augmentation_overrides format.
@@ -333,29 +379,35 @@ def update_training_run(
             if total_epochs > 0:
                 update_data["total_epochs"] = total_epochs
 
-            # Handle metrics and metrics_history
+            # Handle metrics - save to unified training_metrics_history table
             if metrics:
-                # Get current training run to append to metrics_history
-                result = client.table("od_training_runs").select("metrics_history, best_map, best_epoch").eq("id", training_run_id).single().execute()
+                current_map = metrics.get("map", 0)
 
-                if result.data:
-                    current_data = result.data
-                    metrics_history = current_data.get("metrics_history") or []
-
-                    # Append new metrics to history
-                    metrics_history.append({
-                        "epoch": current_epoch,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        **metrics,
-                    })
-                    update_data["metrics_history"] = metrics_history
-
-                    # Update best_map if improved
-                    current_map = metrics.get("map", 0)
-                    best_map = current_data.get("best_map") or 0
-                    if current_map > best_map:
+                # Update best_map if improved (tracked in training_runs table)
+                if current_map > 0:
+                    # Fetch current best to compare
+                    try:
+                        result = client.table("od_training_runs").select("best_map").eq("id", training_run_id).single().execute()
+                        current_best = result.data.get("best_map", 0) if result.data else 0
+                        if current_map > current_best:
+                            update_data["best_map"] = current_map
+                            update_data["best_epoch"] = current_epoch
+                    except Exception:
+                        # If fetch fails, just update anyway
                         update_data["best_map"] = current_map
                         update_data["best_epoch"] = current_epoch
+
+                # Save epoch metrics to unified history table
+                save_metrics_to_history(
+                    training_run_id=training_run_id,
+                    epoch=current_epoch,
+                    train_loss=metrics.get("train_loss"),
+                    val_loss=metrics.get("val_loss"),
+                    map_score=current_map,
+                    map50=metrics.get("map50"),
+                    map75=metrics.get("map75"),
+                    learning_rate=metrics.get("learning_rate"),
+                )
 
             # Handle completion
             if status == "completed":
@@ -407,6 +459,7 @@ def update_training_run(
             # Update training run
             client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
             print(f"[Supabase] Training run updated: status={status}, epoch={current_epoch}")
+
             return  # Success, exit retry loop
 
         except Exception as e:

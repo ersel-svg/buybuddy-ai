@@ -544,9 +544,12 @@ async def submit_training_job(training_run_id: str):
                 "drop_rate": drop_rate,
                 "drop_path_rate": drop_path_rate,
                 "image_size": config.get("image_size", 224),
+                # Data loading configuration
+                "data_loading": config.get("data_loading"),
             },
             "supabase_url": settings.supabase_url,
             "supabase_key": settings.supabase_service_role_key,
+            "api_url": settings.api_url,  # For webhook calls on completion
         }
 
         # Check if CLS_TRAINING endpoint is configured
@@ -692,3 +695,22 @@ async def _create_trained_model(training_id: str, payload: dict):
     }
 
     supabase_service.client.table("cls_trained_models").insert(model_data).execute()
+
+
+@router.get("/{training_run_id}/metrics-history")
+async def get_metrics_history(training_run_id: str):
+    """
+    Get epoch-by-epoch metrics history for a training run.
+    Fetches from unified training_metrics_history table.
+    """
+    result = supabase_service.client.table("training_metrics_history").select(
+        "epoch, train_loss, val_loss, val_accuracy, val_f1, learning_rate, created_at"
+    ).eq(
+        "training_run_id", training_run_id
+    ).eq(
+        "training_type", "cls"
+    ).order(
+        "epoch", desc=False
+    ).execute()
+
+    return result.data or []

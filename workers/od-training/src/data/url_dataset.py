@@ -132,16 +132,22 @@ class URLODDataset(Dataset):
         retry_attempts: int = 3,
         retry_delay: float = 1.0,
         use_memory_cache: bool = False,  # Disabled by default - prevents OOM with DataLoader workers
+        preload_config: Optional[Dict[str, Any]] = None,  # NEW: Configurable preload settings
     ):
         self.image_data = image_data
         self.class_mapping = class_mapping
         self.transform = transform
         self.img_size = img_size
-        self.cache_dir = cache_dir or "/tmp/od_image_cache"
         self.max_workers = max_workers
-        self.retry_attempts = retry_attempts
-        self.retry_delay = retry_delay
         self.use_memory_cache = use_memory_cache
+
+        # Store preload config (with defaults for backward compatibility)
+        self.preload_config = preload_config or {}
+
+        # Read settings from config or use provided/default values
+        self.cache_dir = self.preload_config.get("cache_dir", cache_dir) or "/tmp/od_image_cache"
+        self.retry_attempts = self.preload_config.get("retry_attempts", retry_attempts)
+        self.retry_delay = self.preload_config.get("retry_delay", retry_delay)
 
         # Create cache directory
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -152,8 +158,9 @@ class URLODDataset(Dataset):
         self._memory_cache: Dict[str, np.ndarray] = {}
         self._failed_urls: set = set()
 
-        # Preload images if requested
-        if preload and len(image_data) > 0:
+        # Preload images if requested (check both param and config)
+        preload_enabled = self.preload_config.get("enabled", preload)
+        if preload_enabled and len(image_data) > 0:
             self.preload_images()
 
         # Set sample function for multi-image augmentations (Mosaic, MixUp)
@@ -270,10 +277,11 @@ class URLODDataset(Dataset):
                 except:
                     pass
 
-        # Download from URL
+        # Download from URL (timeout from config or default 30)
+        http_timeout = self.preload_config.get("http_timeout", 30)
         img_array, error = load_image_from_url(
             url,
-            timeout=30,
+            timeout=http_timeout,
             retry_attempts=self.retry_attempts,
             retry_delay=self.retry_delay,
         )
@@ -368,14 +376,39 @@ class URLODDataset(Dataset):
 
         return image, {"boxes": boxes, "labels": labels}
 
-    def preload_images(self, progress_callback=None):
+    def preload_images(self, progress_callback=None, batch_size: int = None, max_workers: int = None):
         """
         Pre-download all images in parallel.
 
-        This significantly speeds up the first epoch by downloading
-        all images before training starts.
+        Supports two modes (configurable via preload_config):
+        1. Batched mode (default): Downloads in batches with gc.collect() - memory safe
+        2. Non-batched mode: Downloads all at once - faster for small datasets
+
+        Args:
+            progress_callback: Optional callback(loaded, total) for progress
+            batch_size: Number of images per batch (default from config or 500)
+            max_workers: Parallel download threads (default from config or 16)
+
+        Config options (via preload_config):
+            - enabled: Whether to preload (default: True)
+            - batched: Use batched mode with gc.collect (default: True)
+            - batch_size: Images per batch (default: 500)
+            - max_workers: Parallel threads (default: 16)
+            - http_timeout: Request timeout (default: 30)
+
+        This significantly speeds up training by downloading all images
+        before the first epoch, then loading from fast disk cache.
         """
-        print(f"[URLODDataset] Pre-loading {len(self.image_data)} images...")
+        import gc
+
+        # Read from config with fallback to parameters and defaults
+        use_batched = self.preload_config.get("batched", True)  # Default: batched mode
+        batch_size = batch_size or self.preload_config.get("batch_size", 500)
+        max_workers = max_workers or self.preload_config.get("max_workers", 16)
+
+        total = len(self.image_data)
+        mode_str = "batched" if use_batched else "single-pass"
+        print(f"[URLODDataset] Pre-loading {total} images ({mode_str}, batch_size={batch_size}, workers={max_workers})...")
 
         def download_one(item):
             url = item["image_url"]
@@ -386,17 +419,48 @@ class URLODDataset(Dataset):
             except:
                 return False
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            results = list(executor.map(download_one, self.image_data))
+        total_loaded = 0
+        total_failed = 0
 
-        loaded = sum(results)
-        failed = len(self.image_data) - loaded
+        if use_batched:
+            # BATCHED MODE: Process in batches with gc.collect() - memory safe for large datasets
+            for i in range(0, total, batch_size):
+                batch = self.image_data[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                total_batches = (total + batch_size - 1) // batch_size
 
-        if failed > 0:
-            print(f"[URLODDataset] WARNING: {failed} images failed to load")
-        print(f"[URLODDataset] Pre-loaded {loaded}/{len(self.image_data)} images")
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    results = list(executor.map(download_one, batch))
 
-        return loaded
+                loaded = sum(results)
+                failed = len(batch) - loaded
+                total_loaded += loaded
+                total_failed += failed
+
+                # Progress update
+                print(f"[URLODDataset] Batch {batch_num}/{total_batches}: {total_loaded}/{total} loaded ({total_failed} failed)")
+
+                if progress_callback:
+                    progress_callback(total_loaded, total)
+
+                # Free memory after each batch
+                gc.collect()
+        else:
+            # SINGLE-PASS MODE: Download all at once - faster for small datasets
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(download_one, self.image_data))
+
+            total_loaded = sum(results)
+            total_failed = total - total_loaded
+
+            if progress_callback:
+                progress_callback(total_loaded, total)
+
+        if total_failed > 0:
+            print(f"[URLODDataset] WARNING: {total_failed} images failed to load")
+        print(f"[URLODDataset] Pre-loaded {total_loaded}/{total} images to disk cache")
+
+        return total_loaded
 
     def get_num_classes(self) -> int:
         """Get number of classes."""

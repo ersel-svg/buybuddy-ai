@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from schemas.data_loading import DataLoadingConfig
+
 
 # ===========================================
 # Image Schemas
@@ -321,6 +323,12 @@ class ODTrainingConfigBase(BaseModel):
     val_split: float = Field(default=0.15, description="Validation split ratio")
     test_split: float = Field(default=0.05, description="Test split ratio")
     seed: int = Field(default=42, description="Random seed for reproducibility")
+
+    # Data loading configuration
+    data_loading: Optional[DataLoadingConfig] = Field(
+        default=None,
+        description="Image preloading and dataloader configuration"
+    )
 
 
 class ODTrainingRunCreate(BaseModel):

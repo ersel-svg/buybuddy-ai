@@ -204,6 +204,23 @@ def get_training_config(job_input: dict) -> dict:
     config.setdefault("save_every_n_epochs", 1)
     config.setdefault("eval_every_n_epochs", 1)
 
+    # NEW: Configurable training parameters (previously hardcoded)
+    config.setdefault("head_lr_multiplier", 10)      # Head LR = base_lr * multiplier
+    config.setdefault("scheduler_eta_min", 1e-6)    # Scheduler minimum LR
+    config.setdefault("val_batch_multiplier", 2)    # Val batch = train batch * multiplier
+    # config.setdefault("dataloader_workers", None)  # None = auto-detect
+
+    # NEW: Preload config (for dataset image prefetching)
+    # Can be overridden from API for different dataset sizes
+    preload_config = config.get("preload_config", {})
+    preload_config.setdefault("enabled", True)        # Prefetch images before training
+    preload_config.setdefault("batched", False)       # Default: single-pass (existing behavior)
+    preload_config.setdefault("batch_size", 500)      # Images per batch (if batched=True)
+    preload_config.setdefault("max_workers", 32)      # Parallel download threads
+    preload_config.setdefault("http_timeout", 30)     # HTTP request timeout
+    preload_config.setdefault("max_connections", 50)  # HTTP connection pool size
+    config["preload_config"] = preload_config
+
     return config
 
 
@@ -596,12 +613,16 @@ def handler(job):
             # Create datasets with training_images
             report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
 
+            # Get preload config from training config
+            preload_config = config.get("preload_config", {})
+
             train_dataset = ProductDataset(
                 products=train_data,
                 model_type=model_type,
                 augmentation_strength=config.get("augmentation_strength", "moderate"),
                 is_training=True,
                 training_images=train_images,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
 
             val_dataset = ProductDataset(
@@ -610,6 +631,7 @@ def handler(job):
                 augmentation_strength="none",
                 is_training=False,
                 training_images=val_images,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
 
             test_dataset = ProductDataset(
@@ -618,6 +640,7 @@ def handler(job):
                 augmentation_strength="none",
                 is_training=False,
                 training_images=test_images,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
         else:
             # LEGACY FORMAT: Fetch from Supabase using UPCStratifiedSplitter
@@ -647,11 +670,15 @@ def handler(job):
             # Create datasets (legacy format, no training_images)
             report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
 
+            # Get preload config from training config (LEGACY format)
+            preload_config = config.get("preload_config", {})
+
             train_dataset = ProductDataset(
                 products=train_data,
                 model_type=model_type,
                 augmentation_strength=config.get("augmentation_strength", "moderate"),
                 is_training=True,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
 
             val_dataset = ProductDataset(
@@ -659,6 +686,7 @@ def handler(job):
                 model_type=model_type,
                 augmentation_strength="none",
                 is_training=False,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
 
             test_dataset = ProductDataset(
@@ -666,6 +694,7 @@ def handler(job):
                 model_type=model_type,
                 augmentation_strength="none",
                 is_training=False,
+                preload_config=preload_config,  # NEW: Configurable preload settings
             )
 
         # Initialize trainer (UnifiedTrainer handles all feature toggles via config)

@@ -262,6 +262,8 @@ class UnifiedTrainer:
         """Build optimizer with LLRD if enabled."""
         lr = self.config.get("learning_rate", 1e-4)
         weight_decay = self.config.get("weight_decay", 0.01)
+        # Head LR multiplier - configurable (default: 10 for backward compatibility)
+        head_lr_multiplier = self.config.get("head_lr_multiplier", 10)
 
         if self.config.get("use_llrd", True):
             # Get layer-wise params from backbone
@@ -272,16 +274,16 @@ class UnifiedTrainer:
                 weight_decay=weight_decay,
             )
 
-            # Add head params with higher LR
+            # Add head params with higher LR (configurable multiplier)
             head_params = [
                 {
                     "params": self.model.pooling.parameters(),
-                    "lr": lr * 10,
+                    "lr": lr * head_lr_multiplier,
                     "weight_decay": weight_decay,
                 },
                 {
                     "params": self.model.projection.parameters(),
-                    "lr": lr * 10,
+                    "lr": lr * head_lr_multiplier,
                     "weight_decay": weight_decay,
                 },
             ]
@@ -289,7 +291,7 @@ class UnifiedTrainer:
             if self.model.arcface is not None:
                 head_params.append({
                     "params": self.model.arcface.parameters(),
-                    "lr": lr * 10,
+                    "lr": lr * head_lr_multiplier,
                     "weight_decay": weight_decay,
                 })
 
@@ -306,6 +308,8 @@ class UnifiedTrainer:
         """Build learning rate scheduler with warmup."""
         epochs = self.config.get("epochs", 10)
         warmup_epochs = self.config.get("warmup_epochs", 1)
+        # Scheduler eta_min - configurable (default: 1e-6 for backward compatibility)
+        scheduler_eta_min = self.config.get("scheduler_eta_min", 1e-6)
 
         warmup_steps = warmup_epochs * steps_per_epoch
         total_steps = epochs * steps_per_epoch
@@ -322,7 +326,7 @@ class UnifiedTrainer:
                 self.optimizer,
                 T_0=max(1, total_steps),
                 T_mult=1,
-                eta_min=1e-6,
+                eta_min=scheduler_eta_min,
             )
 
         # If no steps left after warmup, just use warmup scheduler
@@ -346,7 +350,7 @@ class UnifiedTrainer:
             self.optimizer,
             T_0=cosine_steps,
             T_mult=1,
-            eta_min=1e-6,
+            eta_min=scheduler_eta_min,
         )
 
         scheduler = SequentialLR(
@@ -406,7 +410,9 @@ class UnifiedTrainer:
         # Use num_workers=0 when images are prefetched (in-memory access)
         # This avoids multiprocessing overhead and memory issues
         use_prefetch = getattr(train_dataset, "_prefetch_complete", False)
-        num_workers = 0 if use_prefetch else 4
+        # DataLoader workers - configurable (default: 0 if prefetched, 4 otherwise)
+        default_workers = 0 if use_prefetch else 4
+        num_workers = self.config.get("dataloader_workers", default_workers)
 
         if self.use_pk_sampling:
             # Extract labels and domains from dataset
@@ -529,11 +535,15 @@ class UnifiedTrainer:
         val_loader = None
         if val_dataset is not None:
             val_prefetched = getattr(val_dataset, "_prefetch_complete", False)
+            # Val batch multiplier - configurable (default: 2 for backward compatibility)
+            val_batch_multiplier = self.config.get("val_batch_multiplier", 2)
+            val_default_workers = 0 if val_prefetched else 4
+            val_num_workers = self.config.get("dataloader_workers", val_default_workers)
             val_loader = DataLoader(
                 val_dataset,
-                batch_size=batch_size * 2,
+                batch_size=batch_size * val_batch_multiplier,
                 shuffle=False,
-                num_workers=0 if val_prefetched else 4,
+                num_workers=val_num_workers,
                 pin_memory=True,
             )
 
