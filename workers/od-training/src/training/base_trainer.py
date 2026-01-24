@@ -776,14 +776,20 @@ class SOTABaseTrainer(ABC):
             # Create FP16 inference-only checkpoint (much smaller, faster upload)
             # Use EMA weights if available (usually better for inference)
             if self.ema is not None:
-                model_weights = self.ema.state_dict()
+                # EMA stores shadow model, get its state_dict directly
+                model_weights = self.ema.shadow.state_dict()
             else:
                 model_weights = self.model.state_dict()
 
             # Convert to FP16 for smaller file size (~50% reduction)
+            # Only convert tensors with float32 dtype, skip non-tensors
+            def to_fp16(v):
+                if torch.is_tensor(v) and v.dtype == torch.float32:
+                    return v.half()
+                return v
+
             inference_checkpoint = {
-                "model_state_dict": {k: v.half() if v.dtype == torch.float32 else v
-                                     for k, v in model_weights.items()},
+                "model_state_dict": {k: to_fp16(v) for k, v in model_weights.items()},
                 "epoch": epoch,
                 "metrics": metrics,
                 "best_map": self.best_map,
