@@ -242,6 +242,7 @@ def save_metrics_history(
     try:
         data = {
             "training_run_id": training_run_id,
+            "training_type": "embedding",  # Unified table requires training_type
             "epoch": epoch + 1,  # 1-indexed for display
             "train_loss": train_metrics.get("loss"),
             "arcface_loss": train_metrics.get("arcface_loss"),
@@ -257,10 +258,10 @@ def save_metrics_history(
             "curriculum_phase": curriculum_phase,
         }
 
-        # Upsert (update if exists, insert if not)
+        # Upsert with new unique constraint (training_run_id, training_type, epoch)
         client.table("training_metrics_history").upsert(
             data,
-            on_conflict="training_run_id,epoch"
+            on_conflict="training_run_id,training_type,epoch"
         ).execute()
 
         return True

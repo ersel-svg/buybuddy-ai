@@ -71,6 +71,8 @@ import {
   Search,
   Cpu,
 } from "lucide-react";
+import { DataLoadingConfigPanel } from "@/components/training/DataLoadingConfig";
+import type { DataLoadingConfig } from "@/types";
 
 interface TrainingRun {
   id: string;
@@ -138,6 +140,7 @@ export default function CLSTrainingPage() {
   const [batchSize, setBatchSize] = useState(32);
   const [learningRate, setLearningRate] = useState(0.0001);
   const [augmentationPreset, setAugmentationPreset] = useState("sota");
+  const [dataLoadingConfig, setDataLoadingConfig] = useState<DataLoadingConfig | undefined>(undefined);
 
   // Models tab state
   const [modelsSearchQuery, setModelsSearchQuery] = useState("");
@@ -190,6 +193,7 @@ export default function CLSTrainingPage() {
           use_ema: true,
           mixed_precision: true,
           early_stopping: true,
+          data_loading: dataLoadingConfig,
         },
       });
     },
@@ -282,6 +286,7 @@ export default function CLSTrainingPage() {
     setBatchSize(32);
     setLearningRate(0.0001);
     setAugmentationPreset("sota");
+    setDataLoadingConfig(undefined);
   };
 
   const getStatusBadge = (status: string) => {
@@ -639,10 +644,10 @@ export default function CLSTrainingPage() {
                           </div>
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {model.accuracy !== undefined ? `${(model.accuracy * 100).toFixed(2)}%` : "-"}
+                          {model.accuracy != null ? `${model.accuracy.toFixed(2)}%` : "-"}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {model.f1_score !== undefined ? model.f1_score.toFixed(4) : "-"}
+                          {model.f1_score != null ? model.f1_score.toFixed(4) : "-"}
                         </TableCell>
                         <TableCell className="text-right">
                           {model.num_classes}
@@ -689,6 +694,23 @@ export default function CLSTrainingPage() {
                                 </DropdownMenuItem>
                               )}
                               <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onClick={async () => {
+                                  try {
+                                    const urls = await apiClient.getCLSModelDownloadUrls(model.id);
+                                    if (urls.checkpoint_url) {
+                                      window.open(urls.checkpoint_url, "_blank");
+                                    } else {
+                                      toast.error("No checkpoint available for download");
+                                    }
+                                  } catch (error) {
+                                    toast.error("Failed to get download URL");
+                                  }
+                                }}
+                              >
+                                <Download className="h-4 w-4 mr-2" />
+                                Download Checkpoint
+                              </DropdownMenuItem>
                               <DropdownMenuItem
                                 className="text-destructive"
                                 onClick={() => {
@@ -851,6 +873,13 @@ export default function CLSTrainingPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Data Loading Config */}
+            <DataLoadingConfigPanel
+              value={dataLoadingConfig}
+              onChange={setDataLoadingConfig}
+              showDataLoader={true}
+            />
 
             {/* Info */}
             <div className="p-4 bg-muted rounded-lg text-sm space-y-1">

@@ -435,3 +435,22 @@ async def training_webhook(
     supabase_service.client.table("od_training_runs").update(update_data).eq("id", training_run_id).execute()
 
     return {"status": "ok"}
+
+
+@router.get("/{training_run_id}/metrics-history")
+async def get_metrics_history(training_run_id: str):
+    """
+    Get epoch-by-epoch metrics history for a training run.
+    Fetches from unified training_metrics_history table.
+    """
+    result = supabase_service.client.table("training_metrics_history").select(
+        "epoch, train_loss, val_loss, map, map50, map75, learning_rate, created_at"
+    ).eq(
+        "training_run_id", training_run_id
+    ).eq(
+        "training_type", "od"
+    ).order(
+        "epoch", desc=False
+    ).execute()
+
+    return result.data or []

@@ -4,6 +4,7 @@ import { useState, use, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +17,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   ArrowLeft,
   RefreshCw,
@@ -29,7 +29,6 @@ import {
   StopCircle,
   Activity,
   BarChart3,
-  Terminal,
   Settings,
   Database,
   Cpu,
@@ -37,6 +36,8 @@ import {
   TrendingUp,
   Award,
   HelpCircle,
+  Download,
+  ExternalLink,
 } from "lucide-react";
 import {
   LineChart,
@@ -181,9 +182,9 @@ function CLSMetricsChart({
               tick={{ fontSize: 11, fill: "#9ca3af" }}
               tickLine={{ stroke: "#6b7280" }}
               axisLine={{ stroke: "#6b7280" }}
-              tickFormatter={(value) => `${(value * 100).toFixed(0)}%`}
+              tickFormatter={(value) => `${value.toFixed(0)}%`}
               label={{ value: "Accuracy (%)", angle: 90, position: "insideRight", fontSize: 11, fill: "#9ca3af" }}
-              domain={[0, 1]}
+              domain={[0, 100]}
             />
           )}
           <Tooltip
@@ -198,7 +199,8 @@ function CLSMetricsChart({
               const numValue = typeof value === "number" ? value : 0;
               const metricName = name as string;
               if (metricName === "accuracy" || metricName === "f1") {
-                return [`${(numValue * 100).toFixed(2)}%`, metricLabels[metricName] || metricName];
+                // Accuracy and F1 are already stored as percentages (0-100)
+                return [`${numValue.toFixed(2)}%`, metricLabels[metricName] || metricName];
               }
               return [numValue.toFixed(4), metricLabels[metricName] || metricName];
             }}
@@ -258,26 +260,54 @@ export default function CLSTrainingDetailPage({
     },
   });
 
-  // Parse metrics from training data
+  // Fetch dataset details to show name
+  const { data: dataset } = useQuery({
+    queryKey: ["cls-dataset", training?.dataset_id],
+    queryFn: () => apiClient.getCLSDataset(training!.dataset_id),
+    enabled: !!training?.dataset_id,
+    staleTime: 60000,
+  });
+
+  // Fetch trained model when training is completed
+  const { data: trainedModels } = useQuery({
+    queryKey: ["cls-models-for-training", id],
+    queryFn: () => apiClient.getCLSModels({ training_run_id: id }),
+    enabled: training?.status === "completed",
+    staleTime: 60000,
+  });
+  const trainedModel = trainedModels?.[0];
+
+  // Fetch metrics history from unified table
+  const { data: metricsHistory } = useQuery({
+    queryKey: ["cls-training-metrics", id],
+    queryFn: () => apiClient.getCLSTrainingMetricsHistory(id),
+    enabled: !!training,
+    refetchInterval: (query) => {
+      // Refetch while training is in progress
+      if (training && ["training", "preparing"].includes(training.status)) {
+        return 5000;
+      }
+      return false;
+    },
+  });
+
+  // Parse metrics from history data
+  // Note: Backend stores accuracy as percentage (0-100), not decimal (0-1)
   const metrics = useMemo(() => {
-    if (!training?.metrics_history) return [];
+    if (!metricsHistory || metricsHistory.length === 0) return [];
     try {
-      return (Array.isArray(training.metrics_history) ? training.metrics_history : []).map(m => ({
-        epoch: (m.epoch as number) ?? 0,
-        loss: m.loss as number | undefined,
-        accuracy: m.accuracy as number | undefined,
-        f1: m.f1 as number | undefined,
-        val_loss: m.val_loss as number | undefined,
-        timestamp: (m.timestamp as string) ?? new Date().toISOString(),
+      return metricsHistory.map(m => ({
+        epoch: m.epoch ?? 0,
+        loss: m.train_loss,
+        accuracy: m.val_accuracy,
+        f1: m.val_f1,
+        val_loss: m.val_loss,
+        timestamp: m.created_at ?? new Date().toISOString(),
       }));
     } catch {
       return [];
     }
-  }, [training?.metrics_history]);
-
-  // Logs are not available in the training run response
-  // They would need a separate API endpoint if needed
-  const logs: string[] = [];
+  }, [metricsHistory]);
 
   // Cancel training mutation
   const cancelTrainingMutation = useMutation({
@@ -449,7 +479,7 @@ export default function CLSTrainingDetailPage({
               <div className="text-center">
                 <p className="text-2xl font-bold">
                   {training.best_accuracy !== null && training.best_accuracy !== undefined
-                    ? `${(training.best_accuracy * 100).toFixed(1)}%`
+                    ? `${training.best_accuracy.toFixed(1)}%`
                     : "-"}
                 </p>
                 <p className="text-xs text-muted-foreground">Best Accuracy</p>
@@ -484,6 +514,54 @@ export default function CLSTrainingDetailPage({
         </Card>
       )}
 
+      {/* Trained Model Success Card */}
+      {training.status === "completed" && trainedModel && (
+        <Card className="border-green-500 bg-green-50 dark:bg-green-950/20">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-start gap-3">
+                <CheckCircle className="h-5 w-5 text-green-600 mt-0.5" />
+                <div>
+                  <p className="font-medium text-green-700 dark:text-green-400">
+                    Training Completed Successfully
+                  </p>
+                  <p className="text-sm text-green-600/80 dark:text-green-400/80 mt-1">
+                    Model "{trainedModel.name}" is ready for use
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      const urls = await apiClient.getCLSModelDownloadUrls(trainedModel.id);
+                      if (urls.checkpoint_url) {
+                        window.open(urls.checkpoint_url, "_blank");
+                      } else {
+                        toast.error("No checkpoint available");
+                      }
+                    } catch {
+                      toast.error("Failed to get download URL");
+                    }
+                  }}
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Download
+                </Button>
+                <Link href="/classification/training?tab=models">
+                  <Button variant="default" size="sm">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    View Model
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
@@ -494,10 +572,6 @@ export default function CLSTrainingDetailPage({
           <TabsTrigger value="metrics" className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4" />
             Metrics
-          </TabsTrigger>
-          <TabsTrigger value="logs" className="flex items-center gap-2">
-            <Terminal className="h-4 w-4" />
-            Logs
           </TabsTrigger>
           <TabsTrigger value="config" className="flex items-center gap-2">
             <Settings className="h-4 w-4" />
@@ -529,9 +603,14 @@ export default function CLSTrainingDetailPage({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-lg font-semibold truncate">{training.dataset_id.slice(0, 8)}...</p>
+                <Link
+                  href={`/classification/datasets/${training.dataset_id}`}
+                  className="text-lg font-semibold truncate hover:underline text-primary"
+                >
+                  {dataset?.name || training.dataset_id.slice(0, 8) + "..."}
+                </Link>
                 <p className="text-xs text-muted-foreground">
-                  {training.dataset_version_id ? `Version: ${training.dataset_version_id.slice(0, 8)}` : "Latest"}
+                  {dataset ? `${dataset.labeled_image_count || 0} labeled images` : "Loading..."}
                 </p>
               </CardContent>
             </Card>
@@ -567,7 +646,7 @@ export default function CLSTrainingDetailPage({
               <CardContent>
                 <p className="text-lg font-semibold">
                   {training.best_accuracy !== null && training.best_accuracy !== undefined
-                    ? `${(training.best_accuracy * 100).toFixed(2)}%`
+                    ? `${training.best_accuracy.toFixed(2)}%`
                     : "-"}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -599,7 +678,7 @@ export default function CLSTrainingDetailPage({
                         )}
                         {m.accuracy !== undefined && (
                           <span className="text-muted-foreground">
-                            Acc: <span className="font-medium text-green-600">{(m.accuracy * 100).toFixed(2)}%</span>
+                            Acc: <span className="font-medium text-green-600">{m.accuracy.toFixed(2)}%</span>
                           </span>
                         )}
                         {m.f1 !== undefined && (
@@ -697,13 +776,13 @@ export default function CLSTrainingDetailPage({
                         <tr key={idx} className="border-b last:border-0 hover:bg-muted/50">
                           <td className="py-2 px-2 font-medium">{m.epoch}</td>
                           <td className="py-2 px-2 font-mono text-red-600 dark:text-red-400">
-                            {m.loss !== undefined ? m.loss.toFixed(4) : "-"}
+                            {m.loss != null ? m.loss.toFixed(4) : "-"}
                           </td>
                           <td className="py-2 px-2 font-mono text-green-600 dark:text-green-400">
-                            {m.accuracy !== undefined ? `${(m.accuracy * 100).toFixed(2)}%` : "-"}
+                            {m.accuracy != null ? `${m.accuracy.toFixed(2)}%` : "-"}
                           </td>
                           <td className="py-2 px-2 font-mono text-blue-600 dark:text-blue-400">
-                            {m.f1 !== undefined ? m.f1.toFixed(4) : "-"}
+                            {m.f1 != null ? m.f1.toFixed(4) : "-"}
                           </td>
                           <td className="py-2 px-2 text-muted-foreground">
                             {new Date(m.timestamp).toLocaleTimeString()}
@@ -716,29 +795,6 @@ export default function CLSTrainingDetailPage({
               </CardContent>
             </Card>
           )}
-        </TabsContent>
-
-        <TabsContent value="logs" className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Terminal className="h-5 w-5" />
-                Training Logs
-              </CardTitle>
-              <CardDescription>Real-time training output</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[500px] w-full rounded-md border bg-slate-950 p-4">
-                {!logs || logs.length === 0 ? (
-                  <p className="text-slate-400 text-sm">No logs available yet...</p>
-                ) : (
-                  <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap">
-                    {logs.join("\n")}
-                  </pre>
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
         </TabsContent>
 
         <TabsContent value="config" className="mt-6">

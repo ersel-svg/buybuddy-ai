@@ -32,13 +32,15 @@ import type {
   ProductCandidatesResponse,
   CollectionInfo,
   EmbeddingJobCreateAdvanced,
-  // New 3-tab extraction types
+  // New 4-tab extraction types
   MatchingExtractionRequest,
   MatchingExtractionResponse,
   TrainingExtractionRequest,
   TrainingExtractionResponse,
   EvaluationExtractionRequest,
   EvaluationExtractionResponse,
+  ProductionExtractionRequest,
+  ProductionExtractionResponse,
   MatchedProductsStats,
   EmbeddingCollection,
   CutoutProductsResponse,
@@ -1338,6 +1340,16 @@ class ApiClient {
     });
   }
 
+  // Tab 4: Production Extraction (SOTA: multi-view + augmentation for inference)
+  async startProductionExtraction(
+    params: ProductionExtractionRequest
+  ): Promise<ProductionExtractionResponse> {
+    return this.request<ProductionExtractionResponse>("/api/v1/embeddings/jobs/production", {
+      method: "POST",
+      body: params,
+    });
+  }
+
   // Matched Products Stats (for Training tab)
   async getMatchedProductsStats(): Promise<MatchedProductsStats> {
     return this.request<MatchedProductsStats>("/api/v1/embeddings/matched-products/stats");
@@ -1844,6 +1856,24 @@ class ApiClient {
     });
   }
 
+  async deleteODImagesByFiltersAsync(
+    filters: {
+      search?: string;
+      statuses?: string;
+      sources?: string;
+      folders?: string;
+      merchant_ids?: string;
+      store_ids?: string;
+    },
+    skipInDatasets: boolean = true
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request("/api/v1/od/images/bulk/delete-by-filters/async", {
+      method: "POST",
+      body: filters,
+      params: { skip_in_datasets: skipInDatasets },
+    });
+  }
+
   async addFilteredImagesToODDataset(
     datasetId: string,
     filters: {
@@ -1856,6 +1886,23 @@ class ApiClient {
     }
   ): Promise<{ added: number; skipped: number; total_matched: number; errors: string[] }> {
     return this.request(`/api/v1/od/images/bulk/add-to-dataset-by-filters?dataset_id=${datasetId}`, {
+      method: "POST",
+      body: filters,
+    });
+  }
+
+  async addFilteredImagesToODDatasetAsync(
+    datasetId: string,
+    filters: {
+      search?: string;
+      statuses?: string;
+      sources?: string;
+      folders?: string;
+      merchant_ids?: string;
+      store_ids?: string;
+    }
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/api/v1/od/images/bulk/add-to-dataset-by-filters/async?dataset_id=${datasetId}`, {
       method: "POST",
       body: filters,
     });
@@ -2018,6 +2065,27 @@ class ApiClient {
     return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-remove`, { method: "POST", body: imageIds });
   }
 
+  async removeImagesFromODDatasetBulkAsync(
+    datasetId: string,
+    options: {
+      imageIds?: string[];
+      statuses?: string;
+      hasAnnotations?: boolean;
+      deleteCompletely?: boolean;
+    }
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    const params: Record<string, string | boolean> = {};
+    if (options.statuses) params.statuses = options.statuses;
+    if (options.hasAnnotations !== undefined) params.has_annotations = options.hasAnnotations;
+    if (options.deleteCompletely !== undefined) params.delete_completely = options.deleteCompletely;
+
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-remove/async`, {
+      method: "POST",
+      body: options.imageIds || null,
+      params,
+    });
+  }
+
   async updateODDatasetImageStatus(datasetId: string, imageId: string, status: string): Promise<{ id: string }> {
     return this.request(`/api/v1/od/datasets/${datasetId}/images/${imageId}/status`, { method: "PATCH", params: { status } });
   }
@@ -2035,6 +2103,26 @@ class ApiClient {
     if (options?.currentStatus) params.current_status = options.currentStatus;
     if (options?.hasAnnotations !== undefined) params.has_annotations = options.hasAnnotations;
     return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-status-by-filter`, { method: "POST", params });
+  }
+
+  async updateODDatasetImageStatusBulkAsync(
+    datasetId: string,
+    newStatus: string,
+    options: {
+      imageIds?: string[];
+      currentStatus?: string;
+      hasAnnotations?: boolean;
+    }
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    const params: Record<string, string | boolean> = { new_status: newStatus };
+    if (options.currentStatus) params.current_status = options.currentStatus;
+    if (options.hasAnnotations !== undefined) params.has_annotations = options.hasAnnotations;
+
+    return this.request(`/api/v1/od/datasets/${datasetId}/images/bulk-status/async`, {
+      method: "POST",
+      body: options.imageIds || null,
+      params,
+    });
   }
 
   async getODDatasetStats(datasetId: string): Promise<{
@@ -2729,6 +2817,26 @@ class ApiClient {
     });
   }
 
+  async exportODDatasetAsync(
+    datasetId: string,
+    params: {
+      format: "yolo" | "coco";
+      include_images?: boolean;
+      version_id?: string;
+      split?: string;
+      config?: {
+        train_split?: number;
+        val_split?: number;
+        test_split?: number;
+      };
+    }
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/export/async`, {
+      method: "POST",
+      body: params,
+    });
+  }
+
   // ===========================================
   // OD Dataset Versioning
   // ===========================================
@@ -3213,6 +3321,16 @@ class ApiClient {
     });
   }
 
+  async executeBulkUpdateAsync(params: {
+    updates: Array<{ product_id: string; fields: Record<string, unknown> }>;
+    mode: "strict" | "lenient";
+  }): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request("/api/v1/products/bulk-update/execute/async", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+  }
+
   // ===========================================
   // Classification Module
   // ===========================================
@@ -3610,6 +3728,70 @@ class ApiClient {
     });
   }
 
+  // CLS Async Bulk Operations
+  async deleteCLSImagesAsync(
+    imageIds: string[]
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request("/api/v1/classification/images/bulk/delete/async", {
+      method: "POST",
+      body: { image_ids: imageIds },
+    });
+  }
+
+  async addCLSImagesToDatasetAsync(
+    datasetId: string,
+    imageIds: string[]
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request("/api/v1/classification/images/bulk/add-to-dataset/async", {
+      method: "POST",
+      body: { dataset_id: datasetId, image_ids: imageIds },
+    });
+  }
+
+  async removeCLSImagesFromDatasetAsync(
+    datasetId: string,
+    imageIds: string[],
+    deleteCompletely: boolean = false
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/api/v1/classification/datasets/${datasetId}/images/remove/async`, {
+      method: "POST",
+      body: { image_ids: imageIds },
+      params: { delete_completely: deleteCompletely },
+    });
+  }
+
+  async updateCLSTagsAsync(
+    imageIds: string[],
+    action: "add" | "remove" | "replace",
+    tags: string[]
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request("/api/v1/classification/images/bulk/tags/async", {
+      method: "POST",
+      body: { image_ids: imageIds, action, tags },
+    });
+  }
+
+  async bulkSetCLSLabelsAsync(
+    datasetId: string,
+    imageIds: string[],
+    classId: string
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/api/v1/classification/labels/datasets/${datasetId}/bulk/async`, {
+      method: "POST",
+      body: { image_ids: imageIds, class_id: classId },
+    });
+  }
+
+  async bulkClearCLSLabelsAsync(
+    datasetId: string,
+    imageIds: string[]
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/api/v1/classification/labels/datasets/${datasetId}/bulk-clear/async`, {
+      method: "POST",
+      body: { image_ids: imageIds },
+    });
+  }
+
   // CLS Labeling Workflow
   async getCLSLabelingQueue(datasetId: string, params?: {
     mode?: "all" | "unlabeled" | "review" | "random" | "low_confidence";
@@ -3728,6 +3910,18 @@ class ApiClient {
     return this.request(`/api/v1/classification/training/${id}`);
   }
 
+  async getCLSTrainingMetricsHistory(trainingRunId: string): Promise<Array<{
+    epoch: number;
+    train_loss?: number;
+    val_loss?: number;
+    val_accuracy?: number;
+    val_f1?: number;
+    learning_rate?: number;
+    created_at: string;
+  }>> {
+    return this.request(`/api/v1/classification/training/${trainingRunId}/metrics-history`);
+  }
+
   async createCLSTrainingRun(data: {
     name: string;
     description?: string;
@@ -3780,6 +3974,7 @@ class ApiClient {
     limit?: number;
     model_type?: string;
     is_active?: boolean;
+    training_run_id?: string;
   }): Promise<Array<{
     id: string;
     name: string;

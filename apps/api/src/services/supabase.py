@@ -3888,12 +3888,14 @@ class SupabaseService:
     async def get_training_metrics_history(
         self,
         run_id: str,
+        training_type: str = "embedding",
     ) -> list[dict[str, Any]]:
         """Get training metrics history for a run (per-epoch metrics for charts)."""
         response = (
             self.client.table("training_metrics_history")
             .select("*")
             .eq("training_run_id", run_id)
+            .eq("training_type", training_type)
             .order("epoch", desc=False)
             .execute()
         )
