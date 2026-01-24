@@ -9,9 +9,11 @@ SOTA Features:
 - EMA (Exponential Moving Average)
 - LLRD (Layer-wise Learning Rate Decay)
 - Warmup + Cosine LR Scheduler
-- Mixed Precision (FP16)
+- Mixed Precision (FP16) training and inference
 - Mosaic, MixUp, CopyPaste augmentations
 - COCO mAP evaluation
+- FP16 inference-only checkpoints (~50% smaller)
+- Streaming upload (memory efficient)
 
 Progress Updates:
 - Direct Supabase writes (no webhook dependency)
