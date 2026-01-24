@@ -365,6 +365,15 @@ def update_training_run(
         print(f"[WARNING] Cannot update training run: Supabase client not available")
         return
 
+    # Check if job is already cancelled - don't overwrite
+    try:
+        current = client.table("od_training_runs").select("status").eq("id", training_run_id).single().execute()
+        if current.data and current.data.get("status") == "cancelled":
+            print(f"[INFO] Job {training_run_id} is cancelled, skipping update")
+            return
+    except Exception as e:
+        print(f"[WARNING] Failed to check cancelled status: {e}")
+
     last_error = None
     for attempt in range(max_retries):
         try:

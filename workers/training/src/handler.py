@@ -240,6 +240,12 @@ def report_progress(
         return
 
     try:
+        # Check current status - don't overwrite if already cancelled
+        current = client.table("training_runs").select("status").eq("id", job_id).single().execute()
+        if current.data and current.data.get("status") == "cancelled":
+            print(f"[Progress] Job {job_id} is cancelled, ignoring status update")
+            return
+
         current_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         payload = {
             "status": status,

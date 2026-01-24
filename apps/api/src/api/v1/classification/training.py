@@ -596,6 +596,12 @@ async def training_webhook(payload: dict):
     if not training_id:
         raise HTTPException(status_code=400, detail="training_run_id required")
 
+    # Check current status - don't overwrite if already cancelled
+    current_run = supabase_service.client.table("cls_training_runs").select("status").eq("id", training_id).single().execute()
+    if current_run.data and current_run.data.get("status") == "cancelled":
+        logger.info(f"[CLS Training Webhook] Ignoring update for cancelled job {training_id}")
+        return {"status": "ok", "message": "Job already cancelled, update ignored"}
+
     update_data = {}
 
     # Update status

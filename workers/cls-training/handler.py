@@ -205,6 +205,34 @@ def retry_request(
     raise last_exception
 
 
+def is_training_cancelled(
+    supabase_url: str,
+    supabase_key: str,
+    table: str,
+    id_field: str,
+    id_value: str,
+    timeout: int = 10,
+) -> bool:
+    """Check if a training job is cancelled in Supabase."""
+    import httpx
+    try:
+        response = httpx.get(
+            f"{supabase_url}/rest/v1/{table}?{id_field}=eq.{id_value}&select=status",
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+            },
+            timeout=timeout,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                return data[0].get("status") == "cancelled"
+    except Exception as e:
+        print(f"⚠️  Failed to check cancelled status: {e}")
+    return False
+
+
 def supabase_update(
     supabase_url: str,
     supabase_key: str,
@@ -213,11 +241,18 @@ def supabase_update(
     id_value: str,
     data: dict,
     timeout: int = 30,
+    check_cancelled: bool = True,
 ):
     """
     Update a Supabase record with retry logic.
+    If check_cancelled=True, will skip update if job is already cancelled.
     """
     import httpx
+
+    # Check if job is cancelled before updating
+    if check_cancelled and is_training_cancelled(supabase_url, supabase_key, table, id_field, id_value):
+        print(f"⚠️  Job {id_value} is cancelled, skipping update")
+        return None
 
     def do_request():
         return httpx.patch(

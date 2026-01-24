@@ -618,7 +618,11 @@ async def cancel_training_run(
     # Cancel RunPod job if exists
     if run.get("runpod_job_id"):
         try:
-            await runpod_service.cancel_job(run["runpod_job_id"])
+            from services.runpod import EndpointType
+            await runpod_service.cancel_job(
+                endpoint_type=EndpointType.TRAINING,
+                job_id=run["runpod_job_id"],
+            )
         except Exception:
             pass  # Best effort
 
