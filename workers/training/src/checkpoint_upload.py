@@ -115,7 +115,8 @@ def upload_checkpoint_to_storage(
         bucket_name = "checkpoints"
 
         # Get Supabase URL and key from client
-        supabase_url = client.supabase_url.rstrip('/')
+        # Note: supabase_url might be a URL object, convert to string first
+        supabase_url = str(client.supabase_url).rstrip('/')
         supabase_key = client.supabase_key
 
         print(f"[DEBUG] Storage path: {storage_path}")
