@@ -453,4 +453,18 @@ async def get_metrics_history(training_run_id: str):
         "epoch", desc=False
     ).execute()
 
-    return result.data or []
+    # Transform field names to match frontend expectations
+    transformed = []
+    for row in result.data or []:
+        transformed.append({
+            "epoch": row.get("epoch"),
+            "loss": row.get("train_loss"),  # Frontend expects 'loss'
+            "val_loss": row.get("val_loss"),
+            "map": row.get("map"),
+            "map_50": row.get("map50"),  # Frontend expects 'map_50'
+            "map_75": row.get("map75"),  # Frontend expects 'map_75'
+            "learning_rate": row.get("learning_rate"),
+            "timestamp": row.get("created_at"),  # Frontend expects 'timestamp'
+        })
+
+    return transformed

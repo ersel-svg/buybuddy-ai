@@ -3044,7 +3044,7 @@ class ApiClient {
       timestamp: string;
     }>
   > {
-    return this.request(`/api/v1/od/training/${trainingId}/metrics`);
+    return this.request(`/api/v1/od/training/${trainingId}/metrics-history`);
   }
 
   async getODTrainingLogs(trainingId: string, limit?: number): Promise<string[]> {
