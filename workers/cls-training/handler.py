@@ -819,6 +819,46 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                     if metrics.get("val_f1"):
                         update_data["best_f1"] = metrics["val_f1"]
 
+                    # === METRICS HISTORY TRACKING ===
+                    # Append current epoch metrics to metrics_history JSONB array
+                    try:
+                        from datetime import datetime
+                        import httpx
+
+                        # First, fetch current metrics_history
+                        headers = {
+                            "apikey": supabase_key,
+                            "Authorization": f"Bearer {supabase_key}",
+                        }
+                        fetch_url = f"{supabase_url}/rest/v1/cls_training_runs?id=eq.{training_run_id}&select=metrics_history"
+
+                        with httpx.Client(timeout=10) as client:
+                            response = client.get(fetch_url, headers=headers)
+                            if response.status_code == 200:
+                                data = response.json()
+                                if data and len(data) > 0:
+                                    metrics_history = data[0].get("metrics_history") or []
+                                else:
+                                    metrics_history = []
+                            else:
+                                metrics_history = []
+
+                        # Append new epoch metrics
+                        epoch_metrics = {
+                            "epoch": epoch + 1,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "train_loss": metrics.get("train_loss"),
+                            "val_loss": metrics.get("val_loss"),
+                            "val_acc": val_acc,
+                            "val_f1": metrics.get("val_f1"),
+                            "learning_rate": metrics.get("learning_rate"),
+                        }
+                        metrics_history.append(epoch_metrics)
+                        update_data["metrics_history"] = metrics_history
+
+                    except Exception as e:
+                        print(f"Metrics history update failed: {e}")
+
                     supabase_update(
                         supabase_url, supabase_key,
                         table="cls_training_runs",

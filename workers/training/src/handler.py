@@ -12,6 +12,7 @@ Handles training job requests with:
 import os
 import json
 import time
+import signal
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,66 @@ from supabase import create_client, Client
 
 # Global Supabase client (lazily initialized)
 _supabase_client: Optional[Client] = None
+
+# ============================================
+# Graceful Shutdown Tracking
+# ============================================
+
+_shutdown_requested = False
+_current_training_run_id: Optional[str] = None
+
+
+def is_shutdown_requested() -> bool:
+    """Check if shutdown has been requested."""
+    return _shutdown_requested
+
+
+def _update_training_run_status_on_shutdown(status: str, message: str = None):
+    """Update training run status in Supabase during shutdown."""
+    global _current_training_run_id
+
+    if not _current_training_run_id:
+        return
+
+    client = get_supabase_client()
+    if not client:
+        print(f"[Shutdown] No Supabase client, cannot update status")
+        return
+
+    try:
+        current_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        payload = {
+            "status": status,
+            "completed_at": current_time,
+            "updated_at": current_time,
+        }
+        if message:
+            payload["message"] = message[:1000]  # Truncate for DB
+
+        client.table("training_runs").update(payload).eq("id", _current_training_run_id).execute()
+        print(f"[Shutdown] Training run status updated to: {status}")
+    except Exception as e:
+        print(f"[Shutdown] Failed to update status: {e}")
+
+
+def _signal_handler(signum, frame):
+    """Handle shutdown signals (SIGTERM/SIGINT) gracefully."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    print(f"\n[Shutdown] Received {signal_name}. Initiating graceful shutdown...")
+    _update_training_run_status_on_shutdown("cancelled", f"Training interrupted by {signal_name}")
+
+
+def _register_signal_handlers(training_run_id: str):
+    """Register signal handlers for graceful shutdown."""
+    global _current_training_run_id, _shutdown_requested
+    _current_training_run_id = training_run_id
+    _shutdown_requested = False
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    print(f"[Shutdown] Signal handlers registered for training run: {training_run_id}")
 
 
 def get_supabase_client() -> Optional[Client]:
@@ -425,6 +486,9 @@ def handler(job):
     model_type = job_input["model_type"]
     checkpoint_url = job_input.get("checkpoint_url")
 
+    # Register signal handlers for graceful shutdown
+    _register_signal_handlers(training_job_id)
+
     print(f"=" * 60)
     print(f"Starting Training Job: {training_job_id}")
     print(f"Model Type: {model_type}")
@@ -715,6 +779,7 @@ def handler(job):
             val_dataset=val_dataset,
             progress_callback=progress_callback,
             epoch_callback=epoch_callback,
+            shutdown_checker=is_shutdown_requested,
         )
 
         # Evaluate on test set

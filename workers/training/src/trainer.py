@@ -471,6 +471,7 @@ class UnifiedTrainer:
         val_dataset,
         progress_callback: Optional[Callable] = None,
         epoch_callback: Optional[Callable] = None,
+        shutdown_checker: Optional[Callable[[], bool]] = None,
     ) -> dict:
         """
         Run training loop.
@@ -480,6 +481,7 @@ class UnifiedTrainer:
             val_dataset: Validation dataset
             progress_callback: Callback(epoch, batch, total_batches, metrics)
             epoch_callback: Callback(epoch, train_metrics, val_metrics, epoch_time, is_best, curriculum_phase)
+            shutdown_checker: Optional function that returns True if shutdown requested
 
         Returns:
             Training result dictionary
@@ -578,6 +580,11 @@ class UnifiedTrainer:
         print(f"  Mixed precision: {use_amp}")
 
         for epoch in range(self.start_epoch, epochs):
+            # Check for shutdown request at epoch start
+            if shutdown_checker and shutdown_checker():
+                print(f"\n[Shutdown] Graceful shutdown requested. Stopping after epoch {epoch}...")
+                break
+
             epoch_start = time.time()
 
             # Update curriculum phase if enabled
