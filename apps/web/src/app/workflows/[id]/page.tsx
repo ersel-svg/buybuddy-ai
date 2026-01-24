@@ -12,7 +12,6 @@ import {
   Panel,
   Handle,
   Position,
-  addEdge,
   applyNodeChanges,
   applyEdgeChanges,
   type Connection,
@@ -58,7 +57,45 @@ import {
   Search,
   GripVertical,
   Variable,
+  Maximize2,
+  LayoutGrid,
+  Combine,
+  RotateCw,
+  Sparkles,
+  Undo2,
+  Redo2,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
+  Command,
+  ChevronDown,
+  ChevronRight,
+  X,
+  Keyboard,
+  Info,
+  Repeat,
+  ListPlus,
+  Shuffle,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Node data type
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -79,27 +116,37 @@ const categoryColors: Record<string, string> = {
   model: "#8b5cf6",
   transform: "#10b981",
   logic: "#f59e0b",
+  visualization: "#ec4899",
   output: "#ef4444",
 };
 
 // Block icons
 const blockIcons: Record<string, React.ReactNode> = {
   image_input: <Image className="h-4 w-4" />,
+  parameter_input: <Variable className="h-4 w-4" />,
   detection: <ScanLine className="h-4 w-4" />,
   classification: <Layers className="h-4 w-4" />,
   embedding: <Cpu className="h-4 w-4" />,
   similarity_search: <Search className="h-4 w-4" />,
+  segmentation: <Box className="h-4 w-4" />,
   crop: <Scissors className="h-4 w-4" />,
+  resize: <Maximize2 className="h-4 w-4" />,
+  tile: <LayoutGrid className="h-4 w-4" />,
+  stitch: <Combine className="h-4 w-4" />,
+  rotate_flip: <RotateCw className="h-4 w-4" />,
+  normalize: <Sparkles className="h-4 w-4" />,
   blur_region: <EyeOff className="h-4 w-4" />,
   draw_boxes: <PenTool className="h-4 w-4" />,
-  segmentation: <Box className="h-4 w-4" />,
   condition: <GitBranch className="h-4 w-4" />,
   filter: <Filter className="h-4 w-4" />,
+  foreach: <Repeat className="h-4 w-4" />,
+  collect: <ListPlus className="h-4 w-4" />,
+  map: <Shuffle className="h-4 w-4" />,
   grid_builder: <Grid className="h-4 w-4" />,
   json_output: <FileJson className="h-4 w-4" />,
 };
 
-// Custom node component
+// Custom node component with enhanced visuals
 function WorkflowNodeComponent({
   data,
   selected,
@@ -112,42 +159,106 @@ function WorkflowNodeComponent({
 
   // Determine if node has input/output based on type
   const hasInput = data.type !== "image_input" && data.type !== "parameter_input";
-  const hasOutput = data.type !== "json_output" && data.type !== "grid_builder";
+  const hasOutput = data.type !== "json_output";
+
+  // Check if node is configured (has model selected for model blocks, etc)
+  const isConfigured = data.model_id ||
+    (data.config && Object.keys(data.config).length > 0) ||
+    data.type === "image_input" ||
+    data.type === "parameter_input";
 
   return (
     <div
-      className={`px-4 py-3 rounded-lg border-2 bg-card shadow-md min-w-[160px] transition-all relative ${
-        selected ? "ring-2 ring-primary ring-offset-2" : ""
+      className={`group relative rounded-xl transition-all duration-200 ${
+        selected
+          ? "scale-105"
+          : "hover:scale-[1.02]"
       }`}
-      style={{ borderColor: color }}
+      style={{
+        filter: selected ? `drop-shadow(0 0 12px ${color}40)` : undefined,
+      }}
     >
-      {/* Input Handle (left side) */}
-      {hasInput && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="image"
-          className="!w-3 !h-3 !bg-gray-400 hover:!bg-blue-500 !border-2 !border-white"
-        />
-      )}
-
-      <div className="flex items-center gap-2">
+      {/* Main node card */}
+      <div
+        className={`px-4 py-3 rounded-xl border-2 bg-card shadow-lg min-w-[180px] transition-all relative overflow-hidden ${
+          selected ? "border-opacity-100" : "border-opacity-60 hover:border-opacity-100"
+        }`}
+        style={{ borderColor: color }}
+      >
+        {/* Subtle gradient background */}
         <div
-          className="p-1.5 rounded"
-          style={{ backgroundColor: `${color}20`, color }}
-        >
-          {icon}
+          className="absolute inset-0 opacity-[0.03]"
+          style={{
+            background: `linear-gradient(135deg, ${color} 0%, transparent 60%)`
+          }}
+        />
+
+        {/* Input Handle (left side) */}
+        {hasInput && (
+          <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2">
+            <Handle
+              type="target"
+              position={Position.Left}
+              className="!w-3.5 !h-3.5 !bg-gradient-to-r !from-blue-400 !to-blue-500 !border-2 !border-white !shadow-md hover:!scale-125 !transition-transform"
+              style={{ position: 'relative', left: 0, transform: 'none' }}
+            />
+            {/* Port label on hover */}
+            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+              input
+            </span>
+          </div>
+        )}
+
+        {/* Node content */}
+        <div className="flex items-center gap-3 relative z-10">
+          <div
+            className="p-2 rounded-lg shrink-0 transition-all group-hover:scale-110"
+            style={{ backgroundColor: `${color}15`, color }}
+          >
+            {icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-sm truncate">{data.label}</div>
+            <div className="text-[10px] text-muted-foreground capitalize">
+              {data.type.replace(/_/g, " ")}
+            </div>
+          </div>
+          {/* Config status indicator */}
+          {!isConfigured && (
+            <div className="shrink-0">
+              <div className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" title="Needs configuration" />
+            </div>
+          )}
         </div>
-        <span className="font-medium text-sm">{data.label}</span>
+
+        {/* Output Handle (right side) */}
+        {hasOutput && (
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2">
+            <Handle
+              type="source"
+              position={Position.Right}
+              className="!w-3.5 !h-3.5 !bg-gradient-to-r !from-green-400 !to-green-500 !border-2 !border-white !shadow-md hover:!scale-125 !transition-transform"
+              style={{ position: 'relative', right: 0, transform: 'none' }}
+            />
+            {/* Port label on hover */}
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+              output
+            </span>
+          </div>
+        )}
+
+        {/* Category indicator line at bottom */}
+        <div
+          className="absolute bottom-0 left-4 right-4 h-0.5 rounded-full opacity-30"
+          style={{ backgroundColor: color }}
+        />
       </div>
 
-      {/* Output Handle (right side) */}
-      {hasOutput && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="image"
-          className="!w-3 !h-3 !bg-gray-400 hover:!bg-green-500 !border-2 !border-white"
+      {/* Selection ring */}
+      {selected && (
+        <div
+          className="absolute -inset-1 rounded-xl border-2 border-dashed opacity-40 pointer-events-none animate-pulse"
+          style={{ borderColor: color }}
         />
       )}
     </div>
@@ -166,79 +277,186 @@ interface BlockDef {
   category: string;
 }
 
-// Block palette component
+// Block palette component with search and collapsible categories
 function BlockPalette({
   blocks,
   onDragStart,
+  onQuickAdd,
 }: {
   blocks: BlockDef[];
   onDragStart: (event: React.DragEvent, block: BlockDef) => void;
+  onQuickAdd?: (block: BlockDef) => void;
 }) {
-  const categories = ["input", "model", "transform", "logic", "output"];
+  const [searchQuery, setSearchQuery] = useState("");
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+
+  const categories = ["input", "model", "transform", "logic", "visualization", "output"];
   const categoryLabels: Record<string, string> = {
     input: "Input",
     model: "Models",
     transform: "Transform",
     logic: "Logic",
+    visualization: "Visualization",
     output: "Output",
   };
 
-  return (
-    <div className="w-64 border-r bg-muted/30 flex flex-col">
-      <div className="p-3 border-b">
-        <h3 className="font-semibold text-sm">Blocks</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Drag blocks to canvas
-        </p>
-      </div>
-      <ScrollArea className="flex-1">
-        <div className="p-2 space-y-3">
-          {categories.map((category) => {
-            const safeBlocks = Array.isArray(blocks) ? blocks : [];
-            const categoryBlocks = safeBlocks.filter((b) => b.category === category);
-            if (categoryBlocks.length === 0) return null;
+  const safeBlocks = Array.isArray(blocks) ? blocks : [];
 
-            return (
-              <div key={category}>
-                <div
-                  className="text-xs font-medium uppercase tracking-wide mb-1.5 px-1"
-                  style={{ color: categoryColors[category] }}
-                >
-                  {categoryLabels[category]}
-                </div>
-                <div className="space-y-1">
-                  {categoryBlocks.map((block) => (
-                    <div
-                      key={block.type}
-                      draggable
-                      onDragStart={(e) => onDragStart(e, block)}
-                      className="flex items-center gap-2 p-2 rounded-md border bg-card hover:bg-accent cursor-grab active:cursor-grabbing transition-colors"
-                    >
-                      <GripVertical className="h-3 w-3 text-muted-foreground" />
-                      <div
-                        className="p-1 rounded"
-                        style={{
-                          backgroundColor: `${categoryColors[category]}20`,
-                          color: categoryColors[category],
-                        }}
-                      >
-                        {blockIcons[block.type] || <Box className="h-3 w-3" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium truncate">
-                          {block.display_name}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+  // Filter blocks by search query
+  const filteredBlocks = searchQuery.trim()
+    ? safeBlocks.filter(
+        (b) =>
+          b.display_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          b.type.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          b.description?.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : safeBlocks;
+
+  const toggleCategory = (category: string) => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <TooltipProvider delayDuration={300}>
+      <div className="w-64 border-r bg-muted/30 flex flex-col h-full overflow-hidden">
+        {/* Header with search */}
+        <div className="p-3 border-b space-y-2 shrink-0">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-sm">Blocks</h3>
+            <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+              {filteredBlocks.length}
+            </span>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search blocks..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 pl-7 pr-7 text-xs"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Drag to canvas or double-click to add
+          </p>
         </div>
-      </ScrollArea>
-    </div>
+
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-2 space-y-1">
+            {categories.map((category) => {
+              const categoryBlocks = filteredBlocks.filter((b) => b.category === category);
+              if (categoryBlocks.length === 0) return null;
+
+              const isCollapsed = collapsedCategories.has(category);
+
+              return (
+                <Collapsible
+                  key={category}
+                  open={!isCollapsed}
+                  onOpenChange={() => toggleCategory(category)}
+                >
+                  <CollapsibleTrigger className="flex items-center gap-1.5 w-full px-1 py-1.5 hover:bg-accent/50 rounded-md transition-colors">
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                    )}
+                    <span
+                      className="text-xs font-medium uppercase tracking-wide flex-1 text-left"
+                      style={{ color: categoryColors[category] }}
+                    >
+                      {categoryLabels[category]}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {categoryBlocks.length}
+                    </span>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="space-y-0.5 mt-1 ml-1">
+                      {categoryBlocks.map((block) => (
+                        <Tooltip key={block.type}>
+                          <TooltipTrigger asChild>
+                            <div
+                              draggable
+                              onDragStart={(e) => onDragStart(e, block)}
+                              onDoubleClick={() => onQuickAdd?.(block)}
+                              className="flex items-center gap-2 p-2 rounded-md border bg-card hover:bg-accent hover:border-primary/30 cursor-grab active:cursor-grabbing transition-all group"
+                            >
+                              <GripVertical className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                              <div
+                                className="p-1 rounded shrink-0"
+                                style={{
+                                  backgroundColor: `${categoryColors[category]}15`,
+                                  color: categoryColors[category],
+                                }}
+                              >
+                                {blockIcons[block.type] || <Box className="h-3 w-3" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-medium truncate">
+                                  {block.display_name}
+                                </div>
+                              </div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-[200px]">
+                            <p className="font-medium text-sm">{block.display_name}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {block.description || `Add ${block.display_name} to workflow`}
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      ))}
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+              );
+            })}
+
+            {/* No results message */}
+            {filteredBlocks.length === 0 && searchQuery && (
+              <div className="text-center py-8 text-muted-foreground">
+                <Search className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p className="text-xs">No blocks found for "{searchQuery}"</p>
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+
+        {/* Keyboard hint */}
+        <div className="p-2 border-t bg-muted/50 shrink-0">
+          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <Keyboard className="h-3 w-3" />
+            <span>Press</span>
+            <kbd className="px-1 py-0.5 bg-background border rounded text-[9px]">⌘K</kbd>
+            <span>for quick add</span>
+          </div>
+        </div>
+      </div>
+    </TooltipProvider>
   );
+}
+
+// History state for undo/redo
+interface HistoryState {
+  nodes: WorkflowNode[];
+  edges: Edge[];
 }
 
 // Main editor component
@@ -247,17 +465,144 @@ function WorkflowEditorContent() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, zoomIn, zoomOut, fitView, getZoom } = useReactFlow();
 
   const workflowId = params.id as string;
 
-  // State with proper types - use useState instead of useNodesState for better control
+  // State with proper types
   const [nodes, setNodes] = useState<WorkflowNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [parameters, setParameters] = useState<WorkflowParameter[]>([]);
   const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
   const [parametersOpen, setParametersOpen] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // History for undo/redo
+  const [history, setHistory] = useState<HistoryState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const isUndoRedo = useRef(false);
+
+  // Auto-save timer
+  const autoSaveTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Track zoom level
+  useEffect(() => {
+    const interval = setInterval(() => {
+      try {
+        setZoomLevel(getZoom());
+      } catch {
+        // Ignore if not mounted
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [getZoom]);
+
+  // Push to history (debounced)
+  const pushHistory = useCallback(() => {
+    if (isUndoRedo.current) {
+      isUndoRedo.current = false;
+      return;
+    }
+    setHistory((prev) => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push({ nodes: [...nodes], edges: [...edges] });
+      // Limit history to 50 states
+      if (newHistory.length > 50) newHistory.shift();
+      return newHistory;
+    });
+    setHistoryIndex((prev) => Math.min(prev + 1, 49));
+  }, [nodes, edges, historyIndex]);
+
+  // Undo
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      isUndoRedo.current = true;
+      const prevState = history[historyIndex - 1];
+      setNodes(prevState.nodes);
+      setEdges(prevState.edges);
+      setHistoryIndex((prev) => prev - 1);
+      setHasChanges(true);
+    }
+  }, [history, historyIndex]);
+
+  // Redo
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      isUndoRedo.current = true;
+      const nextState = history[historyIndex + 1];
+      setNodes(nextState.nodes);
+      setEdges(nextState.edges);
+      setHistoryIndex((prev) => prev + 1);
+      setHasChanges(true);
+    }
+  }, [history, historyIndex]);
+
+  // Auto-save state
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const lastSavedNodesRef = useRef<string>("");
+  const lastSavedEdgesRef = useRef<string>("");
+
+  // Auto-save with debounce (5 seconds after last change)
+  useEffect(() => {
+    if (hasChanges && nodes.length > 0) {
+      // Check if content actually changed from last save
+      const currentNodesHash = JSON.stringify(nodes.map(n => ({ id: n.id, pos: n.position, data: n.data })));
+      const currentEdgesHash = JSON.stringify(edges.map(e => ({ id: e.id, s: e.source, t: e.target })));
+
+      if (currentNodesHash === lastSavedNodesRef.current && currentEdgesHash === lastSavedEdgesRef.current) {
+        return; // No actual changes
+      }
+
+      if (autoSaveTimer.current) {
+        clearTimeout(autoSaveTimer.current);
+      }
+      autoSaveTimer.current = setTimeout(async () => {
+        setIsAutoSaving(true);
+        try {
+          const definition = {
+            nodes: nodes.map((node) => ({
+              id: node.id,
+              type: node.data.type,
+              position: node.position,
+              data: {
+                label: node.data.label,
+                config: node.data.config || {},
+                model_id: node.data.model_id,
+                model_source: node.data.model_source,
+              },
+            })),
+            edges: edges.map((edge) => {
+              const edgeData = edge.data as { sourcePort?: string; targetPort?: string } | undefined;
+              return {
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                sourceHandle: edgeData?.sourcePort || edge.sourceHandle,
+                targetHandle: edgeData?.targetPort || edge.targetHandle,
+              };
+            }),
+            parameters: parameters,
+          };
+          await apiClient.updateWorkflow(workflowId, { definition });
+          lastSavedNodesRef.current = currentNodesHash;
+          lastSavedEdgesRef.current = currentEdgesHash;
+          setHasChanges(false);
+          toast.success("Auto-saved", { duration: 1500 });
+        } catch {
+          // Silent fail for auto-save, user can manually save
+        } finally {
+          setIsAutoSaving(false);
+        }
+      }, 5000); // 5 second debounce
+    }
+    return () => {
+      if (autoSaveTimer.current) {
+        clearTimeout(autoSaveTimer.current);
+      }
+    };
+  }, [hasChanges, nodes, edges, parameters, workflowId]);
 
   // Fetch workflow
   const { data: workflow, isLoading: workflowLoading } = useQuery({
@@ -322,8 +667,12 @@ function WorkflowEditorContent() {
         id: edge.id,
         source: edge.source,
         target: edge.target,
-        sourceHandle: edge.sourceHandle,
-        targetHandle: edge.targetHandle,
+        // Don't set sourceHandle/targetHandle so edges render to default handles
+        // Store actual port mapping in data for backend serialization
+        data: {
+          sourcePort: edge.sourceHandle,
+          targetPort: edge.targetHandle,
+        },
       }));
 
       setNodes(flowNodes);
@@ -347,13 +696,17 @@ function WorkflowEditorContent() {
             model_source: node.data.model_source,
           },
         })),
-        edges: edges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle,
-        })),
+        edges: edges.map((edge) => {
+          // Port mapping can be in edge.data (new format) or edge.sourceHandle/targetHandle (old format)
+          const edgeData = edge.data as { sourcePort?: string; targetPort?: string } | undefined;
+          return {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edgeData?.sourcePort || edge.sourceHandle,
+            targetHandle: edgeData?.targetPort || edge.targetHandle,
+          };
+        }),
         parameters: parameters,
       };
       return apiClient.updateWorkflow(workflowId, { definition });
@@ -398,10 +751,23 @@ function WorkflowEditorContent() {
     []
   );
 
-  // Handle edge connection
+  // Handle edge connection from canvas drag
   const onConnect = useCallback(
     (connection: Connection) => {
-      setEdges((eds) => addEdge({ ...connection, id: `e-${Date.now()}` }, eds));
+      if (!connection.source || !connection.target) return;
+
+      // Create edge with default port mapping
+      // User can refine exact ports via the drawer
+      const newEdge: Edge = {
+        id: `e-${Date.now()}`,
+        source: connection.source,
+        target: connection.target,
+        data: {
+          sourcePort: "output",  // Default output port
+          targetPort: "input",   // Default input port
+        },
+      };
+      setEdges((eds) => [...eds, newEdge]);
       setHasChanges(true);
     },
     []
@@ -455,6 +821,108 @@ function WorkflowEditorContent() {
     event.dataTransfer.dropEffect = "move";
   }, []);
 
+  // Quick add block to center of viewport
+  const handleQuickAdd = useCallback(
+    (block: BlockDef) => {
+      // Get viewport center
+      const position = screenToFlowPosition({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      });
+
+      const newNode: WorkflowNode = {
+        id: `node-${Date.now()}`,
+        type: "workflowNode",
+        position,
+        data: {
+          label: block.display_name,
+          type: block.type,
+          category: block.category,
+          config: {},
+        },
+      };
+
+      setNodes((nds) => [...nds, newNode]);
+      setHasChanges(true);
+      pushHistory();
+      toast.success(`Added ${block.display_name}`);
+    },
+    [screenToFlowPosition, pushHistory]
+  );
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + S: Save
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        if (hasChanges && !saveMutation.isPending) {
+          saveMutation.mutate();
+        }
+      }
+
+      // Cmd/Ctrl + Z: Undo
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+
+      // Cmd/Ctrl + Shift + Z or Cmd/Ctrl + Y: Redo
+      if (
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") ||
+        ((e.metaKey || e.ctrlKey) && e.key === "y")
+      ) {
+        e.preventDefault();
+        handleRedo();
+      }
+
+      // Cmd/Ctrl + D: Duplicate selected node
+      if ((e.metaKey || e.ctrlKey) && e.key === "d" && selectedNode) {
+        e.preventDefault();
+        const newNode: WorkflowNode = {
+          id: `${selectedNode.data.type}_${Date.now()}`,
+          type: "workflowNode",
+          position: {
+            x: selectedNode.position.x + 50,
+            y: selectedNode.position.y + 50,
+          },
+          data: {
+            ...selectedNode.data,
+            label: `${selectedNode.data.label} (Copy)`,
+          },
+        };
+        setNodes((nds) => [...nds, newNode]);
+        setHasChanges(true);
+        pushHistory();
+        toast.success("Node duplicated");
+      }
+
+      // Escape: Deselect node
+      if (e.key === "Escape") {
+        setSelectedNode(null);
+      }
+
+      // ?: Show shortcuts
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        setShowShortcuts((prev) => !prev);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [hasChanges, saveMutation, handleUndo, handleRedo, selectedNode, pushHistory]);
+
+  // Push history on significant changes
+  useEffect(() => {
+    if (nodes.length > 0 || edges.length > 0) {
+      const timer = setTimeout(() => {
+        pushHistory();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [nodes.length, edges.length]);
+
   // Status badge
   const statusConfig: Record<string, { label: string; color: string }> = {
     draft: { label: "Draft", color: "bg-yellow-100 text-yellow-800" },
@@ -485,76 +953,238 @@ function WorkflowEditorContent() {
   const status = statusConfig[workflow.status] || statusConfig.draft;
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <div className="h-14 border-b bg-background flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => router.push("/workflows")}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <Separator orientation="vertical" className="h-6" />
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-semibold">{workflow.name}</h1>
-              <Badge className={status.color}>{status.label}</Badge>
-              {hasChanges && (
-                <Badge variant="outline" className="text-orange-600 border-orange-300">
-                  Unsaved
-                </Badge>
-              )}
+    <TooltipProvider delayDuration={300}>
+      <div className="h-screen flex flex-col">
+        {/* Header */}
+        <div className="h-14 border-b bg-background flex items-center justify-between px-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => router.push("/workflows")}
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Back to Workflows</TooltipContent>
+            </Tooltip>
+            <Separator orientation="vertical" className="h-6" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="font-semibold">{workflow.name}</h1>
+                <Badge className={status.color}>{status.label}</Badge>
+                {isAutoSaving ? (
+                  <Badge variant="outline" className="text-blue-600 border-blue-300">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    Saving...
+                  </Badge>
+                ) : hasChanges ? (
+                  <Badge variant="outline" className="text-orange-600 border-orange-300 animate-pulse">
+                    Unsaved
+                  </Badge>
+                ) : null}
+              </div>
             </div>
+          </div>
+
+          {/* Center toolbar */}
+          <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-1">
+            {/* Undo/Redo */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={handleUndo}
+                  disabled={historyIndex <= 0}
+                >
+                  <Undo2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Undo (⌘Z)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={handleRedo}
+                  disabled={historyIndex >= history.length - 1}
+                >
+                  <Redo2 className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Redo (⌘⇧Z)</TooltipContent>
+            </Tooltip>
+
+            <Separator orientation="vertical" className="h-4 mx-1" />
+
+            {/* Zoom controls */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => zoomOut()}
+                >
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Zoom Out</TooltipContent>
+            </Tooltip>
+            <span className="text-xs text-muted-foreground w-12 text-center tabular-nums">
+              {Math.round(zoomLevel * 100)}%
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => zoomIn()}
+                >
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Zoom In</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => fitView({ padding: 0.2 })}
+                >
+                  <Maximize className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Fit View</TooltipContent>
+            </Tooltip>
+
+            <Separator orientation="vertical" className="h-4 mx-1" />
+
+            {/* Shortcuts */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setShowShortcuts(true)}
+                >
+                  <Keyboard className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Shortcuts (?)</TooltipContent>
+            </Tooltip>
+          </div>
+
+          {/* Right actions */}
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setParametersOpen(true)}
+                  className="relative"
+                >
+                  <Variable className="h-4 w-4" />
+                  {parameters.length > 0 && (
+                    <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center">
+                      {parameters.length}
+                    </span>
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Parameters</TooltipContent>
+            </Tooltip>
+            <Separator orientation="vertical" className="h-6" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  onClick={() => saveMutation.mutate()}
+                  disabled={!hasChanges || saveMutation.isPending}
+                >
+                  {saveMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4 mr-2" />
+                  )}
+                  Save
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Save (⌘S)</TooltipContent>
+            </Tooltip>
+            <Button
+              onClick={() => executeMutation.mutate()}
+              disabled={executeMutation.isPending || nodes.length === 0}
+            >
+              {executeMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4 mr-2" />
+              )}
+              Execute
+            </Button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => setParametersOpen(true)}
-            className="relative"
-          >
-            <Variable className="h-4 w-4" />
-            {parameters.length > 0 && (
-              <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center">
-                {parameters.length}
-              </span>
-            )}
-          </Button>
-          <Separator orientation="vertical" className="h-6" />
-          <Button
-            variant="outline"
-            onClick={() => saveMutation.mutate()}
-            disabled={!hasChanges || saveMutation.isPending}
-          >
-            {saveMutation.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-2" />
-            )}
-            Save
-          </Button>
-          <Button
-            onClick={() => executeMutation.mutate()}
-            disabled={executeMutation.isPending || nodes.length === 0}
-          >
-            {executeMutation.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4 mr-2" />
-            )}
-            Execute
-          </Button>
-        </div>
-      </div>
+        {/* Keyboard Shortcuts Dialog */}
+        {showShortcuts && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowShortcuts(false)}>
+            <div className="bg-background border rounded-lg shadow-lg p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-lg">Keyboard Shortcuts</h2>
+                <Button variant="ghost" size="icon" onClick={() => setShowShortcuts(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Save workflow</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">⌘S</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Undo</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">⌘Z</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Redo</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">⌘⇧Z</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Duplicate node</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">⌘D</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Delete selected</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">⌫</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Deselect</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">Esc</kbd>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Show shortcuts</span>
+                  <kbd className="px-2 py-1 bg-muted rounded text-xs">?</kbd>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0">
         {/* Block palette */}
-        <BlockPalette blocks={(blocks as BlockDef[]) || []} onDragStart={onDragStart} />
+        <BlockPalette blocks={(blocks as BlockDef[]) || []} onDragStart={onDragStart} onQuickAdd={handleQuickAdd} />
 
         {/* Canvas */}
         <div className="flex-1" ref={reactFlowWrapper}>
@@ -593,7 +1223,13 @@ function WorkflowEditorContent() {
         <NodeConfigDrawer
           open={!!selectedNode}
           onClose={() => setSelectedNode(null)}
-          node={selectedNode ? { id: selectedNode.id, data: selectedNode.data as NodeData } : null}
+          node={selectedNode ? (() => {
+            // Get fresh node data from nodes array to avoid stale state
+            const currentNode = nodes.find(n => n.id === selectedNode.id);
+            return currentNode
+              ? { id: currentNode.id, data: currentNode.data as NodeData }
+              : { id: selectedNode.id, data: selectedNode.data as NodeData };
+          })() : null}
           onNodeChange={(nodeId, updates) => {
             setNodes((nds) =>
               nds.map((n) =>
@@ -639,26 +1275,34 @@ function WorkflowEditorContent() {
             type: (n.data as WorkflowNodeData).type,
             outputPorts: [], // Will be filled from BLOCK_PORTS in drawer
           }))}
-          edges={edges.map((e): EdgeInfo => ({
-            id: e.id,
-            source: e.source,
-            target: e.target,
-            sourceHandle: e.sourceHandle || undefined,
-            targetHandle: e.targetHandle || undefined,
-          }))}
+          edges={edges.map((e): EdgeInfo => {
+            // Get port mapping from edge.data (new format) or edge handles (old format)
+            const edgeData = e.data as { sourcePort?: string; targetPort?: string } | undefined;
+            return {
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              sourceHandle: edgeData?.sourcePort || e.sourceHandle || undefined,
+              targetHandle: edgeData?.targetPort || e.targetHandle || undefined,
+            };
+          })}
           onEdgeChange={(sourceId, sourceHandle, targetId, targetHandle) => {
-            // Remove existing edge to this target handle
+            // Remove existing edge to this target (only one connection per target input)
             setEdges((eds) => {
               const filtered = eds.filter(
-                (e) => !(e.target === targetId && e.targetHandle === targetHandle)
+                (e) => !(e.target === targetId && (e.data as { targetPort?: string })?.targetPort === targetHandle)
               );
-              // Add new edge
+              // Add new edge - store port mapping in data for backend,
+              // use undefined handles for visual rendering (default handles)
               const newEdge: Edge = {
                 id: `e_${sourceId}_${targetId}_${Date.now()}`,
                 source: sourceId,
                 target: targetId,
-                sourceHandle,
-                targetHandle,
+                // Don't set sourceHandle/targetHandle so edge renders to default handles
+                data: {
+                  sourcePort: sourceHandle,  // Actual source port name for backend
+                  targetPort: targetHandle,  // Actual target port name for backend
+                },
               };
               return [...filtered, newEdge];
             });
@@ -678,6 +1322,7 @@ function WorkflowEditorContent() {
         />
       </div>
     </div>
+    </TooltipProvider>
   );
 }
 

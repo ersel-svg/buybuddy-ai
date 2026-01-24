@@ -2,7 +2,8 @@
 # For training RT-DETR and D-FINE models with SOTA features
 # Based on RunPod PyTorch template for compatibility
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# PyTorch 2.8 + CUDA 12.8 - Supports ALL GPUs including RTX 5090 (Blackwell sm_120)
+FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive

@@ -1047,7 +1047,7 @@ class BulkFilterRequest(BaseModel):
 
 
 def build_filter_query(filters: BulkFilterRequest):
-    """Build a query with filters applied."""
+    """Build a query with filters applied. Returns query builder (not executed)."""
     query = supabase_service.client.table("od_images").select("id")
 
     if filters.statuses:
@@ -1079,6 +1079,29 @@ def build_filter_query(filters: BulkFilterRequest):
             query = query.in_("store_id", store_list)
 
     return query
+
+
+def get_all_filtered_image_ids(filters: BulkFilterRequest) -> list[str]:
+    """Get ALL image IDs matching filters, handling Supabase pagination."""
+    all_ids = []
+    page_size = 1000
+    offset = 0
+
+    while True:
+        query = build_filter_query(filters)
+        result = query.range(offset, offset + page_size - 1).execute()
+
+        if not result.data:
+            break
+
+        all_ids.extend([img["id"] for img in result.data])
+
+        if len(result.data) < page_size:
+            break
+
+        offset += page_size
+
+    return all_ids
 
 
 @router.post("/bulk/delete-by-filters")
@@ -1150,19 +1173,19 @@ async def bulk_delete_by_filters(filters: BulkFilterRequest):
 @router.post("/bulk/add-to-dataset-by-filters")
 async def bulk_add_to_dataset_by_filters(dataset_id: str, filters: BulkFilterRequest):
     """Add all images matching filters to a dataset."""
+    print(f"[DEBUG] bulk_add_to_dataset_by_filters called with dataset_id={dataset_id}, filters={filters}")
+
     # Verify dataset exists
     dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
     if not dataset.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Get all matching image IDs
-    query = build_filter_query(filters)
-    result = query.execute()
+    # Get all matching image IDs (with pagination to bypass 1000 row limit)
+    image_ids = get_all_filtered_image_ids(filters)
+    print(f"[DEBUG] Total matching images: {len(image_ids)}")
 
-    if not result.data:
-        return {"added": 0, "skipped": 0, "errors": [], "message": "No images match the filters"}
-
-    image_ids = [img["id"] for img in result.data]
+    if not image_ids:
+        return {"added": 0, "skipped": 0, "total_matched": 0, "errors": [], "message": "No images match the filters"}
     added = 0
     skipped = 0
     errors = []

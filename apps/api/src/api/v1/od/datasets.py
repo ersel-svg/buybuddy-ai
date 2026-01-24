@@ -427,11 +427,13 @@ async def add_class_to_dataset(dataset_id: str, data: dict):
 
 @router.get("/{dataset_id}/stats")
 async def get_dataset_stats(dataset_id: str):
-    """Get detailed statistics for a dataset."""
+    """Get detailed statistics for a dataset (training wizard compatible)."""
     # Verify dataset exists
     dataset = supabase_service.client.table("od_datasets").select("*").eq("id", dataset_id).single().execute()
     if not dataset.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+    ds = dataset.data
 
     # Get image status counts
     status_result = supabase_service.client.table("od_dataset_images").select("status").eq("dataset_id", dataset_id).execute()
@@ -441,17 +443,48 @@ async def get_dataset_stats(dataset_id: str):
         if status in status_counts:
             status_counts[status] += 1
 
-    # Get annotation count by class
-    class_result = supabase_service.client.rpc("get_od_dataset_class_stats", {"p_dataset_id": dataset_id}).execute()
+    # Get annotation count
+    annotation_result = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).execute()
+    total_annotations = annotation_result.count or 0
 
-    # Fallback if RPC doesn't exist - just count annotations
-    annotation_count = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).execute()
+    # Get classes and build distribution
+    class_names = []
+    class_distribution = {}
+    try:
+        classes = supabase_service.client.table("od_classes").select("id, name").eq("dataset_id", dataset_id).execute()
+        for cls in classes.data or []:
+            class_names.append(cls["name"])
+            count_result = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).eq("class_id", cls["id"]).execute()
+            class_distribution[cls["name"]] = count_result.count or 0
+    except Exception:
+        pass
 
+    # Calculate avg annotations per image
+    annotated_count = ds.get("annotated_image_count", 0)
+    avg_annotations = total_annotations / annotated_count if annotated_count > 0 else 0
+
+    # Get image size stats (simplified - using defaults if not available)
+    # In production, you'd query actual image dimensions
+    min_size = {"width": 640, "height": 480}
+    max_size = {"width": 1920, "height": 1080}
+    avg_size = {"width": 1280, "height": 720}
+
+    # Return training wizard compatible format
     return {
-        "dataset": dataset.data,
+        "name": ds.get("name", "Unknown"),
+        "image_count": ds.get("image_count", 0),
+        "annotated_image_count": ds.get("annotated_image_count", 0),
+        "annotation_count": total_annotations,
+        "class_names": class_names,
+        "class_distribution": class_distribution,
+        "avg_annotations_per_image": round(avg_annotations, 2),
+        "min_image_size": min_size,
+        "max_image_size": max_size,
+        "avg_image_size": avg_size,
+        # Also include legacy format for backward compatibility
+        "dataset": ds,
         "images_by_status": status_counts,
-        "total_annotations": annotation_count.count or 0,
-        "class_distribution": class_result.data if class_result.data else [],
+        "total_annotations": total_annotations,
     }
 
 

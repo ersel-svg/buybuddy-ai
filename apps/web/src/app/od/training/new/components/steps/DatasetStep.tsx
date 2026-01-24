@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { apiClient } from "@/lib/api-client";
 import type { DatasetStepData, DatasetInfo, DatasetVersion } from "../../types/wizard";
 import { DatasetStatsCard } from "../DatasetStatsCard";
 
@@ -57,15 +58,13 @@ export function DatasetStep({
     async function fetchDatasets() {
       setIsLoadingDatasets(true);
       try {
-        const response = await fetch("/api/v1/od/datasets");
-        if (!response.ok) throw new Error("Failed to fetch datasets");
-        const result = await response.json();
+        const result = await apiClient.getODDatasets();
         setDatasets(
-          (result.datasets || []).map((d: Record<string, unknown>) => ({
-            id: d.id as string,
-            name: d.name as string,
-            imageCount: d.image_count as number,
-            annotatedImageCount: d.annotated_image_count as number,
+          result.map((d) => ({
+            id: d.id,
+            name: d.name,
+            imageCount: d.image_count,
+            annotatedImageCount: d.annotated_image_count,
           }))
         );
       } catch (err) {
@@ -88,14 +87,11 @@ export function DatasetStep({
 
       setIsLoadingInfo(true);
       try {
-        // Fetch stats
-        const statsUrl = data.versionId
-          ? `/api/v1/od/datasets/${data.datasetId}/versions/${data.versionId}/stats`
-          : `/api/v1/od/datasets/${data.datasetId}/stats`;
-
-        const statsResponse = await fetch(statsUrl);
-        if (!statsResponse.ok) throw new Error("Failed to fetch dataset stats");
-        const statsData = await statsResponse.json();
+        // Fetch detailed stats for training
+        const statsData = await apiClient.getODDatasetTrainingStats(
+          data.datasetId,
+          data.versionId
+        );
 
         onDatasetInfoChange({
           id: data.datasetId,
@@ -112,20 +108,20 @@ export function DatasetStep({
         });
 
         // Fetch versions
-        const versionsResponse = await fetch(
-          `/api/v1/od/datasets/${data.datasetId}/versions`
-        );
-        if (versionsResponse.ok) {
-          const versionsData = await versionsResponse.json();
+        try {
+          const versionsData = await apiClient.getODDatasetVersions(data.datasetId);
           setVersions(
-            (versionsData.versions || []).map((v: Record<string, unknown>) => ({
-              id: v.id as string,
-              versionNumber: v.version_number as number,
-              name: v.name as string | null,
-              imageCount: v.image_count as number,
-              createdAt: v.created_at as string,
+            versionsData.map((v) => ({
+              id: v.id,
+              versionNumber: v.version_number,
+              name: v.name || null,
+              imageCount: v.image_count,
+              createdAt: v.created_at,
             }))
           );
+        } catch {
+          // Versions fetch failed, not critical
+          setVersions([]);
         }
       } catch (err) {
         console.error("Error fetching dataset info:", err);

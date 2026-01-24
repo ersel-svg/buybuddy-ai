@@ -1,6 +1,7 @@
-# Core ML
-torch>=2.4.0
-torchvision>=0.19.0
+# Core ML - torch/torchvision come from base image (pytorch:2.8.0-cuda12.8)
+# DO NOT install via pip - causes CUDA binary mismatch
+# torch>=2.8.0
+# torchvision>=0.21.0
 numpy>=2.0.0
 pillow>=10.0.0
 

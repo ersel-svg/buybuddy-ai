@@ -339,6 +339,8 @@ class CLSTrainingRunResponse(BaseModel):
     best_f1: Optional[float] = None
     best_top5_accuracy: Optional[float] = None
     best_epoch: Optional[int] = None
+    model_url: Optional[str] = None
+    onnx_url: Optional[str] = None
     metrics_history: Optional[list] = None
     runpod_job_id: Optional[str] = None
     error_message: Optional[str] = None

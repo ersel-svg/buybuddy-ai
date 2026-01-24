@@ -2045,6 +2045,28 @@ class ApiClient {
     return this.request(`/api/v1/od/datasets/${datasetId}/stats`);
   }
 
+  /**
+   * Get detailed dataset stats for training wizard
+   * Returns class info, image sizes, annotation stats etc.
+   */
+  async getODDatasetTrainingStats(datasetId: string, versionId?: string): Promise<{
+    name: string;
+    image_count: number;
+    annotated_image_count: number;
+    annotation_count: number;
+    class_names: string[];
+    class_distribution: Record<string, number>;
+    avg_annotations_per_image: number;
+    min_image_size: { width: number; height: number };
+    max_image_size: { width: number; height: number };
+    avg_image_size: { width: number; height: number };
+  }> {
+    const endpoint = versionId
+      ? `/api/v1/od/datasets/${datasetId}/versions/${versionId}/stats`
+      : `/api/v1/od/datasets/${datasetId}/stats`;
+    return this.request(endpoint);
+  }
+
   // OD Annotations
   async getODAnnotations(datasetId: string, imageId: string): Promise<Array<{
     id: string;
@@ -4129,7 +4151,7 @@ class ApiClient {
     updated_at: string;
   }> {
     return this.request(`/api/v1/workflows/${id}`, {
-      method: "PUT",
+      method: "PATCH",
       body: data,
     });
   }

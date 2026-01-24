@@ -252,39 +252,38 @@ export function OnlineAugStep({
             </Card>
           );
         })}
-      </RadioGroup>
 
-      {/* Custom option (disabled for now) */}
-      <Card
-        className={cn(
-          "cursor-pointer transition-all opacity-60",
-          data.preset === "custom" && "border-primary ring-1 ring-primary opacity-100"
-        )}
-      >
-        <CardContent className="p-4">
-          <div className="flex items-start gap-3">
-            <RadioGroupItem
-              value="custom"
-              id="custom"
-              className="mt-1"
-              checked={data.preset === "custom"}
-              onClick={() => onChange({ preset: "custom" })}
-            />
-            <div className="flex-1">
-              <div className="flex items-center gap-2">
-                {PRESET_INFO.custom.icon}
-                <Label htmlFor="custom" className="font-semibold cursor-pointer">
-                  {PRESET_INFO.custom.name}
-                </Label>
-                <Badge variant="outline">Advanced</Badge>
+        {/* Custom option */}
+        <Card
+          className={cn(
+            "cursor-pointer transition-all opacity-60",
+            data.preset === "custom" && "border-primary ring-1 ring-primary opacity-100"
+          )}
+          onClick={() => onChange({ preset: "custom" })}
+        >
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <RadioGroupItem
+                value="custom"
+                id="custom"
+                className="mt-1"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  {PRESET_INFO.custom.icon}
+                  <Label htmlFor="custom" className="font-semibold cursor-pointer">
+                    {PRESET_INFO.custom.name}
+                  </Label>
+                  <Badge variant="outline">Advanced</Badge>
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {PRESET_INFO.custom.description}
+                </p>
               </div>
-              <p className="text-sm text-muted-foreground mt-1">
-                {PRESET_INFO.custom.description}
-              </p>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </RadioGroup>
 
       {/* Info box */}
       <Card className="bg-muted/50">

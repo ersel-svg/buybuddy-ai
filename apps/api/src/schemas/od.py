@@ -247,6 +247,8 @@ class ODStatsResponse(BaseModel):
 class ODTrainingConfigBase(BaseModel):
     """Training configuration with SOTA features for OD models."""
 
+    model_config = {"extra": "allow"}  # Allow extra fields from wizard
+
     # Basic parameters
     epochs: int = 100
     batch_size: int = 16
@@ -262,6 +264,7 @@ class ODTrainingConfigBase(BaseModel):
         default="sota",
         description="Augmentation preset: sota-v2, sota, heavy, medium, light, none"
     )
+    augmentation_config: Optional[dict] = Field(default=None, description="Custom augmentation config")
 
     # SOTA: EMA (Exponential Moving Average)
     use_ema: bool = Field(default=True, description="Enable EMA for stable training")
@@ -306,10 +309,26 @@ class ODTrainingConfigBase(BaseModel):
     # Checkpointing
     save_freq: int = Field(default=5, description="Save checkpoint every N epochs")
 
+    # Preprocessing (from wizard)
+    resize_strategy: Optional[str] = Field(default=None, description="Resize strategy: letterbox, stretch, crop")
+    tiling: Optional[dict] = Field(default=None, description="Tiling configuration")
+
+    # Offline augmentation (from wizard)
+    offline_augmentation: Optional[dict] = Field(default=None, description="Offline augmentation config")
+
+    # Data split (from wizard)
+    train_split: float = Field(default=0.8, description="Training split ratio")
+    val_split: float = Field(default=0.15, description="Validation split ratio")
+    test_split: float = Field(default=0.05, description="Test split ratio")
+    seed: int = Field(default=42, description="Random seed for reproducibility")
+
 
 class ODTrainingRunCreate(BaseModel):
+    model_config = {"extra": "allow"}  # Allow extra fields from wizard
+
     name: str
     description: Optional[str] = None
+    tags: Optional[list[str]] = None
     dataset_id: str
     dataset_version_id: Optional[str] = None
     model_type: str = Field(

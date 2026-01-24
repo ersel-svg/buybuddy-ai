@@ -53,8 +53,15 @@ import {
   Circle,
   CheckCircle2,
   AlertCircle,
+  Scaling,
+  LayoutGrid,
+  Combine,
+  RotateCw,
+  Palette,
+  Repeat,
+  ListPlus,
+  Shuffle,
 } from "lucide-react";
-import { ModelSelector } from "./ModelSelector";
 import { NodeConfigPanel, NodeConfig } from "./NodeConfigPanel";
 
 // =============================================================================
@@ -129,8 +136,16 @@ const NODE_ICONS: Record<string, ReactNode> = {
   embedding: <Binary className="h-4 w-4" />,
   similarity_search: <Search className="h-4 w-4" />,
   crop: <Crop className="h-4 w-4" />,
+  resize: <Scaling className="h-4 w-4" />,
+  tile: <LayoutGrid className="h-4 w-4" />,
+  stitch: <Combine className="h-4 w-4" />,
+  rotate_flip: <RotateCw className="h-4 w-4" />,
+  normalize: <Palette className="h-4 w-4" />,
   filter: <Filter className="h-4 w-4" />,
   condition: <GitBranch className="h-4 w-4" />,
+  foreach: <Repeat className="h-4 w-4" />,
+  collect: <ListPlus className="h-4 w-4" />,
+  map: <Shuffle className="h-4 w-4" />,
   grid_builder: <Grid3X3 className="h-4 w-4" />,
   json_output: <FileJson className="h-4 w-4" />,
   blur_region: <Eraser className="h-4 w-4" />,
@@ -155,9 +170,6 @@ const CATEGORY_NAMES: Record<string, string> = {
   output: "Output",
 };
 
-/** Model block types */
-const MODEL_BLOCK_TYPES = ["detection", "classification", "embedding"];
-
 /** Block port definitions - what each block type accepts and produces */
 const BLOCK_PORTS: Record<string, { inputs: PortDefinition[]; outputs: PortDefinition[] }> = {
   image_input: {
@@ -179,48 +191,177 @@ const BLOCK_PORTS: Record<string, { inputs: PortDefinition[]; outputs: PortDefin
   },
   detection: {
     inputs: [
-      { name: "image", type: "image", required: true, description: "Input image" },
+      { name: "image", type: "image", required: true, description: "Input image to detect objects" },
+      { name: "text_prompt", type: "string", required: false, description: "Text prompt for open-vocab detection (Grounding DINO, SAM3)" },
+      { name: "class_filter", type: "array", required: false, description: "Filter to specific class names" },
+      { name: "roi", type: "object", required: false, description: "Region of interest to detect within" },
     ],
     outputs: [
-      { name: "detections", type: "array", description: "Detected objects with bbox, class, confidence" },
-      { name: "annotated_image", type: "image", description: "Image with bounding boxes" },
-      { name: "count", type: "number", description: "Number of detections" },
+      { name: "detections", type: "array", description: "All detected objects with bbox, class, confidence" },
+      { name: "boxes", type: "array", description: "Bounding boxes only [x1,y1,x2,y2]" },
+      { name: "labels", type: "array", description: "Class labels for each detection" },
+      { name: "scores", type: "array", description: "Confidence scores for each detection" },
+      { name: "annotated_image", type: "image", description: "Image with bounding boxes drawn" },
+      { name: "crops", type: "array", description: "Cropped images for each detection" },
+      { name: "count", type: "number", description: "Total number of detections" },
+      { name: "class_counts", type: "object", description: "Count per class {class: count}" },
     ],
   },
   classification: {
     inputs: [
-      { name: "image", type: "image", required: false, description: "Single image" },
-      { name: "images", type: "array", required: false, description: "Array of images" },
+      { name: "image", type: "image", required: false, description: "Single image to classify" },
+      { name: "images", type: "array", required: false, description: "Array of images to classify" },
+      { name: "crops", type: "array", required: false, description: "Detection crops to classify" },
     ],
     outputs: [
-      { name: "predictions", type: "array", description: "Classification predictions with top-k" },
+      { name: "predictions", type: "array", description: "Full predictions with top-k classes" },
+      { name: "label", type: "string", description: "Top predicted class label" },
+      { name: "labels", type: "array", description: "Top labels for each image (batch)" },
+      { name: "confidence", type: "number", description: "Confidence of top prediction" },
+      { name: "probabilities", type: "object", description: "All class probabilities" },
+      { name: "is_uncertain", type: "boolean", description: "Whether prediction is uncertain" },
+      { name: "decision", type: "string", description: "Binary decision output (if configured)" },
     ],
   },
   embedding: {
     inputs: [
-      { name: "image", type: "image", required: false, description: "Single image" },
-      { name: "images", type: "array", required: false, description: "Array of images" },
+      { name: "image", type: "image", required: false, description: "Single image to embed" },
+      { name: "images", type: "array", required: false, description: "Array of images to embed" },
+      { name: "crops", type: "array", required: false, description: "Bounding boxes to crop and embed" },
+      { name: "mask", type: "image", required: false, description: "Mask to focus embedding region" },
     ],
     outputs: [
-      { name: "embeddings", type: "array", description: "Embedding vectors" },
+      { name: "embedding", type: "array", description: "Single embedding vector (for single image)" },
+      { name: "embeddings", type: "array", description: "Array of embedding vectors" },
+      { name: "dimension", type: "number", description: "Embedding dimension size" },
+      { name: "norm", type: "number", description: "L2 norm of embedding (quality indicator)" },
+      { name: "attention_map", type: "image", description: "Attention visualization (if enabled)" },
     ],
   },
   similarity_search: {
     inputs: [
-      { name: "embeddings", type: "array", required: true, description: "Query embeddings" },
+      { name: "embedding", type: "array", required: false, description: "Single query embedding" },
+      { name: "embeddings", type: "array", required: false, description: "Multiple query embeddings" },
+      { name: "filter", type: "object", required: false, description: "Metadata filter criteria" },
+      { name: "text_query", type: "string", required: false, description: "Text query for hybrid search" },
     ],
     outputs: [
-      { name: "matches", type: "array", description: "Matching products with scores" },
+      { name: "matches", type: "array", description: "All matching items with scores and payloads" },
+      { name: "top_match", type: "object", description: "Best matching item with full data" },
+      { name: "match_ids", type: "array", description: "Just the IDs of matched items" },
+      { name: "match_scores", type: "array", description: "Normalized similarity scores (0-1)" },
+      { name: "match_payloads", type: "array", description: "Payloads/metadata of matched items" },
+      { name: "distances", type: "array", description: "Raw distance values (metric-dependent)" },
+      { name: "match_count", type: "number", description: "Total number of matches found" },
+      { name: "unique_count", type: "number", description: "Unique items after deduplication" },
+      { name: "has_matches", type: "boolean", description: "Whether any matches were found" },
+      { name: "avg_score", type: "number", description: "Average similarity score of results" },
+      { name: "groups", type: "object", description: "Grouped results (if group_by enabled)" },
+      { name: "reranked", type: "array", description: "Re-ranked results (if reranking enabled)" },
+      { name: "search_time_ms", type: "number", description: "Search execution time in milliseconds" },
     ],
   },
   crop: {
     inputs: [
-      { name: "image", type: "image", required: true, description: "Input image" },
-      { name: "detections", type: "array", required: true, description: "Detection bboxes to crop" },
+      { name: "image", type: "image", required: true, description: "Input image to crop from" },
+      { name: "detections", type: "array", required: false, description: "Detection results with bboxes" },
+      { name: "boxes", type: "array", required: false, description: "Raw bounding boxes [x1,y1,x2,y2]" },
+      { name: "masks", type: "array", required: false, description: "Segmentation masks for tight cropping" },
     ],
     outputs: [
-      { name: "crops", type: "array", description: "Cropped image regions as base64" },
-      { name: "crop_metadata", type: "array", description: "Metadata for each crop (index, detection, box, size)" },
+      { name: "crops", type: "array", description: "Cropped image regions" },
+      { name: "crop_images", type: "array", description: "Cropped images as separate outputs" },
+      { name: "crop_boxes", type: "array", description: "Final crop coordinates after padding" },
+      { name: "crop_sizes", type: "array", description: "Width/height of each crop" },
+      { name: "crop_metadata", type: "array", description: "Full metadata (source box, class, confidence)" },
+      { name: "valid_crops", type: "array", description: "Crops that passed size/confidence filters" },
+      { name: "rejected_crops", type: "array", description: "Crops that failed filters" },
+      { name: "crop_count", type: "number", description: "Number of valid crops produced" },
+    ],
+  },
+  resize: {
+    inputs: [
+      { name: "image", type: "image", required: true, description: "Input image to resize" },
+      { name: "images", type: "array", required: false, description: "Array of images to resize (batch)" },
+      { name: "target_width", type: "number", required: false, description: "Dynamic target width override" },
+      { name: "target_height", type: "number", required: false, description: "Dynamic target height override" },
+    ],
+    outputs: [
+      { name: "image", type: "image", description: "Resized image" },
+      { name: "images", type: "array", description: "Resized images (batch mode)" },
+      { name: "width", type: "number", description: "Final width in pixels" },
+      { name: "height", type: "number", description: "Final height in pixels" },
+      { name: "original_width", type: "number", description: "Original width before resize" },
+      { name: "original_height", type: "number", description: "Original height before resize" },
+      { name: "scale_x", type: "number", description: "Horizontal scale factor applied" },
+      { name: "scale_y", type: "number", description: "Vertical scale factor applied" },
+      { name: "was_resized", type: "boolean", description: "Whether resize was actually applied" },
+      { name: "padding", type: "object", description: "Padding added {top, bottom, left, right}" },
+    ],
+  },
+  tile: {
+    inputs: [
+      { name: "image", type: "image", required: true, description: "Input image to tile" },
+      { name: "tile_size", type: "number", required: false, description: "Dynamic tile size override" },
+      { name: "overlap", type: "number", required: false, description: "Dynamic overlap override" },
+    ],
+    outputs: [
+      { name: "tiles", type: "array", description: "Array of tile images" },
+      { name: "tile_coords", type: "array", description: "Coordinates of each tile [{x, y, width, height}]" },
+      { name: "tile_indices", type: "array", description: "Grid indices [{row, col}] for each tile" },
+      { name: "tile_count", type: "number", description: "Total number of tiles generated" },
+      { name: "grid_size", type: "object", description: "Grid dimensions {rows, cols}" },
+      { name: "original_size", type: "object", description: "Original image {width, height}" },
+      { name: "tile_metadata", type: "array", description: "Full metadata for reconstruction" },
+      { name: "overlap_info", type: "object", description: "Overlap pixels {x, y}" },
+    ],
+  },
+  stitch: {
+    inputs: [
+      { name: "tiles", type: "array", required: true, description: "Array of tile images or results" },
+      { name: "tile_coords", type: "array", required: true, description: "Coordinates from tile node" },
+      { name: "detections", type: "array", required: false, description: "Detections to merge from tiles" },
+      { name: "original_size", type: "object", required: false, description: "Original image size for reconstruction" },
+      { name: "tile_metadata", type: "array", required: false, description: "Full tile metadata" },
+    ],
+    outputs: [
+      { name: "image", type: "image", description: "Stitched/reconstructed image" },
+      { name: "merged_detections", type: "array", description: "Merged detections with NMS" },
+      { name: "all_detections", type: "array", description: "All detections before NMS" },
+      { name: "detection_count", type: "number", description: "Final detection count after merge" },
+      { name: "duplicate_count", type: "number", description: "Detections removed by NMS" },
+      { name: "tile_detection_counts", type: "array", description: "Detection count per tile" },
+    ],
+  },
+  rotate_flip: {
+    inputs: [
+      { name: "image", type: "image", required: true, description: "Input image to transform" },
+      { name: "images", type: "array", required: false, description: "Array of images (batch)" },
+      { name: "boxes", type: "array", required: false, description: "Bounding boxes to transform with image" },
+      { name: "angle", type: "number", required: false, description: "Dynamic rotation angle override" },
+    ],
+    outputs: [
+      { name: "image", type: "image", description: "Transformed image" },
+      { name: "images", type: "array", description: "Transformed images (batch)" },
+      { name: "boxes", type: "array", description: "Transformed bounding boxes" },
+      { name: "transform_matrix", type: "array", description: "Affine transform matrix [2x3]" },
+      { name: "was_transformed", type: "boolean", description: "Whether any transform was applied" },
+      { name: "new_size", type: "object", description: "New image dimensions after transform" },
+    ],
+  },
+  normalize: {
+    inputs: [
+      { name: "image", type: "image", required: true, description: "Input image to normalize" },
+      { name: "images", type: "array", required: false, description: "Array of images (batch)" },
+    ],
+    outputs: [
+      { name: "image", type: "image", description: "Normalized image" },
+      { name: "images", type: "array", description: "Normalized images (batch)" },
+      { name: "tensor", type: "array", description: "Normalized tensor [C,H,W]" },
+      { name: "tensors", type: "array", description: "Batch of normalized tensors" },
+      { name: "mean_used", type: "array", description: "Mean values used [R,G,B]" },
+      { name: "std_used", type: "array", description: "Std values used [R,G,B]" },
+      { name: "original_dtype", type: "string", description: "Original image dtype" },
     ],
   },
   blur_region: {
@@ -243,29 +384,92 @@ const BLOCK_PORTS: Record<string, { inputs: PortDefinition[]; outputs: PortDefin
   },
   filter: {
     inputs: [
-      { name: "items", type: "array", required: true, description: "Array to filter" },
+      { name: "items", type: "array", required: true, description: "Array of items to filter (detections, crops, etc.)" },
+      { name: "detections", type: "array", required: false, description: "Detection results to filter" },
+      { name: "threshold", type: "number", required: false, description: "Dynamic threshold override" },
+      { name: "class_list", type: "array", required: false, description: "Dynamic class whitelist" },
+      { name: "exclude_list", type: "array", required: false, description: "Dynamic class blacklist" },
     ],
     outputs: [
-      { name: "passed", type: "array", description: "Items that passed the filter" },
-      { name: "rejected", type: "array", description: "Items that failed the filter" },
+      { name: "passed", type: "array", description: "Items that passed all filter conditions" },
+      { name: "rejected", type: "array", description: "Items that failed filter conditions" },
+      { name: "passed_count", type: "number", description: "Number of items that passed" },
+      { name: "rejected_count", type: "number", description: "Number of items rejected" },
+      { name: "total_count", type: "number", description: "Total items processed" },
+      { name: "pass_rate", type: "number", description: "Percentage of items that passed (0-1)" },
+      { name: "first_passed", type: "object", description: "First item that passed the filter" },
+      { name: "top_n", type: "array", description: "Top N items by sort criteria" },
+      { name: "sorted", type: "array", description: "Passed items sorted by criteria" },
+      { name: "grouped", type: "object", description: "Items grouped by field value" },
+      { name: "filter_stats", type: "object", description: "Statistics {min, max, avg, sum by field}" },
+      { name: "unique_values", type: "array", description: "Unique values of grouped field" },
     ],
   },
   condition: {
     inputs: [
-      { name: "value", type: "any", required: true, description: "Value to evaluate" },
+      { name: "value", type: "any", required: true, description: "Primary value to evaluate" },
+      { name: "compare_to", type: "any", required: false, description: "Value to compare against (can use field reference)" },
+      { name: "context", type: "object", required: false, description: "Additional context for field access" },
     ],
     outputs: [
-      { name: "true_output", type: "any", description: "Output when condition is true" },
-      { name: "false_output", type: "any", description: "Output when condition is false" },
+      { name: "true_output", type: "any", description: "Output when condition passes" },
+      { name: "false_output", type: "any", description: "Output when condition fails" },
+      { name: "result", type: "boolean", description: "Boolean result of evaluation" },
+      { name: "matched_conditions", type: "array", description: "Which conditions passed (by index)" },
+      { name: "evaluation_details", type: "object", description: "Full evaluation metadata (if enabled)" },
+    ],
+  },
+  foreach: {
+    inputs: [
+      { name: "items", type: "array", required: true, description: "Array of items to iterate over" },
+      { name: "context", type: "any", required: false, description: "Additional context passed to each iteration" },
+    ],
+    outputs: [
+      { name: "item", type: "any", description: "Current item in iteration" },
+      { name: "index", type: "number", description: "Current index (0-based)" },
+      { name: "total", type: "number", description: "Total number of items" },
+      { name: "context", type: "any", description: "Passed through context" },
+      { name: "is_first", type: "boolean", description: "True if first item" },
+      { name: "is_last", type: "boolean", description: "True if last item" },
+    ],
+  },
+  collect: {
+    inputs: [
+      { name: "item", type: "any", required: true, description: "Item from each iteration" },
+      { name: "index", type: "number", required: false, description: "Index from ForEach" },
+    ],
+    outputs: [
+      { name: "results", type: "array", description: "Collected results array" },
+      { name: "count", type: "number", description: "Number of collected items" },
+    ],
+  },
+  map: {
+    inputs: [
+      { name: "items", type: "array", required: true, description: "Array of items to transform" },
+    ],
+    outputs: [
+      { name: "results", type: "array", description: "Transformed items" },
+      { name: "count", type: "number", description: "Number of items" },
     ],
   },
   grid_builder: {
     inputs: [
-      { name: "detections", type: "array", required: true, description: "Detection data" },
+      { name: "detections", type: "array", required: true, description: "Detection data with bboxes" },
+      { name: "image", type: "image", required: false, description: "Original image (for shelf edge detection)" },
+      { name: "expected_layout", type: "array", required: false, description: "Reference planogram for comparison" },
+      { name: "shelf_lines", type: "array", required: false, description: "Pre-detected shelf boundaries" },
     ],
     outputs: [
-      { name: "grid", type: "array", description: "2D grid representation" },
-      { name: "realogram", type: "object", description: "Full realogram data structure" },
+      { name: "grid", type: "array", description: "2D grid [[row1], [row2], ...]" },
+      { name: "realogram", type: "object", description: "Full realogram with metadata" },
+      { name: "shelves", type: "array", description: "Shelf-grouped items [{shelf: 1, items: [...]}]" },
+      { name: "row_count", type: "number", description: "Number of detected rows/shelves" },
+      { name: "col_count", type: "number", description: "Maximum columns per row" },
+      { name: "total_cells", type: "number", description: "Total occupied cells" },
+      { name: "empty_cells", type: "number", description: "Detected empty positions" },
+      { name: "facings", type: "object", description: "Facing counts per product (if enabled)" },
+      { name: "comparison", type: "object", description: "Planogram comparison results (if enabled)" },
+      { name: "shelf_edges", type: "array", description: "Detected shelf edge positions (if enabled)" },
     ],
   },
   json_output: {
@@ -278,12 +482,20 @@ const BLOCK_PORTS: Record<string, { inputs: PortDefinition[]; outputs: PortDefin
   },
   segmentation: {
     inputs: [
-      { name: "image", type: "image", required: true, description: "Input image" },
-      { name: "detections", type: "array", required: false, description: "Optional detection boxes as prompts" },
+      { name: "image", type: "image", required: true, description: "Input image to segment" },
+      { name: "boxes", type: "array", required: false, description: "Bounding boxes as prompts" },
+      { name: "points", type: "array", required: false, description: "Point coordinates as prompts" },
+      { name: "point_labels", type: "array", required: false, description: "Point labels (1=foreground, 0=background)" },
+      { name: "text_prompt", type: "string", required: false, description: "Text prompt for SAM3" },
     ],
     outputs: [
-      { name: "masks", type: "array", description: "Segmentation masks" },
-      { name: "masked_image", type: "image", description: "Image with masks applied" },
+      { name: "masks", type: "array", description: "Binary segmentation masks" },
+      { name: "polygons", type: "array", description: "Mask contours as polygons" },
+      { name: "rle_masks", type: "array", description: "Run-length encoded masks (compact)" },
+      { name: "masked_image", type: "image", description: "Image with masks overlaid" },
+      { name: "cropped_objects", type: "array", description: "Cropped objects using masks" },
+      { name: "mask_scores", type: "array", description: "Confidence scores for each mask" },
+      { name: "areas", type: "array", description: "Pixel area of each mask" },
     ],
   },
 };
@@ -364,12 +576,6 @@ export function NodeConfigDrawer({
     return NODE_ICONS[node.data.type] || <Box className="h-4 w-4" />;
   }, [node]);
 
-  // Check if this is a model block
-  const isModelBlock = useMemo(() => {
-    if (!node) return false;
-    return MODEL_BLOCK_TYPES.includes(node.data.type);
-  }, [node]);
-
   // Get category badge color
   const categoryColor = useMemo(() => {
     if (!node) return "";
@@ -409,24 +615,27 @@ export function NodeConfigDrawer({
     return allNodes.filter((n) => n.id !== node.id);
   }, [node, allNodes]);
 
-  // Handle config change
-  const handleConfigChange = (key: string, value: unknown) => {
+  // Handle config change - supports both single key and object with multiple keys
+  const handleConfigChange = (keyOrObject: string | Record<string, unknown>, value?: unknown) => {
     if (!node) return;
-    onNodeChange(node.id, {
-      config: {
-        ...(node.data.config || {}),
-        [key]: value,
-      },
-    });
-  };
 
-  // Handle model change
-  const handleModelChange = (modelId: string, model?: { source: "pretrained" | "trained" }) => {
-    if (!node) return;
-    onNodeChange(node.id, {
-      model_id: modelId,
-      model_source: model?.source,
-    });
+    // Support batch updates: onConfigChange({ model_id: "x", model_source: "y" })
+    if (typeof keyOrObject === "object") {
+      onNodeChange(node.id, {
+        config: {
+          ...(node.data.config || {}),
+          ...keyOrObject,
+        },
+      });
+    } else {
+      // Single key update: onConfigChange("key", value)
+      onNodeChange(node.id, {
+        config: {
+          ...(node.data.config || {}),
+          [keyOrObject]: value,
+        },
+      });
+    }
   };
 
   // Handle label change
@@ -584,24 +793,7 @@ export function NodeConfigDrawer({
               </>
             )}
 
-            {/* Model Selection - Only for model blocks */}
-            {isModelBlock && (
-              <>
-                <Separator />
-                <Section title="Model">
-                  <Field label="Select Model">
-                    <ModelSelector
-                      value={node.data.model_id}
-                      category={node.data.type as "detection" | "classification" | "embedding"}
-                      onValueChange={handleModelChange}
-                      placeholder="Choose a model..."
-                    />
-                  </Field>
-                </Section>
-              </>
-            )}
-
-            {/* Configuration Section */}
+            {/* Configuration Section - includes model selection for model blocks */}
             <Separator />
             <Section title="Configuration">
               <NodeConfigPanel

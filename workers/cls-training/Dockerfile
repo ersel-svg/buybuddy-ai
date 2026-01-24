@@ -1,5 +1,6 @@
-# Use RunPod's official image - optimized for their GPU infrastructure (including RTX 5090)
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# Use RunPod's official image with PyTorch 2.8 + CUDA 12.8
+# Supports ALL GPUs: RTX 5090 (Blackwell sm_120), RTX 4090, L4, A100, H100, etc.
+FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
 
 WORKDIR /workspace
 

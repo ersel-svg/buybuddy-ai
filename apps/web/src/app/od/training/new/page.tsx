@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { apiClient } from "@/lib/api-client";
 
 // Components
 import { WizardStepper, WizardStepperCompact } from "./components/WizardStepper";
@@ -129,18 +130,9 @@ export default function TrainingWizardPage() {
     try {
       const request = convertWizardStateToApiRequest(state);
 
-      const response = await fetch("/api/v1/od/trainings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      });
+      // Use apiClient for proper backend URL
+      const result = await apiClient.createODTrainingRun(request as Parameters<typeof apiClient.createODTrainingRun>[0]);
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Failed to start training");
-      }
-
-      const result = await response.json();
       toast.success("Training started successfully!");
       router.push(`/od/training/${result.id}`);
     } catch (error) {

@@ -412,9 +412,12 @@ export default function ODImagesPage() {
 
   const toggleSelectAll = () => {
     if (!imagesData?.images) return;
-    if (selectedImages.size === imagesData.images.length) {
+    // If selectAllFilteredMode is on or all page items selected, clear everything
+    if (selectAllFilteredMode || selectedImages.size === imagesData.images.length) {
+      setSelectAllFilteredMode(false);
       setSelectedImages(new Set());
     } else {
+      // Select current page items
       setSelectedImages(new Set(imagesData.images.map((img) => img.id)));
     }
   };
@@ -691,7 +694,7 @@ export default function ODImagesPage() {
             {imagesData?.images && imagesData.images.length > 0 && (
               <div className="flex items-center gap-2 ml-auto">
                 <Checkbox
-                  checked={selectedImages.size === imagesData.images.length && imagesData.images.length > 0}
+                  checked={selectAllFilteredMode || (selectedImages.size === imagesData.images.length && imagesData.images.length > 0)}
                   onCheckedChange={toggleSelectAll}
                 />
                 <span className="text-sm text-muted-foreground">Select all</span>
@@ -752,7 +755,7 @@ export default function ODImagesPage() {
                 <div
                   key={image.id}
                   className={`group relative aspect-square rounded-lg overflow-hidden bg-muted border-2 transition-colors cursor-pointer ${
-                    selectedImages.has(image.id) ? "border-primary" : "border-transparent hover:border-muted-foreground/30"
+                    (selectAllFilteredMode || selectedImages.has(image.id)) ? "border-primary" : "border-transparent hover:border-muted-foreground/30"
                   }`}
                   onClick={() => toggleImageSelection(image.id)}
                 >
@@ -765,9 +768,9 @@ export default function ODImagesPage() {
                     loading="lazy"
                   />
                   {/* Selection checkbox */}
-                  <div className={`absolute top-2 left-2 transition-opacity ${selectedImages.has(image.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                  <div className={`absolute top-2 left-2 transition-opacity ${(selectAllFilteredMode || selectedImages.has(image.id)) ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
                     <Checkbox
-                      checked={selectedImages.has(image.id)}
+                      checked={selectAllFilteredMode || selectedImages.has(image.id)}
                       onCheckedChange={() => toggleImageSelection(image.id)}
                       onClick={(e) => e.stopPropagation()}
                       className="bg-white/80"
@@ -827,12 +830,12 @@ export default function ODImagesPage() {
                 <div
                   key={image.id}
                   className={`flex items-center gap-4 p-3 rounded-lg border cursor-pointer transition-colors ${
-                    selectedImages.has(image.id) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
+                    (selectAllFilteredMode || selectedImages.has(image.id)) ? "border-primary bg-primary/5" : "hover:bg-muted/50"
                   }`}
                   onClick={() => toggleImageSelection(image.id)}
                 >
                   <Checkbox
-                    checked={selectedImages.has(image.id)}
+                    checked={selectAllFilteredMode || selectedImages.has(image.id)}
                     onCheckedChange={() => toggleImageSelection(image.id)}
                     onClick={(e) => e.stopPropagation()}
                   />
@@ -1035,7 +1038,7 @@ export default function ODImagesPage() {
               Add to Dataset
             </DialogTitle>
             <DialogDescription>
-              Add {selectedImages.size} selected image{selectedImages.size !== 1 ? "s" : ""} to a dataset.
+              Add {selectAllFilteredMode ? `all ${imagesData?.total || 0} filtered` : selectedImages.size} image{(selectAllFilteredMode ? (imagesData?.total || 0) : selectedImages.size) !== 1 ? "s" : ""} to a dataset.
             </DialogDescription>
           </DialogHeader>
 
@@ -1082,9 +1085,9 @@ export default function ODImagesPage() {
             </Button>
             <Button
               onClick={handleAddToDataset}
-              disabled={!selectedDatasetId || addToDatasetMutation.isPending}
+              disabled={!selectedDatasetId || addToDatasetMutation.isPending || addToDatasetByFiltersMutation.isPending}
             >
-              {addToDatasetMutation.isPending ? (
+              {(addToDatasetMutation.isPending || addToDatasetByFiltersMutation.isPending) ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Adding...

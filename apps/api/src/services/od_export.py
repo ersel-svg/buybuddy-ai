@@ -62,26 +62,67 @@ class ODExportService:
                 "index": idx,
             })
 
-        # Get dataset images
-        query = self.client.table("od_dataset_images").select(
-            "*, image:od_images(*)"
-        ).eq("dataset_id", dataset_id)
+        # Get dataset images (with pagination for large datasets)
+        all_dataset_images = []
+        page_size = 1000
+        offset = 0
 
-        if split:
-            query = query.eq("split", split)
+        while True:
+            query = self.client.table("od_dataset_images").select(
+                "*, image:od_images(*)"
+            ).eq("dataset_id", dataset_id)
 
-        # Only include completed/annotated images for export
-        query = query.in_("status", ["completed", "annotating"])
-        dataset_images = query.execute()
+            if split:
+                query = query.eq("split", split)
 
-        # Get all annotations for these images
+            # Only include completed/annotated images for export
+            query = query.in_("status", ["completed", "annotating"])
+            query = query.range(offset, offset + page_size - 1)
+
+            result = query.execute()
+            batch = result.data or []
+            all_dataset_images.extend(batch)
+
+            # If we got fewer than page_size, we've reached the end
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        # Use combined results
+        dataset_images = type('obj', (object,), {'data': all_dataset_images})()
+
+        # Get all annotations for these images (with pagination for large datasets)
         image_ids = [di["image_id"] for di in dataset_images.data or []]
 
         annotations = []
         if image_ids:
-            # Batch fetch annotations
-            ann_result = self.client.table("od_annotations").select("*").eq("dataset_id", dataset_id).in_("image_id", image_ids).execute()
-            annotations = ann_result.data or []
+            # Batch fetch annotations with pagination (Supabase limits to ~1000 per request)
+            batch_size = 500  # Smaller batch for image_id IN queries
+            page_size = 1000  # Rows per page
+
+            # Process image IDs in batches
+            for i in range(0, len(image_ids), batch_size):
+                batch_image_ids = image_ids[i:i + batch_size]
+
+                # Paginate through annotations for this batch
+                offset = 0
+                while True:
+                    ann_result = (
+                        self.client.table("od_annotations")
+                        .select("*")
+                        .eq("dataset_id", dataset_id)
+                        .in_("image_id", batch_image_ids)
+                        .range(offset, offset + page_size - 1)
+                        .execute()
+                    )
+
+                    batch_annotations = ann_result.data or []
+                    annotations.extend(batch_annotations)
+
+                    # If we got fewer than page_size, we've reached the end
+                    if len(batch_annotations) < page_size:
+                        break
+                    offset += page_size
 
         # Group annotations by image_id
         annotations_by_image = {}

@@ -24,12 +24,20 @@ from .transform_blocks import (
     BlurRegionBlock,
     DrawBoxesBlock,
     SegmentationBlock,
+    ResizeBlock,
+    TileBlock,
+    StitchBlock,
+    RotateFlipBlock,
+    NormalizeBlock,
 )
 
-# Logic and output blocks (placeholders for now)
+# Logic and output blocks
 from .placeholder_blocks import (
     ConditionBlock,
     FilterBlock,
+    ForEachBlock,
+    CollectBlock,
+    MapBlock,
     GridBuilderBlock,
     JsonOutputBlock,
 )
@@ -41,21 +49,29 @@ _BLOCK_REGISTRY: Dict[str, Type[BaseBlock]] = {
     "image_input": ImageInputBlock,
     "parameter_input": ParameterInputBlock,
 
-    # Model blocks (placeholders - full implementation in Week 2-3)
+    # Model blocks
     "detection": DetectionBlock,
     "classification": ClassificationBlock,
     "embedding": EmbeddingBlock,
     "segmentation": SegmentationBlock,
     "similarity_search": SimilaritySearchBlock,
 
-    # Transform blocks (placeholders - full implementation in Week 3)
+    # Transform blocks
     "crop": CropBlock,
     "blur_region": BlurRegionBlock,
     "draw_boxes": DrawBoxesBlock,
+    "resize": ResizeBlock,
+    "tile": TileBlock,
+    "stitch": StitchBlock,
+    "rotate_flip": RotateFlipBlock,
+    "normalize": NormalizeBlock,
 
-    # Logic blocks (placeholders - full implementation in Week 4)
+    # Logic blocks
     "condition": ConditionBlock,
     "filter": FilterBlock,
+    "foreach": ForEachBlock,
+    "collect": CollectBlock,
+    "map": MapBlock,
     "grid_builder": GridBuilderBlock,
 
     # Output blocks
@@ -105,18 +121,18 @@ BLOCK_CATEGORIES = {
     },
     "model": {
         "name": "Models",
-        "color": "#10B981",  # Green
+        "color": "#8B5CF6",  # Purple
         "blocks": ["detection", "classification", "embedding", "segmentation", "similarity_search"],
     },
     "transform": {
         "name": "Transform",
-        "color": "#F59E0B",  # Yellow
-        "blocks": ["crop", "blur_region"],
+        "color": "#10B981",  # Green
+        "blocks": ["crop", "resize", "tile", "stitch", "rotate_flip", "normalize", "blur_region"],
     },
     "logic": {
         "name": "Logic",
-        "color": "#8B5CF6",  # Purple
-        "blocks": ["condition", "filter"],
+        "color": "#F59E0B",  # Yellow/Orange
+        "blocks": ["condition", "filter", "foreach", "collect", "map", "grid_builder"],
     },
     "visualization": {
         "name": "Visualization",
@@ -126,6 +142,6 @@ BLOCK_CATEGORIES = {
     "output": {
         "name": "Output",
         "color": "#EF4444",  # Red
-        "blocks": ["grid_builder", "json_output"],
+        "blocks": ["json_output"],
     },
 }
