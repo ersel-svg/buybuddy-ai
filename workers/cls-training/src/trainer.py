@@ -660,9 +660,15 @@ class ClassificationTrainer:
                 model_weights = self.model.state_dict()
 
             # Convert to FP16 for smaller file size
+            # Note: Some state_dict values might not be tensors (e.g., num_batches_tracked)
+            def to_fp16(v):
+                if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
+                    return v.half()
+                return v
+
             inference_checkpoint = {
                 "model_state_dict": {
-                    k: v.half() if v.dtype == torch.float32 else v
+                    k: to_fp16(v)
                     for k, v in model_weights.items()
                 },
                 "epoch": epoch,
