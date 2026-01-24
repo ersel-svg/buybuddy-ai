@@ -610,17 +610,17 @@ export default function ODTrainingDetailPage({
                     >
                       <span className="text-sm font-medium">Epoch {m.epoch}</span>
                       <div className="flex gap-4 text-sm">
-                        {m.loss !== undefined && (
+                        {m.loss != null && (
                           <span className="text-muted-foreground">
                             Loss: <span className="font-medium">{m.loss.toFixed(4)}</span>
                           </span>
                         )}
-                        {m.map !== undefined && (
+                        {m.map != null && (
                           <span className="text-muted-foreground">
                             mAP: <span className="font-medium text-green-600">{(m.map * 100).toFixed(2)}%</span>
                           </span>
                         )}
-                        {m.map_50 !== undefined && (
+                        {m.map_50 != null && (
                           <span className="text-muted-foreground">
                             mAP@50: <span className="font-medium">{(m.map_50 * 100).toFixed(2)}%</span>
                           </span>
@@ -717,13 +717,13 @@ export default function ODTrainingDetailPage({
                         <tr key={idx} className="border-b last:border-0 hover:bg-muted/50">
                           <td className="py-2 px-2 font-medium">{m.epoch}</td>
                           <td className="py-2 px-2 font-mono text-red-600 dark:text-red-400">
-                            {m.loss !== undefined ? m.loss.toFixed(4) : "-"}
+                            {m.loss != null ? m.loss.toFixed(4) : "-"}
                           </td>
                           <td className="py-2 px-2 font-mono text-green-600 dark:text-green-400">
-                            {m.map !== undefined ? `${(m.map * 100).toFixed(2)}%` : "-"}
+                            {m.map != null ? `${(m.map * 100).toFixed(2)}%` : "-"}
                           </td>
                           <td className="py-2 px-2 font-mono text-blue-600 dark:text-blue-400">
-                            {m.map_50 !== undefined ? `${(m.map_50 * 100).toFixed(2)}%` : "-"}
+                            {m.map_50 != null ? `${(m.map_50 * 100).toFixed(2)}%` : "-"}
                           </td>
                           <td className="py-2 px-2 text-muted-foreground">
                             {new Date(m.timestamp).toLocaleTimeString()}
