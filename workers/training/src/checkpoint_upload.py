@@ -96,23 +96,18 @@ def upload_checkpoint_to_storage(
             torch.save(lightweight_checkpoint, tmp.name)
             tmp_path = tmp.name
 
-        # Read the lightweight checkpoint
-        with open(tmp_path, "rb") as f:
-            file_data = f.read()
-
-        # Clean up temp file
-        os.unlink(tmp_path)
-
-        original_size = len(file_data)
-        print(f"Lightweight checkpoint size: {original_size / 1024 / 1024:.1f}MB")
+        # Get file size without loading into RAM
+        file_size = os.path.getsize(tmp_path)
+        print(f"Lightweight checkpoint size: {file_size / 1024 / 1024:.1f}MB")
 
         suffix = "best" if is_best else f"epoch_{epoch:03d}"
 
         # Check if file exceeds limit
-        if original_size > MAX_UPLOAD_SIZE:
+        if file_size > MAX_UPLOAD_SIZE:
             limit_mb = MAX_UPLOAD_SIZE / 1024 / 1024
-            print(f"Warning: Checkpoint ({original_size / 1024 / 1024:.1f}MB) exceeds {limit_mb:.0f}MB limit")
+            print(f"Warning: Checkpoint ({file_size / 1024 / 1024:.1f}MB) exceeds {limit_mb:.0f}MB limit")
             print("Checkpoint saved locally only, not uploaded to storage")
+            os.unlink(tmp_path)  # Clean up temp file
             return None
 
         storage_path = f"training/{training_run_id}/checkpoint_{suffix}.pth"
@@ -125,7 +120,7 @@ def upload_checkpoint_to_storage(
 
         print(f"[DEBUG] Storage path: {storage_path}")
         print(f"[DEBUG] Supabase URL: {supabase_url}")
-        print(f"[DEBUG] File size: {len(file_data) / 1024 / 1024:.1f}MB")
+        print(f"[DEBUG] File size: {file_size / 1024 / 1024:.1f}MB")
 
         # Build upload URL - Supabase Storage REST API
         upload_url = f"{supabase_url}/storage/v1/object/{bucket_name}/{storage_path}"
@@ -137,24 +132,25 @@ def upload_checkpoint_to_storage(
             "x-upsert": "true",  # Overwrite if exists
         }
 
-        # Upload with retries and timeout
+        # Upload with retries and timeout (streaming - memory efficient)
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
             try:
-                print(f"[UPLOAD] Attempt {attempt + 1}/{max_retries} - Starting upload...")
+                print(f"[UPLOAD] Attempt {attempt + 1}/{max_retries} - Starting streaming upload...")
                 print(f"[UPLOAD] Timeout set to {UPLOAD_TIMEOUT}s")
 
                 start_time = time.time()
 
-                # Use httpx with explicit timeout
-                with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT, connect=30.0)) as http_client:
-                    response = http_client.post(
-                        upload_url,
-                        content=file_data,
-                        headers=headers,
-                    )
+                # Stream upload - file is read in chunks, not loaded entirely into RAM
+                with open(tmp_path, "rb") as f:
+                    with httpx.Client(timeout=httpx.Timeout(UPLOAD_TIMEOUT, connect=30.0)) as http_client:
+                        response = http_client.post(
+                            upload_url,
+                            content=f,  # Stream file directly
+                            headers=headers,
+                        )
 
                 elapsed = time.time() - start_time
                 print(f"[UPLOAD] Request completed in {elapsed:.1f}s")
@@ -164,6 +160,11 @@ def upload_checkpoint_to_storage(
                     # Success - build public URL
                     public_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{storage_path}"
                     print(f"[UPLOAD] SUCCESS! Checkpoint uploaded to: {public_url}")
+                    # Clean up temp file
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
                     return public_url
                 else:
                     # Server returned an error
@@ -192,12 +193,23 @@ def upload_checkpoint_to_storage(
                 time.sleep(wait_time)
 
         print(f"[UPLOAD] FAILED - All {max_retries} attempts failed. Last error: {last_error}")
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
         return None
 
     except Exception as e:
         print(f"Failed to upload checkpoint: {e}")
         import traceback
         traceback.print_exc()
+        # Clean up temp file if it exists
+        try:
+            if 'tmp_path' in locals():
+                os.unlink(tmp_path)
+        except:
+            pass
         return None
 
 
