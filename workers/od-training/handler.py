@@ -398,15 +398,16 @@ def update_training_run(
                         update_data["best_epoch"] = current_epoch
 
                 # Save epoch metrics to unified history table
+                # Note: trainer sends 'loss' not 'train_loss', 'map_50' not 'map50', etc.
                 save_metrics_to_history(
                     training_run_id=training_run_id,
                     epoch=current_epoch,
-                    train_loss=metrics.get("train_loss"),
+                    train_loss=metrics.get("loss") or metrics.get("train_loss"),
                     val_loss=metrics.get("val_loss"),
                     map_score=current_map,
-                    map50=metrics.get("map50"),
-                    map75=metrics.get("map75"),
-                    learning_rate=metrics.get("learning_rate"),
+                    map50=metrics.get("map_50") or metrics.get("map50"),
+                    map75=metrics.get("map_75") or metrics.get("map75"),
+                    learning_rate=metrics.get("lr") or metrics.get("learning_rate"),
                 )
 
             # Handle completion
