@@ -692,6 +692,7 @@ async def _create_trained_model(training_id: str, payload: dict):
         "top5_accuracy": training.data.get("best_top5_accuracy"),
         "confusion_matrix": payload.get("confusion_matrix"),
         "per_class_metrics": payload.get("per_class_metrics"),
+        "is_active": True,  # Make model visible in AI models list
     }
 
     supabase_service.client.table("cls_trained_models").insert(model_data).execute()

@@ -104,33 +104,24 @@ async def delete_dataset(dataset_id: str):
 @router.get("/{dataset_id}/classes")
 async def get_dataset_classes(dataset_id: str):
     """Get classes for this dataset with image counts.
-    
+
     Classes are now dataset-specific.
     """
     # Get classes for this dataset
     result = supabase_service.client.table("cls_classes").select(
         "id, name, display_name, color, is_active"
     ).eq("dataset_id", dataset_id).eq("is_active", True).order("name").execute()
-    
+
     classes = result.data or []
-    
-    # Get image counts per class
-    if classes:
-        class_ids = [c["id"] for c in classes]
-        labels_result = supabase_service.client.table("cls_labels").select(
-            "class_id"
-        ).eq("dataset_id", dataset_id).in_("class_id", class_ids).execute()
-        
-        # Count labels per class
-        counts = {}
-        for label in labels_result.data or []:
-            cid = label["class_id"]
-            counts[cid] = counts.get(cid, 0) + 1
-        
-        # Add counts to classes
-        for cls in classes:
-            cls["image_count"] = counts.get(cls["id"], 0)
-    
+
+    # Get accurate image counts per class using count query
+    # NOTE: Previous implementation had 1000 row limit bug
+    for cls in classes:
+        count_result = supabase_service.client.table("cls_labels").select(
+            "id", count="exact"
+        ).eq("dataset_id", dataset_id).eq("class_id", cls["id"]).execute()
+        cls["image_count"] = count_result.count or 0
+
     return classes
 
 
@@ -266,6 +257,69 @@ async def remove_images_from_dataset(dataset_id: str, data: CLSRemoveImagesReque
     supabase_service.client.rpc("update_cls_dataset_stats", {"p_dataset_id": dataset_id}).execute()
 
     return {"success": True, "removed": len(data.image_ids)}
+
+
+ASYNC_REMOVE_THRESHOLD = 50
+
+
+@router.post("/{dataset_id}/images/remove/async")
+async def remove_images_from_dataset_async(
+    dataset_id: str,
+    data: CLSRemoveImagesRequest,
+    delete_completely: bool = False,
+):
+    """
+    Async version: Remove images from a dataset as a background job.
+
+    Use this for large removals (>50 images).
+
+    Args:
+        dataset_id: Target dataset ID
+        data: Request with image_ids
+        delete_completely: If True, delete images from system entirely (default: False)
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_REMOVE_THRESHOLD:
+        # Use sync version for small batches
+        return await remove_images_from_dataset(dataset_id, data)
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("cls_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_remove_from_dataset",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "dataset_id": dataset_id,
+            "image_ids": data.image_ids,
+            "delete_completely": delete_completely,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk remove job queued for {len(data.image_ids)} images from '{dataset.data['name']}'",
+    }
 
 
 # ===========================================

@@ -1170,11 +1170,68 @@ async def bulk_delete_by_filters(filters: BulkFilterRequest):
     }
 
 
+@router.post("/bulk/delete-by-filters/async")
+async def bulk_delete_by_filters_async(filters: BulkFilterRequest, skip_in_datasets: bool = True):
+    """
+    Async version: Delete all images matching filters as a background job.
+
+    Use this for large deletions (>100 images).
+
+    Args:
+        filters: Filter criteria (statuses, sources, folders, etc.)
+        skip_in_datasets: Skip images that are in any dataset (default: True)
+
+    Returns:
+        Job ID for tracking progress
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    # Build config
+    config = {
+        "skip_in_datasets": skip_in_datasets,
+        "filters": {},
+    }
+
+    if filters.statuses:
+        config["filters"]["statuses"] = filters.statuses
+    if filters.sources:
+        config["filters"]["sources"] = filters.sources
+    if filters.folders:
+        config["filters"]["folders"] = filters.folders
+    if filters.search:
+        config["filters"]["search"] = filters.search
+    if filters.merchant_ids:
+        config["filters"]["merchant_ids"] = filters.merchant_ids
+    if filters.store_ids:
+        config["filters"]["store_ids"] = filters.store_ids
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_bulk_delete_images",
+        "status": "pending",
+        "progress": 0,
+        "config": config,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Bulk delete job queued",
+    }
+
+
 @router.post("/bulk/add-to-dataset-by-filters")
 async def bulk_add_to_dataset_by_filters(dataset_id: str, filters: BulkFilterRequest):
-    """Add all images matching filters to a dataset."""
-    print(f"[DEBUG] bulk_add_to_dataset_by_filters called with dataset_id={dataset_id}, filters={filters}")
-
+    """Add all images matching filters to a dataset (sync - for small batches)."""
     # Verify dataset exists
     dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
     if not dataset.data:
@@ -1182,7 +1239,6 @@ async def bulk_add_to_dataset_by_filters(dataset_id: str, filters: BulkFilterReq
 
     # Get all matching image IDs (with pagination to bypass 1000 row limit)
     image_ids = get_all_filtered_image_ids(filters)
-    print(f"[DEBUG] Total matching images: {len(image_ids)}")
 
     if not image_ids:
         return {"added": 0, "skipped": 0, "total_matched": 0, "errors": [], "message": "No images match the filters"}
@@ -1231,6 +1287,44 @@ async def bulk_add_to_dataset_by_filters(dataset_id: str, filters: BulkFilterReq
         "total_matched": len(image_ids),
         "errors": errors[:10] if errors else [],
         "message": f"Added {added} images, skipped {skipped} (already in dataset)"
+    }
+
+
+@router.post("/bulk/add-to-dataset-by-filters/async")
+async def bulk_add_to_dataset_by_filters_async(dataset_id: str, filters: BulkFilterRequest):
+    """
+    Add all images matching filters to a dataset (async background job).
+
+    Use this endpoint for large operations (>1000 images).
+    Returns immediately with a job_id. Poll GET /api/v1/jobs/{job_id} for progress.
+    """
+    from services.local_jobs import create_local_job
+
+    # Verify dataset exists first
+    dataset = supabase_service.client.table("od_datasets").select("id").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Create background job
+    job = await create_local_job(
+        job_type="local_bulk_add_to_dataset",
+        config={
+            "dataset_id": dataset_id,
+            "filters": {
+                "statuses": filters.statuses,
+                "sources": filters.sources,
+                "folders": filters.folders,
+                "search": filters.search,
+                "merchant_ids": filters.merchant_ids,
+                "store_ids": filters.store_ids,
+            },
+        },
+    )
+
+    return {
+        "job_id": job["id"],
+        "status": "pending",
+        "message": "Job created. Poll GET /api/v1/jobs/{job_id} for progress.",
     }
 
 

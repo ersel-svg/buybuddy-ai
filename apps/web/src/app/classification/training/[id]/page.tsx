@@ -671,17 +671,17 @@ export default function CLSTrainingDetailPage({
                     >
                       <span className="text-sm font-medium">Epoch {m.epoch}</span>
                       <div className="flex gap-4 text-sm">
-                        {m.loss !== undefined && (
+                        {m.loss != null && (
                           <span className="text-muted-foreground">
                             Loss: <span className="font-medium">{m.loss.toFixed(4)}</span>
                           </span>
                         )}
-                        {m.accuracy !== undefined && (
+                        {m.accuracy != null && (
                           <span className="text-muted-foreground">
                             Acc: <span className="font-medium text-green-600">{m.accuracy.toFixed(2)}%</span>
                           </span>
                         )}
-                        {m.f1 !== undefined && (
+                        {m.f1 != null && (
                           <span className="text-muted-foreground">
                             F1: <span className="font-medium">{m.f1.toFixed(4)}</span>
                           </span>

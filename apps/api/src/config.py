@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Internal Webhook Authentication
     webhook_secret: str = ""  # For authenticating internal webhook calls (e.g., from RunPod workers)
 
+    # API URL for workers to call webhooks (e.g., https://api.buybuddy.ai or http://localhost:8000)
+    api_url: str = ""
+
     # Roboflow Integration (optional - users can provide their own API key)
     roboflow_api_key: str = ""
 

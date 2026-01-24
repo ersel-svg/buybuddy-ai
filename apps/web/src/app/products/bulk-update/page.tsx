@@ -6,6 +6,7 @@ import { FileUploadStep, type ParsedFile } from "../matcher/components/FileUploa
 import { UpdateMappingStep, type UpdateMappingConfig } from "./components/UpdateMappingStep";
 import { UpdatePreviewStep } from "./components/UpdatePreviewStep";
 import { UpdateResultsStep } from "./components/UpdateResultsStep";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -55,12 +56,15 @@ const STEPS = [
   { id: "results", label: "Results", icon: CheckCircle },
 ] as const;
 
+const ASYNC_THRESHOLD = 50;
+
 export default function BulkUpdatePage() {
   const [currentStep, setCurrentStep] = useState<Step>("upload");
   const [parsedFile, setParsedFile] = useState<ParsedFile | null>(null);
   const [mappingConfig, setMappingConfig] = useState<UpdateMappingConfig | null>(null);
   const [previewData, setPreviewData] = useState<PreviewResponse | null>(null);
   const [executeResult, setExecuteResult] = useState<ExecuteResponse | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   const handleFileUploaded = (data: ParsedFile) => {
     setParsedFile(data);
@@ -95,15 +99,33 @@ export default function BulkUpdatePage() {
   const handleExecuteUpdate = async () => {
     if (!previewData || !previewData.matches.length) return;
 
+    // Convert preview matches to update format
+    const updates = previewData.matches.map((match) => ({
+      product_id: match.product_id,
+      fields: match.new_values,
+    }));
+
+    // Use async for large batches
+    if (updates.length >= ASYNC_THRESHOLD) {
+      try {
+        const result = await apiClient.executeBulkUpdateAsync({
+          updates,
+          mode: "lenient",
+        });
+        setActiveJobId(result.job_id);
+        toast.info(result.message);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to start update job"
+        );
+      }
+      return;
+    }
+
+    // Use sync for small batches
     setCurrentStep("executing");
 
     try {
-      // Convert preview matches to update format
-      const updates = previewData.matches.map((match) => ({
-        product_id: match.product_id,
-        fields: match.new_values,
-      }));
-
       const result = await apiClient.executeBulkUpdate({
         updates,
         mode: "lenient", // Skip invalid rows
@@ -124,6 +146,30 @@ export default function BulkUpdatePage() {
         error instanceof Error ? error.message : "Update failed"
       );
       setCurrentStep("preview");
+    }
+  };
+
+  const handleJobComplete = (jobResult?: Record<string, unknown>) => {
+    setActiveJobId(null);
+    if (!jobResult) return;
+
+    // Convert job result to ExecuteResponse format
+    const result: ExecuteResponse = {
+      success: (jobResult.failed as number) === 0,
+      updated_count: jobResult.updated as number,
+      failed: (jobResult.errors as Array<{ product_id: string; error: string }>) || [],
+      execution_time_ms: 0,
+    };
+
+    setExecuteResult(result);
+    setCurrentStep("results");
+
+    if (result.success) {
+      toast.success(`Successfully updated ${result.updated_count} products`);
+    } else {
+      toast.warning(
+        `Updated ${result.updated_count} products, ${result.failed.length} failed`
+      );
     }
   };
 
@@ -254,6 +300,14 @@ export default function BulkUpdatePage() {
           />
         )}
       </div>
+
+      {/* Job Progress Modal */}
+      <JobProgressModal
+        jobId={activeJobId}
+        title="Updating Products"
+        onComplete={handleJobComplete}
+        onClose={() => setActiveJobId(null)}
+      />
     </div>
   );
 }

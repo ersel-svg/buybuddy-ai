@@ -1121,6 +1121,58 @@ async def compare_models(
 
 
 # ===========================================
+# Products for Training Endpoint
+# ===========================================
+
+@router.get("/products")
+async def get_products_for_training(
+    data_source: Literal["all_products", "matched_products", "dataset"] = Query("all_products"),
+    dataset_id: Optional[str] = Query(None),
+    min_frames: int = Query(0, ge=0),
+    limit: int = Query(1000, ge=1, le=10000),
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Get products available for training.
+
+    Returns a list of products with their frame counts for training preview.
+    """
+    # Get products based on data source
+    if data_source == "all_products":
+        products = await db.get_products_for_training(limit=limit)
+    elif data_source == "matched_products":
+        products = await db.get_matched_products_for_training(limit=limit)
+    elif data_source == "dataset":
+        if not dataset_id:
+            raise HTTPException(status_code=400, detail="dataset_id required for 'dataset' data source")
+        products = await db.get_products_for_training(dataset_id=dataset_id, limit=limit)
+    else:
+        products = await db.get_products_for_training(limit=limit)
+
+    # Filter by minimum frames if specified
+    if min_frames > 0:
+        products = [p for p in products if p.get("frame_count", 0) >= min_frames]
+
+    # Format response
+    result = []
+    for p in products:
+        result.append({
+            "id": p.get("id"),
+            "barcode": p.get("barcode"),
+            "short_code": p.get("short_code"),
+            "upc": p.get("upc"),
+            "brand_name": p.get("brand_name"),
+            "frames_path": p.get("frames_path"),
+            "frame_count": p.get("frame_count", 0),
+        })
+
+    return {
+        "products": result,
+        "total": len(result),
+    }
+
+
+# ===========================================
 # Label Field Stats Endpoint
 # ===========================================
 

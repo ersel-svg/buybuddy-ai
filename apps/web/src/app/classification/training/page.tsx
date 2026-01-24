@@ -879,6 +879,7 @@ export default function CLSTrainingPage() {
               value={dataLoadingConfig}
               onChange={setDataLoadingConfig}
               showDataLoader={true}
+              defaultOpen={true}
             />
 
             {/* Info */}

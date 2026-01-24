@@ -8,10 +8,14 @@ Features:
 - Augmentation integration
 - Efficient image loading from URLs
 - Parallel image prefetching for faster training
+- Disk-backed cache for memory efficiency (100k+ images support)
 """
 
 import io
+import os
+import gc
 import random
+import hashlib
 from typing import Optional, Any
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -66,7 +70,8 @@ class ProductDataset(Dataset):
         frames_per_product: int = 1,
         http_timeout: float = 30.0,
         training_images: Optional[dict[str, list[dict]]] = None,
-        preload_config: Optional[dict[str, Any]] = None,  # NEW: Configurable preload settings
+        preload_config: Optional[dict[str, Any]] = None,  # Configurable preload settings
+        cache_dir: Optional[str] = None,  # Disk cache directory
     ):
         """
         Initialize the dataset.
@@ -84,13 +89,15 @@ class ProductDataset(Dataset):
             frames_per_product: Frames to sample per product (legacy format)
             http_timeout: HTTP request timeout
             training_images: NEW FORMAT - Dict mapping product_id to list of images with URLs
-            preload_config: NEW - Configurable preload settings:
+            preload_config: Configurable preload settings:
                 - enabled: Whether to preload (default: True)
-                - batched: Use batched mode with gc.collect (default: False)
+                - batched: Use batched mode with gc.collect (default: True)
                 - batch_size: Images per batch (default: 500)
-                - max_workers: Parallel threads (default: 32)
+                - max_workers: Parallel threads (default: 16)
                 - http_timeout: Request timeout (default: 30)
-                - max_connections: HTTP connection pool size (default: 50)
+                - use_memory_cache: Keep images in RAM (default: False for large datasets)
+                - cache_dir: Disk cache directory (default: /tmp/embedding_image_cache)
+            cache_dir: Disk cache directory (overrides preload_config.cache_dir)
         """
         self.products = products
         self.model_type = model_type
@@ -106,6 +113,16 @@ class ProductDataset(Dataset):
         self.http_timeout = self.preload_config.get("http_timeout", http_timeout)
         max_connections = self.preload_config.get("max_connections", 50)
         max_keepalive = self.preload_config.get("max_keepalive_connections", 20)
+
+        # Disk cache configuration (OD-style for memory efficiency)
+        self.cache_dir = cache_dir or self.preload_config.get("cache_dir", "/tmp/embedding_image_cache")
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Memory cache flag - default OFF for large datasets (OD-style)
+        self.use_memory_cache = self.preload_config.get("use_memory_cache", False)
+
+        # Track failed URLs
+        self._failed_urls: set[str] = set()
 
         # Determine which format we're using
         self.use_new_format = training_images is not None and len(training_images) > 0
@@ -180,30 +197,31 @@ class ProductDataset(Dataset):
         batch_size: int = None,
     ) -> int:
         """
-        Prefetch all images in parallel for faster training.
+        Prefetch all images in parallel to disk cache for faster training.
 
         Supports two modes (configurable via preload_config):
-        1. Single-pass mode (default): Downloads all images at once - faster for small datasets
-        2. Batched mode: Downloads in batches with gc.collect() - memory safe for large datasets
+        1. Batched mode (default): Downloads in batches with gc.collect() - memory safe
+        2. Single-pass mode: Downloads all at once - faster for small datasets
 
         Args:
-            max_workers: Number of parallel download threads (default from config or 32)
+            max_workers: Number of parallel download threads (default from config or 16)
             progress_callback: Optional callback(current, total) for progress updates
             batch_size: Images per batch for batched mode (default from config or 500)
 
         Config options (via preload_config):
-            - batched: Use batched mode with gc.collect (default: False)
+            - batched: Use batched mode with gc.collect (default: True)
             - batch_size: Images per batch (default: 500)
-            - max_workers: Parallel threads (default: 32)
+            - max_workers: Parallel threads (default: 16)
+
+        This downloads all images to disk cache before training,
+        then training loads from fast local disk instead of network.
 
         Returns:
             Number of successfully prefetched images
         """
-        import gc
-
         # Read from config with fallback to parameters and defaults
-        use_batched = self.preload_config.get("batched", False)  # Default: single-pass (existing behavior)
-        max_workers = max_workers or self.preload_config.get("max_workers", 32)
+        use_batched = self.preload_config.get("batched", True)  # Default: batched mode (OD-style)
+        max_workers = max_workers or self.preload_config.get("max_workers", 16)
         batch_size = batch_size or self.preload_config.get("batch_size", 500)
 
         urls = [sample["url"] for sample in self.samples]
@@ -211,21 +229,50 @@ class ProductDataset(Dataset):
         unique_urls = list(set(urls))
 
         mode_str = "batched" if use_batched else "single-pass"
+        cache_type = "memory+disk" if self.use_memory_cache else "disk-only"
         print(f"Prefetching {len(unique_urls)} unique images ({total} total samples)...")
-        print(f"  Mode: {mode_str}, workers: {max_workers}, batch_size: {batch_size}")
+        print(f"  Mode: {mode_str}, cache: {cache_type}, workers: {max_workers}, batch_size: {batch_size}")
+        print(f"  Cache dir: {self.cache_dir}")
 
         success_count = 0
+        skipped_count = 0
         failed_urls = []
 
-        def download_one(url: str) -> tuple[str, Optional[Image.Image]]:
-            """Download a single image."""
+        def download_one(url: str) -> tuple[str, bool, bool]:
+            """Download a single image to disk cache. Returns (url, success, was_cached)."""
+            cache_path = self._get_cache_path(url)
+
+            # Skip if already cached on disk
+            if os.path.exists(cache_path):
+                try:
+                    # Verify it's readable
+                    Image.open(cache_path).verify()
+                    return url, True, True  # success, was_cached
+                except Exception:
+                    # Corrupted, remove and re-download
+                    try:
+                        os.remove(cache_path)
+                    except:
+                        pass
+
+            # Download and save to disk
             try:
                 response = self.http_client.get(url)
                 response.raise_for_status()
                 image = Image.open(io.BytesIO(response.content)).convert("RGB")
-                return url, image
+
+                # Save to disk cache
+                image.save(cache_path, "JPEG", quality=95)
+
+                # Optionally cache in memory
+                if self.use_memory_cache:
+                    with self._cache_lock:
+                        self._image_cache[url] = image
+
+                return url, True, False  # success, not cached before
             except Exception as e:
-                return url, None
+                self._failed_urls.add(url)
+                return url, False, False
 
         if use_batched:
             # BATCHED MODE: Process in batches with gc.collect() - memory safe for large datasets
@@ -236,39 +283,41 @@ class ProductDataset(Dataset):
                 total_batches = (total_urls + batch_size - 1) // batch_size
 
                 batch_success = 0
+                batch_skipped = 0
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {executor.submit(download_one, url): url for url in batch_urls}
 
                     for future in as_completed(futures):
-                        url, image = future.result()
+                        url, success, was_cached = future.result()
 
-                        if image is not None:
-                            with self._cache_lock:
-                                self._image_cache[url] = image
+                        if success:
                             batch_success += 1
                             success_count += 1
+                            if was_cached:
+                                batch_skipped += 1
+                                skipped_count += 1
                         else:
                             failed_urls.append(url)
 
                 # Progress update per batch
-                print(f"  Batch {batch_num}/{total_batches}: {success_count}/{total_urls} downloaded")
+                print(f"  Batch {batch_num}/{total_batches}: {success_count}/{total_urls} ({skipped_count} cached)")
                 if progress_callback:
                     progress_callback(success_count, total_urls)
 
                 # Free memory after each batch
                 gc.collect()
         else:
-            # SINGLE-PASS MODE: Download all at once - faster for small datasets (existing behavior)
+            # SINGLE-PASS MODE: Download all at once - faster for small datasets
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(download_one, url): url for url in unique_urls}
 
                 for i, future in enumerate(as_completed(futures)):
-                    url, image = future.result()
+                    url, success, was_cached = future.result()
 
-                    if image is not None:
-                        with self._cache_lock:
-                            self._image_cache[url] = image
+                    if success:
                         success_count += 1
+                        if was_cached:
+                            skipped_count += 1
                     else:
                         failed_urls.append(url)
 
@@ -282,7 +331,7 @@ class ProductDataset(Dataset):
 
         self._prefetch_complete = True
 
-        print(f"Prefetch complete: {success_count}/{len(unique_urls)} images cached")
+        print(f"Prefetch complete: {success_count}/{len(unique_urls)} images ({skipped_count} from cache)")
         if failed_urls:
             print(f"  Failed to download {len(failed_urls)} images")
             if len(failed_urls) <= 5:
@@ -440,19 +489,67 @@ class ProductDataset(Dataset):
             "upc": product.get("upc") or "",
         }
 
-    def _load_image(self, url: str) -> Image.Image:
-        """Load image from URL or cache."""
-        # Check cache first
-        with self._cache_lock:
-            if url in self._image_cache:
-                # Return a copy to avoid modifying cached image
-                return self._image_cache[url].copy()
+    def _get_cache_path(self, url: str) -> str:
+        """Get file cache path for URL."""
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+        return os.path.join(self.cache_dir, f"{url_hash}.jpg")
 
-        # Download if not cached
-        response = self.http_client.get(url)
-        response.raise_for_status()
-        image = Image.open(io.BytesIO(response.content)).convert("RGB")
-        return image
+    def _load_image(self, url: str) -> Image.Image:
+        """
+        Load image from URL with disk cache support.
+
+        Priority (OD-style for memory efficiency):
+        1. Memory cache (only if use_memory_cache=True)
+        2. Disk cache (always checked)
+        3. Download from URL
+        4. Black placeholder (fallback)
+        """
+        # Check memory cache first (only if enabled)
+        if self.use_memory_cache:
+            with self._cache_lock:
+                if url in self._image_cache:
+                    return self._image_cache[url].copy()
+
+        # Check disk cache
+        cache_path = self._get_cache_path(url)
+        if os.path.exists(cache_path):
+            try:
+                image = Image.open(cache_path).convert("RGB")
+                # Cache in memory if enabled
+                if self.use_memory_cache:
+                    with self._cache_lock:
+                        self._image_cache[url] = image
+                    return image.copy()
+                return image
+            except Exception:
+                # Remove corrupted cache file
+                try:
+                    os.remove(cache_path)
+                except:
+                    pass
+
+        # Download from URL
+        try:
+            response = self.http_client.get(url)
+            response.raise_for_status()
+            image = Image.open(io.BytesIO(response.content)).convert("RGB")
+
+            # Save to disk cache
+            try:
+                image.save(cache_path, "JPEG", quality=95)
+            except Exception:
+                pass
+
+            # Cache in memory if enabled
+            if self.use_memory_cache:
+                with self._cache_lock:
+                    self._image_cache[url] = image
+                return image.copy()
+
+            return image
+        except Exception as e:
+            self._failed_urls.add(url)
+            raise
 
     def get_item_info(self, idx: int) -> dict[str, Any]:
         """

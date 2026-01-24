@@ -4,6 +4,8 @@
  * Complete type definitions for the 7-step training wizard.
  */
 
+import type { DataLoadingConfig } from "@/types";
+
 // ============================================================================
 // STEP 1: Dataset Types
 // ============================================================================
@@ -300,6 +302,9 @@ export interface HyperparamsStepData {
   // Multi-scale
   multiScale: boolean;
   multiScaleRange: [number, number];
+
+  // Data Loading (Advanced)
+  dataLoading?: DataLoadingConfig;
 }
 
 // ============================================================================
@@ -476,6 +481,9 @@ export interface CreateTrainingRequest {
     // Multi-scale
     multi_scale: boolean;
     multi_scale_range?: [number, number];
+
+    // Data Loading (Advanced)
+    data_loading?: DataLoadingConfig;
   };
 }
 
@@ -557,6 +565,7 @@ export const DEFAULT_HYPERPARAMS_STEP: HyperparamsStepData = {
   minDelta: 0.001,
   multiScale: false,
   multiScaleRange: [0.5, 1.5],
+  dataLoading: undefined,
 };
 
 export const DEFAULT_REVIEW_STEP: ReviewStepData = {

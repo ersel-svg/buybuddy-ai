@@ -105,9 +105,11 @@ import type {
   ImageConfig,
   ImageType,
   FrameSelection,
+  DataLoadingConfig,
 } from "@/types";
 import { DEFAULT_SOTA_CONFIG, DEFAULT_IMAGE_CONFIG } from "@/types";
 import { SOTAConfigPanel } from "./components/SOTAConfigPanel";
+import { DataLoadingConfigPanel } from "@/components/training/DataLoadingConfig";
 
 // Default training config
 const DEFAULT_CONFIG: TrainingRunConfig = {
@@ -222,6 +224,8 @@ export default function TrainingPage() {
     sota_config: { ...DEFAULT_SOTA_CONFIG },
     // Hard negatives: pairs of product IDs that look similar but are different
     hard_negative_pairs: [] as Array<[string, string]>,
+    // Data loading configuration
+    data_loading: undefined as DataLoadingConfig | undefined,
   });
 
   // Fetch training runs
@@ -408,6 +412,7 @@ export default function TrainingPage() {
       training_config: { ...DEFAULT_CONFIG },
       sota_config: { ...DEFAULT_SOTA_CONFIG },
       hard_negative_pairs: [],
+      data_loading: undefined,
     });
     setAdvancedOpen(false);
   };
@@ -955,6 +960,15 @@ export default function TrainingPage() {
               <SOTAConfigPanel
                 config={formData.sota_config}
                 onChange={(sota_config) => setFormData({ ...formData, sota_config })}
+              />
+
+              {/* Data Loading Configuration */}
+              <Separator />
+              <DataLoadingConfigPanel
+                value={formData.data_loading}
+                onChange={(data_loading) => setFormData({ ...formData, data_loading })}
+                showDataLoader={true}
+                defaultOpen={true}
               />
 
               {/* Advanced Options */}

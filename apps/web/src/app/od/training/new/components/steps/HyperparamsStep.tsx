@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { DataLoadingConfigPanel } from "@/components/training/DataLoadingConfig";
 import type { HyperparamsStepData, OptimizerType, SchedulerType } from "../../types/wizard";
 
 interface HyperparamsStepProps {
@@ -274,6 +275,14 @@ export function HyperparamsStep({ data, onChange, errors }: HyperparamsStepProps
           </div>
         </CardContent>
       </Card>
+
+      {/* Data Loading (Advanced) */}
+      <DataLoadingConfigPanel
+        value={data.dataLoading}
+        onChange={(dataLoading) => onChange({ dataLoading })}
+        showDataLoader={true}
+        defaultOpen={true}
+      />
     </div>
   );
 }

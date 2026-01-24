@@ -31,6 +31,7 @@ class ExecutionContext:
     workflow_id: str
     execution_id: str
     parameters: dict[str, Any] = field(default_factory=dict)  # Workflow-level parameters
+    variables: dict[str, Any] = field(default_factory=dict)  # Runtime variables (iteration state, etc.)
 
     def resolve_ref(self, ref: str) -> Any:
         """

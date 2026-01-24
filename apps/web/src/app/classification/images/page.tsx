@@ -67,6 +67,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import Image from "next/image";
 import { useDropzone } from "react-dropzone";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 
 const PAGE_SIZE = 48;
 
@@ -121,6 +122,10 @@ export default function CLSImagesPage() {
   // Add to dataset dialog state
   const [isAddToDatasetOpen, setIsAddToDatasetOpen] = useState(false);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+
+  // Async job state
+  const [activeDeleteJobId, setActiveDeleteJobId] = useState<string | null>(null);
+  const [activeAddJobId, setActiveAddJobId] = useState<string | null>(null);
 
   // Fetch CLS stats
   const { data: stats } = useQuery({
@@ -252,6 +257,9 @@ export default function CLSImagesPage() {
   });
 
   // Delete mutation
+  const ASYNC_DELETE_THRESHOLD = 100;
+  const ASYNC_ADD_THRESHOLD = 100;
+
   const deleteMutation = useMutation({
     mutationFn: async (imageIds: string[]) => {
       if (imageIds.length === 1) {
@@ -268,6 +276,32 @@ export default function CLSImagesPage() {
     },
     onError: (error) => {
       toast.error(`Delete failed: ${error.message}`);
+    },
+  });
+
+  const deleteAsyncMutation = useMutation({
+    mutationFn: (imageIds: string[]) => apiClient.deleteCLSImagesAsync(imageIds),
+    onSuccess: (result) => {
+      setActiveDeleteJobId(result.job_id);
+      toast.info(result.message);
+      setSelectedImages(new Set());
+    },
+    onError: (error) => {
+      toast.error(`Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    },
+  });
+
+  const addToDatasetAsyncMutation = useMutation({
+    mutationFn: ({ datasetId, imageIds }: { datasetId: string; imageIds: string[] }) =>
+      apiClient.addCLSImagesToDatasetAsync(datasetId, imageIds),
+    onSuccess: (result) => {
+      setActiveAddJobId(result.job_id);
+      toast.info(result.message);
+      setSelectedImages(new Set());
+      setIsAddToDatasetOpen(false);
+    },
+    onError: (error) => {
+      toast.error(`Add failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     },
   });
 
@@ -291,10 +325,19 @@ export default function CLSImagesPage() {
 
   const handleAddToDataset = () => {
     if (!selectedDatasetId || selectedImages.size === 0) return;
-    addToDatasetMutation.mutate({
-      datasetId: selectedDatasetId,
-      imageIds: Array.from(selectedImages),
-    });
+
+    const imageIds = Array.from(selectedImages);
+    if (imageIds.length >= ASYNC_ADD_THRESHOLD) {
+      addToDatasetAsyncMutation.mutate({
+        datasetId: selectedDatasetId,
+        imageIds,
+      });
+    } else {
+      addToDatasetMutation.mutate({
+        datasetId: selectedDatasetId,
+        imageIds,
+      });
+    }
   };
 
   // Dropzone for upload
@@ -334,7 +377,13 @@ export default function CLSImagesPage() {
   const handleDeleteSelected = () => {
     if (selectedImages.size === 0) return;
     if (!confirm(`Delete ${selectedImages.size} selected images?`)) return;
-    deleteMutation.mutate(Array.from(selectedImages));
+
+    const imageIds = Array.from(selectedImages);
+    if (imageIds.length >= ASYNC_DELETE_THRESHOLD) {
+      deleteAsyncMutation.mutate(imageIds);
+    } else {
+      deleteMutation.mutate(imageIds);
+    }
   };
 
   const totalPages = imagesData ? Math.ceil(imagesData.total / PAGE_SIZE) : 0;
@@ -1115,6 +1164,29 @@ export default function CLSImagesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Job Progress Modals */}
+      <JobProgressModal
+        jobId={activeDeleteJobId}
+        title="Deleting Images"
+        onComplete={() => {
+          setActiveDeleteJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["cls-images"] });
+          queryClient.invalidateQueries({ queryKey: ["cls-stats"] });
+        }}
+        onClose={() => setActiveDeleteJobId(null)}
+      />
+
+      <JobProgressModal
+        jobId={activeAddJobId}
+        title="Adding to Dataset"
+        onComplete={() => {
+          setActiveAddJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["cls-images"] });
+          queryClient.invalidateQueries({ queryKey: ["cls-datasets"] });
+        }}
+        onClose={() => setActiveAddJobId(null)}
+      />
     </div>
   );
 }

@@ -125,6 +125,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { ImportModal } from "@/components/od/import-modal";
 import { BulkAnnotateModal } from "@/components/od/bulk-annotate-modal";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
+
+// Thresholds for switching to async operations
+const ASYNC_REMOVE_THRESHOLD = 50;
+const ASYNC_STATUS_THRESHOLD = 200;
 
 // Predefined colors for class labels
 const PRESET_COLORS = [
@@ -208,6 +213,11 @@ export default function ODDatasetDetailPage({
 
   // Bulk AI annotation modal
   const [isBulkAnnotateOpen, setIsBulkAnnotateOpen] = useState(false);
+
+  // Async job state for bulk operations
+  const [activeRemoveJobId, setActiveRemoveJobId] = useState<string | null>(null);
+  const [activeStatusJobId, setActiveStatusJobId] = useState<string | null>(null);
+  const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
 
   // Classes tab state
   const [classSearch, setClassSearch] = useState("");
@@ -428,7 +438,7 @@ export default function ODDatasetDetailPage({
     },
   });
 
-  // Bulk remove mutation
+  // Bulk remove mutation (sync - for small batches)
   const bulkRemoveMutation = useMutation({
     mutationFn: async (imageIds: string[]) => {
       return apiClient.removeImagesFromODDatasetBulk(datasetId, imageIds);
@@ -441,6 +451,20 @@ export default function ODDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to remove images: ${error.message}`);
+    },
+  });
+
+  // Bulk remove mutation (async - for large batches)
+  const bulkRemoveAsyncMutation = useMutation({
+    mutationFn: async (imageIds: string[]) => {
+      return apiClient.removeImagesFromODDatasetBulkAsync(datasetId, { imageIds });
+    },
+    onSuccess: (data) => {
+      setActiveRemoveJobId(data.job_id);
+      toast.info("Removal started in background");
+    },
+    onError: (error) => {
+      toast.error(`Failed to start removal: ${error.message}`);
     },
   });
 
@@ -457,7 +481,7 @@ export default function ODDatasetDetailPage({
     },
   });
 
-  // Bulk status update mutation
+  // Bulk status update mutation (sync - for small batches)
   const bulkStatusMutation = useMutation({
     mutationFn: async ({ imageIds, status }: { imageIds: string[]; status: string }) => {
       return apiClient.updateODDatasetImageStatusBulk(datasetId, imageIds, status);
@@ -470,6 +494,20 @@ export default function ODDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to update status: ${error.message}`);
+    },
+  });
+
+  // Bulk status update mutation (async - for large batches)
+  const bulkStatusAsyncMutation = useMutation({
+    mutationFn: async ({ imageIds, status }: { imageIds: string[]; status: string }) => {
+      return apiClient.updateODDatasetImageStatusBulkAsync(datasetId, status, { imageIds });
+    },
+    onSuccess: (data) => {
+      setActiveStatusJobId(data.job_id);
+      toast.info("Status update started in background");
+    },
+    onError: (error) => {
+      toast.error(`Failed to start status update: ${error.message}`);
     },
   });
 
@@ -536,7 +574,7 @@ export default function ODDatasetDetailPage({
     },
   });
 
-  // Export mutation
+  // Export mutation (sync - for small datasets)
   const exportMutation = useMutation({
     mutationFn: async () => {
       setIsExporting(true);
@@ -570,6 +608,40 @@ export default function ODDatasetDetailPage({
       toast.error(`Export failed: ${error.message}`);
     },
   });
+
+  // Export mutation (async - for large datasets)
+  const exportAsyncMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.exportODDatasetAsync(datasetId, {
+        format: exportFormat,
+        include_images: includeImages,
+        version_id: selectedVersionId || undefined,
+        config: {
+          train_split: trainSplit,
+          val_split: valSplit,
+          test_split: testSplit,
+        },
+      });
+    },
+    onSuccess: (data) => {
+      setActiveExportJobId(data.job_id);
+      toast.info("Export started in background");
+    },
+    onError: (error) => {
+      toast.error(`Failed to start export: ${error.message}`);
+    },
+  });
+
+  // Handler that decides between sync and async export
+  const handleExport = () => {
+    const imageCount = dataset?.image_count || 0;
+    // Use async for datasets with more than 100 images (especially with includeImages)
+    if (imageCount > 100 && includeImages) {
+      exportAsyncMutation.mutate();
+    } else {
+      exportMutation.mutate();
+    }
+  };
 
   // ============ Classes Tab Queries & Mutations ============
 
@@ -844,7 +916,15 @@ export default function ODDatasetDetailPage({
   const handleBulkRemove = () => {
     if (selectedImages.size === 0) return;
     if (!confirm(`Remove ${selectedImages.size} images from this dataset?`)) return;
-    bulkRemoveMutation.mutate(Array.from(selectedImages));
+
+    const imageIds = Array.from(selectedImages);
+
+    // Use async for large batches
+    if (imageIds.length >= ASYNC_REMOVE_THRESHOLD) {
+      bulkRemoveAsyncMutation.mutate(imageIds);
+    } else {
+      bulkRemoveMutation.mutate(imageIds);
+    }
   };
 
   const toggleAddSelection = (imageId: string) => {
@@ -1088,8 +1168,15 @@ export default function ODDatasetDetailPage({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkStatusMutation.mutate({ imageIds: Array.from(selectedImages), status: "completed" })}
-                  disabled={bulkStatusMutation.isPending}
+                  onClick={() => {
+                    const imageIds = Array.from(selectedImages);
+                    if (imageIds.length >= ASYNC_STATUS_THRESHOLD) {
+                      bulkStatusAsyncMutation.mutate({ imageIds, status: "completed" });
+                    } else {
+                      bulkStatusMutation.mutate({ imageIds, status: "completed" });
+                    }
+                  }}
+                  disabled={bulkStatusMutation.isPending || bulkStatusAsyncMutation.isPending}
                 >
                   <CheckCircle className="h-4 w-4 mr-1" />
                   Mark Completed
@@ -1098,7 +1185,7 @@ export default function ODDatasetDetailPage({
                   variant="destructive"
                   size="sm"
                   onClick={handleBulkRemove}
-                  disabled={bulkRemoveMutation.isPending}
+                  disabled={bulkRemoveMutation.isPending || bulkRemoveAsyncMutation.isPending}
                 >
                   <Trash2 className="h-4 w-4 mr-1" />
                   Remove
@@ -1931,10 +2018,10 @@ export default function ODDatasetDetailPage({
                 <Button
                   className="w-full"
                   size="lg"
-                  onClick={() => exportMutation.mutate()}
-                  disabled={isExporting || dataset.annotation_count === 0}
+                  onClick={handleExport}
+                  disabled={isExporting || exportAsyncMutation.isPending || dataset.annotation_count === 0}
                 >
-                  {isExporting ? (
+                  {(isExporting || exportAsyncMutation.isPending) ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       Exporting...
@@ -2774,6 +2861,53 @@ export default function ODDatasetDetailPage({
           queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
           queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
         }}
+      />
+
+      {/* Bulk Remove Progress Modal */}
+      <JobProgressModal
+        jobId={activeRemoveJobId}
+        title="Removing images from dataset"
+        onClose={() => setActiveRemoveJobId(null)}
+        onComplete={(result) => {
+          toast.success(result?.message || `Removed ${result?.removed || 0} images`);
+          setSelectedImages(new Set());
+        }}
+        invalidateOnComplete={[["od-dataset", datasetId], ["od-dataset-images", datasetId]]}
+      />
+
+      {/* Bulk Status Update Progress Modal */}
+      <JobProgressModal
+        jobId={activeStatusJobId}
+        title="Updating image status"
+        onClose={() => setActiveStatusJobId(null)}
+        onComplete={(result) => {
+          toast.success(result?.message || `Updated ${result?.updated || 0} images`);
+          setSelectedImages(new Set());
+        }}
+        invalidateOnComplete={[["od-dataset", datasetId], ["od-dataset-images", datasetId]]}
+      />
+
+      {/* Export Progress Modal */}
+      <JobProgressModal
+        jobId={activeExportJobId}
+        title="Exporting dataset"
+        onClose={() => setActiveExportJobId(null)}
+        onComplete={(result) => {
+          if (result?.download_url) {
+            setExportResult({
+              download_url: result.download_url,
+              result: {
+                total_images: result.total_images || 0,
+                total_annotations: result.total_annotations || 0,
+                total_classes: result.total_classes || 0,
+              },
+            });
+            toast.success("Export completed! Click download to get your file.");
+          } else {
+            toast.success(result?.message || "Export completed");
+          }
+        }}
+        invalidateOnComplete={[]}
       />
     </div>
   );

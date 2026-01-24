@@ -309,3 +309,111 @@ async def bulk_clear_labels(dataset_id: str, data: CLSBulkClearLabelsRequest):
         supabase_service.client.rpc("update_cls_class_image_count", {"p_class_id": class_id}).execute()
 
     return {"success": True, "cleared": len(data.image_ids)}
+
+
+# ===========================================
+# Async Bulk Operations (Background Jobs)
+# ===========================================
+
+ASYNC_LABEL_THRESHOLD = 200
+
+
+@router.post("/datasets/{dataset_id}/bulk/async")
+async def bulk_set_labels_async(dataset_id: str, data: CLSBulkLabelRequest):
+    """
+    Async version: Set the same label for multiple images as a background job.
+
+    Use this for large label operations (>200 images).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_LABEL_THRESHOLD:
+        # Use sync version for small batches
+        return await bulk_set_labels(dataset_id, data)
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("cls_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_set_labels",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "dataset_id": dataset_id,
+            "class_id": data.class_id,
+            "image_ids": data.image_ids,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk label job queued for {len(data.image_ids)} images in '{dataset.data['name']}'",
+    }
+
+
+@router.post("/datasets/{dataset_id}/bulk-clear/async")
+async def bulk_clear_labels_async(dataset_id: str, data: CLSBulkClearLabelsRequest):
+    """
+    Async version: Clear labels for multiple images as a background job.
+
+    Use this for large clear operations (>200 images).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_LABEL_THRESHOLD:
+        # Use sync version for small batches
+        return await bulk_clear_labels(dataset_id, data)
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("cls_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_clear_labels",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "dataset_id": dataset_id,
+            "image_ids": data.image_ids,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk clear labels job queued for {len(data.image_ids)} images in '{dataset.data['name']}'",
+    }

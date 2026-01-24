@@ -71,8 +71,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import Image from "next/image";
 import { useDropzone } from "react-dropzone";
 import { ImportModal } from "@/components/od/import-modal";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 
 const PAGE_SIZE = 48;
+const ASYNC_THRESHOLD = 500; // Use async for more than 500 images
 
 // Custom hook for debounced value
 function useDebounce<T>(value: T, delay: number): T {
@@ -131,6 +133,10 @@ export default function ODImagesPage() {
   // Add to dataset dialog state
   const [isAddToDatasetOpen, setIsAddToDatasetOpen] = useState(false);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+
+  // Background job state
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeDeleteJobId, setActiveDeleteJobId] = useState<string | null>(null);
 
   // Fetch OD stats
   const { data: stats } = useQuery({
@@ -326,7 +332,7 @@ export default function ODImagesPage() {
     },
   });
 
-  // Delete by filters mutation (for selectAllFilteredMode)
+  // Delete by filters mutation (for selectAllFilteredMode - sync)
   const deleteByFiltersMutation = useMutation({
     mutationFn: async () => {
       return apiClient.deleteODImagesByFilters({
@@ -343,6 +349,23 @@ export default function ODImagesPage() {
     },
     onError: (error) => {
       toast.error(`Delete failed: ${error.message}`);
+    },
+  });
+
+  // Delete by filters mutation (async - for large batches)
+  const deleteByFiltersAsyncMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.deleteODImagesByFiltersAsync({
+        search: debouncedSearch || undefined,
+        ...apiFilters,
+      });
+    },
+    onSuccess: (result) => {
+      setActiveDeleteJobId(result.job_id);
+      toast.info("Delete started in background");
+    },
+    onError: (error) => {
+      toast.error(`Failed to start delete: ${error.message}`);
     },
   });
 
@@ -367,11 +390,32 @@ export default function ODImagesPage() {
     },
   });
 
-  const handleAddToDataset = () => {
+  const handleAddToDataset = async () => {
     if (!selectedDatasetId) return;
 
     if (selectAllFilteredMode) {
-      addToDatasetByFiltersMutation.mutate({ datasetId: selectedDatasetId });
+      const total = imagesData?.total || 0;
+
+      // Use async endpoint for large batches
+      if (total > ASYNC_THRESHOLD) {
+        try {
+          const result = await apiClient.addFilteredImagesToODDatasetAsync(
+            selectedDatasetId,
+            {
+              search: debouncedSearch || undefined,
+              ...apiFilters,
+            }
+          );
+          setActiveJobId(result.job_id);
+          setIsAddToDatasetOpen(false);
+          setSelectedDatasetId("");
+        } catch (error) {
+          toast.error(`Failed to start job: ${error instanceof Error ? error.message : "Unknown error"}`);
+        }
+      } else {
+        // Use sync endpoint for small batches
+        addToDatasetByFiltersMutation.mutate({ datasetId: selectedDatasetId });
+      }
     } else {
       if (selectedImages.size === 0) return;
       addToDatasetMutation.mutate({
@@ -436,7 +480,13 @@ export default function ODImagesPage() {
     if (selectAllFilteredMode) {
       const total = imagesData?.total || 0;
       if (!confirm(`Delete ALL ${total} filtered images? This cannot be undone.`)) return;
-      deleteByFiltersMutation.mutate();
+
+      // Use async for large batches
+      if (total > ASYNC_THRESHOLD) {
+        deleteByFiltersAsyncMutation.mutate();
+      } else {
+        deleteByFiltersMutation.mutate();
+      }
     } else {
       if (selectedImages.size === 0) return;
       if (!confirm(`Delete ${selectedImages.size} selected images?`)) return;
@@ -615,9 +665,9 @@ export default function ODImagesPage() {
                     variant="destructive"
                     size="sm"
                     onClick={handleDeleteSelected}
-                    disabled={deleteMutation.isPending || deleteByFiltersMutation.isPending}
+                    disabled={deleteMutation.isPending || deleteByFiltersMutation.isPending || deleteByFiltersAsyncMutation.isPending}
                   >
-                    {(deleteMutation.isPending || deleteByFiltersMutation.isPending) ? (
+                    {(deleteMutation.isPending || deleteByFiltersMutation.isPending || deleteByFiltersAsyncMutation.isPending) ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-1 animate-spin" />
                         Deleting...
@@ -1111,6 +1161,34 @@ export default function ODImagesPage() {
           queryClient.invalidateQueries({ queryKey: ["od-images"] });
           queryClient.invalidateQueries({ queryKey: ["od-stats"] });
         }}
+      />
+
+      {/* Background Job Progress Modal - Add to Dataset */}
+      <JobProgressModal
+        jobId={activeJobId}
+        title="Adding images to dataset"
+        onClose={() => {
+          setActiveJobId(null);
+          clearSelection();
+        }}
+        onComplete={(result) => {
+          toast.success(result?.message || `Added ${result?.added || 0} images to dataset`);
+        }}
+        invalidateOnComplete={[["od-datasets"], ["od-stats"]]}
+      />
+
+      {/* Background Job Progress Modal - Delete Images */}
+      <JobProgressModal
+        jobId={activeDeleteJobId}
+        title="Deleting images"
+        onClose={() => {
+          setActiveDeleteJobId(null);
+          clearSelection();
+        }}
+        onComplete={(result) => {
+          toast.success(result?.message || `Deleted ${result?.deleted || 0} images`);
+        }}
+        invalidateOnComplete={[["od-images"], ["od-stats"], ["od-image-filter-options"]]}
       />
     </div>
   );

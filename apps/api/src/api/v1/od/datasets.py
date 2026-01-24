@@ -366,6 +366,85 @@ async def remove_images_bulk(dataset_id: str, image_ids: list[str], delete_compl
     return {"removed": removed, "deleted_from_storage": deleted_from_storage}
 
 
+@router.post("/{dataset_id}/images/bulk-remove/async")
+async def remove_images_bulk_async(
+    dataset_id: str,
+    image_ids: list[str] | None = None,
+    statuses: str | None = None,
+    has_annotations: bool | None = None,
+    delete_completely: bool = True,
+):
+    """
+    Async version: Remove multiple images from a dataset as a background job.
+
+    Use this for large removals (>50 images). Supports:
+    - Explicit image_ids list
+    - Filter-based removal via statuses/has_annotations
+
+    Args:
+        dataset_id: Target dataset ID
+        image_ids: Specific image IDs to remove (optional)
+        statuses: Comma-separated statuses to filter (optional)
+        has_annotations: Filter by annotation presence (optional)
+        delete_completely: If True, delete images from system entirely (default: True)
+
+    Returns:
+        Job ID for tracking progress
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Need either image_ids or filters
+    if not image_ids and not statuses and has_annotations is None:
+        raise HTTPException(status_code=400, detail="Provide image_ids or filter criteria")
+
+    # Build config
+    config = {
+        "dataset_id": dataset_id,
+        "delete_completely": delete_completely,
+    }
+
+    if image_ids:
+        config["image_ids"] = image_ids
+    else:
+        config["filters"] = {}
+        if statuses:
+            config["filters"]["statuses"] = statuses
+        if has_annotations is not None:
+            config["filters"]["has_annotations"] = has_annotations
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_bulk_remove_from_dataset",
+        "status": "pending",
+        "progress": 0,
+        "config": config,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk remove job queued for dataset '{dataset.data['name']}'",
+    }
+
+
 @router.get("/{dataset_id}/classes")
 async def get_dataset_classes(dataset_id: str, include_templates: bool = False):
     """Get all classes for a specific dataset."""
@@ -656,6 +735,89 @@ async def update_images_status_by_filter(
     }
 
 
+@router.post("/{dataset_id}/images/bulk-status/async")
+async def update_images_status_bulk_async(
+    dataset_id: str,
+    new_status: str,
+    image_ids: list[str] | None = None,
+    current_status: Optional[str] = None,
+    has_annotations: Optional[bool] = None,
+):
+    """
+    Async version: Update status of multiple images as a background job.
+
+    Use this for large status updates (>200 images). Supports:
+    - Explicit image_ids list
+    - Filter-based updates via current_status/has_annotations
+
+    Args:
+        dataset_id: Target dataset ID
+        new_status: Status to set (pending, annotating, completed, skipped)
+        image_ids: Specific image IDs to update (optional)
+        current_status: Only update images with this current status (optional)
+        has_annotations: Filter by annotation presence (optional)
+
+    Returns:
+        Job ID for tracking progress
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    valid_statuses = ["pending", "annotating", "completed", "skipped"]
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Need either image_ids or filters
+    if not image_ids and current_status is None and has_annotations is None:
+        raise HTTPException(status_code=400, detail="Provide image_ids or filter criteria")
+
+    # Build config
+    config = {
+        "dataset_id": dataset_id,
+        "new_status": new_status,
+    }
+
+    if image_ids:
+        config["image_ids"] = image_ids
+    else:
+        config["filters"] = {}
+        if current_status:
+            config["filters"]["current_status"] = current_status
+        if has_annotations is not None:
+            config["filters"]["has_annotations"] = has_annotations
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_bulk_update_status",
+        "status": "pending",
+        "progress": 0,
+        "config": config,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk status update job queued for dataset '{dataset.data['name']}'",
+    }
+
+
 @router.post("/{dataset_id}/recalculate-counts")
 async def recalculate_dataset_counts_endpoint(dataset_id: str):
     """
@@ -737,6 +899,80 @@ async def get_export_status(dataset_id: str, job_id: str):
     # For now, exports are synchronous so this just returns not found
     # In async version, this would check job status in database
     raise HTTPException(status_code=404, detail="Export job not found or already completed")
+
+
+@router.post("/{dataset_id}/export/async")
+async def export_dataset_async(dataset_id: str, data: ExportRequest):
+    """
+    Async version: Export dataset as a background job with progress tracking.
+
+    Use this for large datasets where sync export might timeout.
+    Monitor progress via job status endpoint.
+
+    Args:
+        dataset_id: Dataset to export
+        data: Export configuration (format, include_images, etc.)
+
+    Returns:
+        Job ID for tracking progress
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets")\
+        .select("id, name")\
+        .eq("id", dataset_id)\
+        .single()\
+        .execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Validate format
+    if data.format not in ["yolo", "coco"]:
+        raise HTTPException(status_code=400, detail="Invalid format. Supported: yolo, coco")
+
+    # Build config
+    config = {
+        "dataset_id": dataset_id,
+        "format": data.format,
+        "include_images": data.include_images,
+    }
+
+    if data.version_id:
+        config["version_id"] = data.version_id
+    if data.split:
+        config["split"] = data.split
+    if data.config:
+        config_dict = data.config.model_dump()
+        if config_dict.get("train_split"):
+            config["train_split"] = config_dict["train_split"]
+        if config_dict.get("val_split"):
+            config["val_split"] = config_dict["val_split"]
+        if config_dict.get("test_split"):
+            config["test_split"] = config_dict["test_split"]
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_export_dataset",
+        "status": "pending",
+        "progress": 0,
+        "config": config,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Export job queued for dataset '{dataset.data['name']}'",
+    }
 
 
 # ===========================================

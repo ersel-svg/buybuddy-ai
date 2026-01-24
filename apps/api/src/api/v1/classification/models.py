@@ -23,6 +23,7 @@ router = APIRouter()
 async def list_models(
     model_type: Optional[str] = None,
     is_active: Optional[bool] = None,
+    training_run_id: Optional[str] = None,
     page: int = 1,
     limit: int = 50,
 ):
@@ -35,6 +36,8 @@ async def list_models(
         query = query.eq("model_type", model_type)
     if is_active is not None:
         query = query.eq("is_active", is_active)
+    if training_run_id:
+        query = query.eq("training_run_id", training_run_id)
 
     query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
 

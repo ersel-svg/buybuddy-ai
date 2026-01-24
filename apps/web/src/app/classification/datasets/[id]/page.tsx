@@ -90,10 +90,13 @@ import {
   CheckSquare,
   Square,
   X,
+  Sparkles,
+  Wand2,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { CLSImportModal } from "@/components/cls/import-modal";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 
 // Debounce hook
 function useDebounce<T>(value: T, delay: number): T {
@@ -191,6 +194,22 @@ export default function CLSDatasetDetailPage({
   const [valRatio, setValRatio] = useState(0.1);
   const [testRatio, setTestRatio] = useState(0.1);
 
+  // AI Auto Label dialog state
+  const [isAutoLabelDialogOpen, setIsAutoLabelDialogOpen] = useState(false);
+  const [selectedAIModel, setSelectedAIModel] = useState<string>("clip");
+  const [aiAutoAccept, setAiAutoAccept] = useState(false);
+  const [aiThreshold, setAiThreshold] = useState(0.5);
+  const [aiOverwriteExisting, setAiOverwriteExisting] = useState(false);
+  const [activeAIJobId, setActiveAIJobId] = useState<string | null>(null);
+
+  // Async job state
+  const [activeRemoveJobId, setActiveRemoveJobId] = useState<string | null>(null);
+  const [activeLabelJobId, setActiveLabelJobId] = useState<string | null>(null);
+
+  // Async thresholds
+  const ASYNC_REMOVE_THRESHOLD = 50;
+  const ASYNC_LABEL_THRESHOLD = 200;
+
   // Fetch dataset info
   const { data: dataset, isLoading: datasetLoading } = useQuery({
     queryKey: ["cls-dataset", datasetId],
@@ -235,6 +254,13 @@ export default function CLSDatasetDetailPage({
     queryKey: ["cls-dataset-split-stats", datasetId],
     queryFn: () => apiClient.getCLSDatasetSplitStats(datasetId),
     staleTime: 60000,
+  });
+
+  // Fetch available AI models
+  const { data: aiModels } = useQuery({
+    queryKey: ["cls-ai-models"],
+    queryFn: () => apiClient.getCLSAIModels(),
+    staleTime: 300000,
   });
 
   // Fetch available images (for add sheet)
@@ -283,6 +309,32 @@ export default function CLSDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to remove images: ${error.message}`);
+    },
+  });
+
+  const removeImagesAsyncMutation = useMutation({
+    mutationFn: (imageIds: string[]) =>
+      apiClient.removeCLSImagesFromDatasetAsync(datasetId, imageIds),
+    onSuccess: (result) => {
+      setActiveRemoveJobId(result.job_id);
+      toast.info(result.message);
+      setSelectedImages(new Set());
+    },
+    onError: (error) => {
+      toast.error(`Remove failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    },
+  });
+
+  const bulkSetLabelsAsyncMutation = useMutation({
+    mutationFn: ({ imageIds, classId }: { imageIds: string[]; classId: string }) =>
+      apiClient.bulkSetCLSLabelsAsync(datasetId, imageIds, classId),
+    onSuccess: (result) => {
+      setActiveLabelJobId(result.job_id);
+      toast.info(result.message);
+      setSelectedImages(new Set());
+    },
+    onError: (error) => {
+      toast.error(`Label failed: ${error instanceof Error ? error.message : "Unknown error"}`);
     },
   });
 
@@ -348,6 +400,27 @@ export default function CLSDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to create version: ${error.message}`);
+    },
+  });
+
+  // AI Auto Label mutation
+  const aiAutoLabelMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.batchClassifyCLSAI({
+        dataset_id: datasetId,
+        model: selectedAIModel,
+        threshold: aiThreshold,
+        auto_accept: aiAutoAccept,
+        overwrite_existing: aiOverwriteExisting,
+      });
+    },
+    onSuccess: (result) => {
+      setActiveAIJobId(result.job_id);
+      toast.success(result.message);
+      setIsAutoLabelDialogOpen(false);
+    },
+    onError: (error) => {
+      toast.error(`Failed to start AI labeling: ${error.message}`);
     },
   });
 
@@ -447,6 +520,14 @@ export default function CLSDatasetDetailPage({
           >
             <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setIsAutoLabelDialogOpen(true)}
+            disabled={!classes?.length || totalCount === 0}
+          >
+            <Wand2 className="h-4 w-4 mr-2" />
+            AI Auto Label
           </Button>
           <Button asChild>
             <Link href={`/classification/labeling?dataset=${datasetId}`}>
@@ -634,12 +715,17 @@ export default function CLSDatasetDetailPage({
                     size="sm"
                     onClick={() => {
                       if (confirm(`Remove ${selectedImages.size} images from dataset?`)) {
-                        removeImagesMutation.mutate(Array.from(selectedImages));
+                        const imageIds = Array.from(selectedImages);
+                        if (imageIds.length >= ASYNC_REMOVE_THRESHOLD) {
+                          removeImagesAsyncMutation.mutate(imageIds);
+                        } else {
+                          removeImagesMutation.mutate(imageIds);
+                        }
                       }
                     }}
-                    disabled={removeImagesMutation.isPending}
+                    disabled={removeImagesMutation.isPending || removeImagesAsyncMutation.isPending}
                   >
-                    {removeImagesMutation.isPending ? (
+                    {(removeImagesMutation.isPending || removeImagesAsyncMutation.isPending) ? (
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     ) : (
                       <Trash2 className="h-4 w-4 mr-2" />
@@ -1228,6 +1314,114 @@ export default function CLSDatasetDetailPage({
         </DialogContent>
       </Dialog>
 
+      {/* AI Auto Label Dialog */}
+      <Dialog open={isAutoLabelDialogOpen} onOpenChange={setIsAutoLabelDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-600" />
+              AI Auto Label
+            </DialogTitle>
+            <DialogDescription>
+              Use AI to automatically label all pending images in this dataset
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>AI Model</Label>
+              <Select value={selectedAIModel} onValueChange={setSelectedAIModel}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {aiModels?.zero_shot_models?.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name}
+                    </SelectItem>
+                  ))}
+                  {aiModels?.trained_models && aiModels.trained_models.length > 0 && (
+                    <>
+                      {aiModels.trained_models.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.name} (Trained)
+                        </SelectItem>
+                      ))}
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                CLIP uses your class names for zero-shot classification
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Confidence Threshold: {(aiThreshold * 100).toFixed(0)}%</Label>
+              <Input
+                type="range"
+                min="0.1"
+                max="0.9"
+                step="0.05"
+                value={aiThreshold}
+                onChange={(e) => setAiThreshold(parseFloat(e.target.value))}
+              />
+              <p className="text-xs text-muted-foreground">
+                Only predictions above this confidence will be saved
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="ai-auto-accept"
+                checked={aiAutoAccept}
+                onCheckedChange={(checked) => setAiAutoAccept(checked === true)}
+              />
+              <label htmlFor="ai-auto-accept" className="text-sm cursor-pointer">
+                Auto-accept predictions (skip manual review)
+              </label>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="ai-overwrite"
+                checked={aiOverwriteExisting}
+                onCheckedChange={(checked) => setAiOverwriteExisting(checked === true)}
+              />
+              <label htmlFor="ai-overwrite" className="text-sm cursor-pointer">
+                Overwrite existing labels
+              </label>
+            </div>
+
+            <div className="p-3 bg-muted rounded-lg">
+              <p className="text-sm">
+                <strong>{totalCount - labeledCount}</strong> unlabeled images will be processed.
+                {classes?.length ? (
+                  <span> Using <strong>{classes.length}</strong> classes for classification.</span>
+                ) : (
+                  <span className="text-destructive"> No classes defined yet!</span>
+                )}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAutoLabelDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => aiAutoLabelMutation.mutate()}
+              disabled={aiAutoLabelMutation.isPending || !classes?.length || (totalCount - labeledCount) === 0}
+            >
+              {aiAutoLabelMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Wand2 className="h-4 w-4 mr-2" />
+              )}
+              Start AI Labeling
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Import Modal (Visual Picker) */}
       <CLSImportModal
         open={isImportModalOpen}
@@ -1237,6 +1431,42 @@ export default function CLSDatasetDetailPage({
           queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
           queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
         }}
+      />
+
+      {/* Job Progress Modals */}
+      <JobProgressModal
+        jobId={activeRemoveJobId}
+        title="Removing Images"
+        onComplete={() => {
+          setActiveRemoveJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
+        }}
+        onClose={() => setActiveRemoveJobId(null)}
+      />
+
+      <JobProgressModal
+        jobId={activeLabelJobId}
+        title="Assigning Labels"
+        onComplete={() => {
+          setActiveLabelJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
+        }}
+        onClose={() => setActiveLabelJobId(null)}
+      />
+
+      <JobProgressModal
+        jobId={activeAIJobId}
+        title="AI Auto Labeling"
+        onComplete={() => {
+          setActiveAIJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset-images", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["cls-dataset-classes", datasetId] });
+          toast.success("AI labeling completed!");
+        }}
+        onClose={() => setActiveAIJobId(null)}
       />
     </div>
   );

@@ -108,6 +108,9 @@ export function convertWizardStateToApiRequest(
       multi_scale_range: hyperparams.multiScale
         ? hyperparams.multiScaleRange
         : undefined,
+
+      // Data Loading (Advanced)
+      data_loading: hyperparams.dataLoading,
     },
   };
 }

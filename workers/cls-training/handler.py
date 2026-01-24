@@ -413,12 +413,13 @@ DEFAULT_CONFIG = {
     # Anti-overfitting parameters (API can override based on dataset size)
     "drop_rate": 0.1,
     "drop_path_rate": 0.1,
-    # NEW: Preload config (for dataset image prefetching)
+    # Preload config (for dataset image prefetching)
     "preload_config": {
         "enabled": True,        # Prefetch images before training
-        "batched": False,       # Default: single-pass (existing behavior)
-        "batch_size": 500,      # Images per batch (if batched=True)
+        "batched": True,        # Default: batched mode (OD-style, memory safe)
+        "batch_size": 500,      # Images per batch
         "max_workers": 8,       # Parallel download threads
+        "use_memory_cache": False,  # Default: disk-only (OD-style, memory safe)
     },
 }
 
@@ -448,11 +449,12 @@ class URLImageDataset(Dataset):
             max_workers: Number of download workers
             production_config: Production settings for retry/timeout
             stats: TrainingStats for tracking failures
-            preload_config: NEW - Configurable preload settings:
+            preload_config: Configurable preload settings:
                 - enabled: Whether to preload (default: True)
-                - batched: Use batched mode with gc.collect (default: False)
+                - batched: Use batched mode with gc.collect (default: True)
                 - batch_size: Images per batch (default: 500)
                 - max_workers: Parallel threads (override max_workers param)
+                - use_memory_cache: Keep images in RAM (default: False for large datasets)
         """
         self.image_data = image_data
         self.transform = transform
@@ -466,10 +468,13 @@ class URLImageDataset(Dataset):
         # Read max_workers from config or use parameter
         self.max_workers = self.preload_config.get("max_workers", max_workers)
 
+        # Memory cache flag - default OFF for large datasets (OD-style)
+        self.use_memory_cache = self.preload_config.get("use_memory_cache", False)
+
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
-        # Pre-download images (optional)
+        # Memory cache (only used if use_memory_cache=True)
         self._cache = {}
         self._failed_urls = set()
 
@@ -481,8 +486,8 @@ class URLImageDataset(Dataset):
         url = item["url"]
         label = item["label"]
 
-        # Load image
-        if url in self._cache:
+        # Load image (check memory cache only if enabled)
+        if self.use_memory_cache and url in self._cache:
             img = self._cache[url]
         else:
             img = self._load_image(url)
@@ -550,26 +555,32 @@ class URLImageDataset(Dataset):
             max_workers: Parallel threads (default from config or self.max_workers)
 
         Config options (via preload_config):
-            - batched: Use batched mode with gc.collect (default: False)
+            - batched: Use batched mode with gc.collect (default: True)
             - batch_size: Images per batch (default: 500)
             - max_workers: Parallel threads (default: 8)
+
+        This downloads all images to disk cache before training,
+        then training loads from fast local disk instead of network.
         """
         import gc
 
         # Read from config with fallback to parameters and defaults
-        use_batched = self.preload_config.get("batched", False)  # Default: single-pass (existing behavior)
+        use_batched = self.preload_config.get("batched", True)  # Default: batched mode (OD-style)
         batch_size = batch_size or self.preload_config.get("batch_size", 500)
         max_workers = max_workers or self.max_workers
 
         total = len(self.image_data)
         mode_str = "batched" if use_batched else "single-pass"
-        print(f"Pre-loading {total} images ({mode_str}, batch_size={batch_size}, workers={max_workers})...")
+        cache_type = "memory+disk" if self.use_memory_cache else "disk-only"
+        print(f"Pre-loading {total} images ({mode_str}, cache: {cache_type}, batch_size={batch_size}, workers={max_workers})...")
 
         def download(item):
             url = item["url"]
             try:
                 img = self._load_image(url)
-                self._cache[url] = img
+                # Only cache in memory if enabled
+                if self.use_memory_cache:
+                    self._cache[url] = img
                 return url not in self._failed_urls
             except:
                 return False
@@ -601,7 +612,7 @@ class URLImageDataset(Dataset):
                 # Free memory after each batch
                 gc.collect()
         else:
-            # SINGLE-PASS MODE: Download all at once - faster for small datasets (existing behavior)
+            # SINGLE-PASS MODE: Download all at once - faster for small datasets
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 results = list(executor.map(download, self.image_data))
 

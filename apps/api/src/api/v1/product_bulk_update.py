@@ -508,3 +508,52 @@ async def execute_bulk_update(request: ExecuteRequest):
         failed=failed,
         execution_time_ms=execution_time_ms
     )
+
+
+ASYNC_UPDATE_THRESHOLD = 50
+
+
+@router.post("/execute/async")
+async def execute_bulk_update_async(request: ExecuteRequest):
+    """
+    Async version: Execute bulk update as a background job.
+
+    Use this for large updates (>50 products).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(request.updates) < ASYNC_UPDATE_THRESHOLD:
+        # Use sync version for small batches
+        return await execute_bulk_update(request)
+
+    # Convert updates to serializable format
+    updates_data = [
+        {"product_id": u.product_id, "fields": u.fields}
+        for u in request.updates
+    ]
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_bulk_update_products",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "updates": updates_data,
+            "mode": request.mode,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk update job queued for {len(request.updates)} products",
+    }

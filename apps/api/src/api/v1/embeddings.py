@@ -185,6 +185,41 @@ class EvaluationExtractionRequest(BaseModel):
     collection_name: Optional[str] = None  # Auto-generated if not provided
 
 
+class ProductionExtractionRequest(BaseModel):
+    """
+    Request for Tab 4: Production Extraction.
+    All products with ALL image types → Single Qdrant collection for inference.
+
+    This creates a production-ready embedding index with:
+    - Synthetic frames (360° video frames)
+    - Real images (matched cutouts)
+    - Augmented versions of both
+
+    SOTA approach: Multi-view + augmentation at index time for better recall.
+    """
+    # Model selection - either base model OR trained model
+    model_id: Optional[str] = None  # Base model ID
+    training_run_id: Optional[str] = None  # For trained model
+    checkpoint_id: Optional[str] = None  # Specific checkpoint (required if training_run_id set)
+
+    # Product source
+    product_source: Literal["all", "dataset", "selected"] = "all"
+    product_dataset_id: Optional[str] = None  # For "dataset" source
+    product_ids: Optional[list[str]] = None  # For "selected" source
+
+    # Image types to include (default: ALL for production)
+    image_types: list[Literal["synthetic", "real", "augmented"]] = ["synthetic", "real", "augmented"]
+
+    # Frame selection
+    frame_selection: Literal["first", "key_frames", "interval", "all"] = "key_frames"
+    frame_interval: int = 5
+    max_frames: int = 10  # Per image type
+
+    # Collection configuration
+    collection_mode: Literal["create", "replace"] = "create"
+    collection_name: Optional[str] = None  # Auto-generated: production_{model_name}
+
+
 class EmbeddingSyncRequest(BaseModel):
     """Request for synchronous embedding extraction."""
     model_id: Optional[str] = None  # If not provided, use active model
@@ -2420,6 +2455,243 @@ async def start_evaluation_extraction(
         "product_count": len(products),
         "total_embeddings": processed_count,
         "failed_count": failed_count,
+    }
+
+
+# ===========================================
+# Tab 4: Production Extraction Endpoint
+# ===========================================
+
+
+@router.post("/jobs/production")
+async def start_production_extraction(
+    request: ProductionExtractionRequest,
+    current_user: UserInfo = Depends(get_current_user),
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Start a production extraction job (Tab 4).
+
+    Creates a production-ready embedding collection with ALL image types
+    (synthetic, real, augmented) for similarity search / inference.
+
+    SOTA approach: Multi-view + augmentation at index time improves recall
+    because query images can match any angle or variation.
+    """
+    # Determine model source and get checkpoint URL
+    checkpoint_url = None
+    model_id = None
+    model_type = "dinov2-base"
+    model_name = "dinov2_base"
+    embedding_dim = 768
+
+    if request.training_run_id and request.checkpoint_id:
+        # Trained model - get checkpoint from training system
+        checkpoint = await db.get_training_checkpoint(request.checkpoint_id)
+        if not checkpoint:
+            raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+        checkpoint_url = checkpoint.get("checkpoint_url")
+        if not checkpoint_url:
+            raise HTTPException(status_code=400, detail="Checkpoint has no URL")
+
+        # Get training run for model info
+        training_run = await db.get_training_run(request.training_run_id)
+        if not training_run:
+            raise HTTPException(status_code=404, detail="Training run not found")
+
+        model_type = training_run.get("base_model_type", "dinov2-base")
+        model_name = training_run.get("name", "trained").lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = training_run.get("training_config", {}).get("embedding_dim", 512)
+        model_id = request.training_run_id  # Use training run ID as model reference
+
+    elif request.model_id:
+        # Base model
+        model = await db.get_embedding_model(request.model_id)
+        if not model:
+            raise HTTPException(status_code=404, detail="Model not found")
+
+        model_id = model["id"]
+        model_type = model.get("model_type", "dinov2-base")
+        model_name = model.get("name", model_type).lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = model.get("embedding_dim", 768)
+    else:
+        # Use active model
+        model = await db.get_active_embedding_model()
+        if not model:
+            raise HTTPException(status_code=404, detail="No active model found")
+
+        model_id = model["id"]
+        model_type = model.get("model_type", "dinov2-base")
+        model_name = model.get("name", model_type).lower().replace(" ", "_").replace("-", "_")
+        embedding_dim = model.get("embedding_dim", 768)
+
+    # Check services
+    if not runpod_service.is_configured(EndpointType.EMBEDDING):
+        raise HTTPException(status_code=500, detail="Embedding endpoint not configured")
+
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    # Generate collection name
+    collection_name = request.collection_name or f"production_{model_name}"
+
+    # Get products based on source
+    if request.product_source == "all":
+        products = await db.get_products_for_extraction(source_type="all")
+    elif request.product_source == "dataset":
+        if not request.product_dataset_id:
+            raise HTTPException(status_code=400, detail="Dataset ID required for dataset source")
+        products = await db.get_products_for_extraction(
+            source_type="dataset",
+            source_dataset_id=request.product_dataset_id,
+        )
+    elif request.product_source == "selected":
+        if not request.product_ids:
+            raise HTTPException(status_code=400, detail="Product IDs required for selected source")
+        products = await db.get_products_for_extraction(
+            source_type="selected",
+            source_product_ids=request.product_ids,
+        )
+    else:
+        products = await db.get_products_for_extraction(source_type="all")
+
+    if not products:
+        raise HTTPException(status_code=400, detail="No products found for extraction")
+
+    # Collect ALL images for each product
+    images_to_process = []
+    product_stats = {"synthetic": 0, "real": 0, "augmented": 0}
+
+    for p in products:
+        product_id = p["id"]
+
+        # Get images by type using the existing method
+        product_images = await db.get_product_images_by_types(
+            product_id=product_id,
+            image_types=request.image_types,
+            frame_selection=request.frame_selection,
+            frame_interval=request.frame_interval,
+            max_frames=request.max_frames,
+        )
+
+        for img in product_images:
+            img_type = img.get("image_type", "synthetic")
+            frame_idx = img.get("frame_index", 0)
+            img_url = img.get("image_url") or img.get("image_path")
+
+            if not img_url:
+                continue
+
+            # Create unique ID for each image
+            img_id = f"{product_id}_{img_type}_{frame_idx}"
+
+            images_to_process.append({
+                "id": img_id,
+                "url": img_url,
+                "type": "product",
+                "collection": collection_name,
+                "metadata": {
+                    "source": "product",
+                    "product_id": product_id,
+                    "image_type": img_type,
+                    "frame_index": frame_idx,
+                    "domain": img_type,  # synthetic/real/augmented
+                    "barcode": p.get("barcode"),
+                    "brand_name": p.get("brand_name"),
+                    "product_name": p.get("product_name"),
+                    "is_production": True,
+                },
+            })
+            product_stats[img_type] = product_stats.get(img_type, 0) + 1
+
+    total_images = len(images_to_process)
+
+    if total_images == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No images found. Check that products have images in product_images table."
+        )
+
+    # Create job record
+    job_data = {
+        "embedding_model_id": model_id,
+        "job_type": "full",
+        "source": "products",
+        "status": "running",
+        "total_images": total_images,
+        "processed_images": 0,
+        "purpose": "production",
+        "image_types": request.image_types,
+        "source_config": {
+            "product_source": request.product_source,
+            "product_count": len(products),
+            "image_stats": product_stats,
+            "has_checkpoint": checkpoint_url is not None,
+        },
+    }
+
+    job = await db.create_embedding_job(job_data)
+    job_id = job["id"]
+
+    # Create or replace collection
+    if request.collection_mode == "replace":
+        try:
+            await qdrant_service.delete_collection(collection_name)
+        except Exception:
+            pass
+
+    await qdrant_service.create_collection(
+        collection_name=collection_name,
+        vector_size=embedding_dim,
+        distance="Cosine",
+    )
+
+    # Process embeddings with checkpoint if using trained model
+    processed_count, failed_count = await _process_embedding_batch(
+        db, job_id, model_id, model_type, images_to_process,
+        batch_size=50,
+        checkpoint_url=checkpoint_url,
+    )
+
+    # Create collection metadata
+    try:
+        existing = await db.get_embedding_collection_by_name(collection_name)
+        if existing:
+            await db.update_embedding_collection(existing["id"], {
+                "vector_count": processed_count,
+                "last_sync_at": datetime.utcnow().isoformat(),
+            })
+        else:
+            await db.create_embedding_collection({
+                "name": collection_name,
+                "collection_type": "production",
+                "source_type": request.product_source,
+                "embedding_model_id": model_id,
+                "vector_count": processed_count,
+                "image_types": request.image_types,
+            })
+    except Exception as e:
+        print(f"Collection metadata error: {e}")
+
+    # Mark job completed
+    await db.update_embedding_job(job_id, {
+        "status": "completed",
+        "processed_images": processed_count,
+        "completed_at": datetime.utcnow().isoformat(),
+    })
+
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "collection_name": collection_name,
+        "product_count": len(products),
+        "image_stats": product_stats,
+        "total_embeddings": processed_count,
+        "failed_count": failed_count,
+        "model_type": model_type,
+        "embedding_dim": embedding_dim,
+        "has_trained_model": checkpoint_url is not None,
     }
 
 

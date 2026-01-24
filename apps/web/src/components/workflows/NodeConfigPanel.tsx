@@ -341,6 +341,15 @@ export function NodeConfigPanel({
           setAdvancedOpen={setAdvancedOpen}
         />
       );
+    case "smoothing":
+      return (
+        <SmoothingConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
     case "filter":
       return (
         <FilterConfig
@@ -371,6 +380,33 @@ export function NodeConfigPanel({
           setAdvancedOpen={setAdvancedOpen}
         />
       );
+    case "draw_masks":
+      return (
+        <DrawMasksConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
+    case "heatmap":
+      return (
+        <HeatmapConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
+    case "comparison":
+      return (
+        <ComparisonConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
     case "condition":
       return (
         <ConditionConfig
@@ -392,6 +428,33 @@ export function NodeConfigPanel({
     case "json_output":
       return (
         <JsonOutputConfig config={config} onConfigChange={onConfigChange} />
+      );
+    case "api_response":
+      return (
+        <APIResponseConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
+    case "webhook":
+      return (
+        <WebhookConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
+      );
+    case "aggregation":
+      return (
+        <AggregationConfig
+          config={config}
+          onConfigChange={onConfigChange}
+          advancedOpen={advancedOpen}
+          setAdvancedOpen={setAdvancedOpen}
+        />
       );
     case "segmentation":
       return (
@@ -486,14 +549,11 @@ function DetectionConfig({
     );
   }, [config.model_id]);
 
-  // Handle model selection - sets both model_id and model_source in single call
+  // Handle model selection - sets both model_id and model_source
   const handleModelSelect = (modelId: string) => {
     const model = models?.find((m) => m.id === modelId);
-    // Use batch update to avoid stale state issues
-    (onConfigChange as (updates: Record<string, unknown>) => void)({
-      model_id: modelId,
-      model_source: model?.source ?? "pretrained",
-    });
+    onConfigChange("model_id", modelId);
+    onConfigChange("model_source", model?.source ?? "pretrained");
   };
 
   return (
@@ -940,13 +1000,11 @@ function ClassificationConfig({
     return models.find((m) => m.id === modelId);
   }, [config.model_id, models]);
 
-  // Handle model selection - batch update to avoid stale state
+  // Handle model selection
   const handleModelSelect = (modelId: string) => {
     const model = models?.find((m) => m.id === modelId);
-    (onConfigChange as (updates: Record<string, unknown>) => void)({
-      model_id: modelId,
-      model_source: model?.source ?? "trained",
-    });
+    onConfigChange("model_id", modelId);
+    onConfigChange("model_source", model?.source ?? "trained");
   };
 
   return (
@@ -1454,13 +1512,11 @@ function EmbeddingConfig({
     return models.find((m) => m.id === modelId);
   }, [config.model_id, models]);
 
-  // Handle model selection - batch update to avoid stale state
+  // Handle model selection
   const handleModelSelect = (modelId: string) => {
     const model = models?.find((m) => m.id === modelId);
-    (onConfigChange as (updates: Record<string, unknown>) => void)({
-      model_id: modelId,
-      model_source: model?.source ?? "pretrained",
-    });
+    onConfigChange("model_id", modelId);
+    onConfigChange("model_source", model?.source ?? "pretrained");
   };
 
   return (
@@ -2265,13 +2321,11 @@ function SegmentationConfig({
     return models.find((m) => m.id === modelId);
   }, [config.model_id, models]);
 
-  // Handle model selection - batch update to avoid stale state
+  // Handle model selection
   const handleModelSelect = (modelId: string) => {
     const model = models?.find((m) => m.id === modelId);
-    (onConfigChange as (updates: Record<string, unknown>) => void)({
-      model_id: modelId,
-      model_source: model?.source ?? "pretrained",
-    });
+    onConfigChange("model_id", modelId);
+    onConfigChange("model_source", model?.source ?? "pretrained");
   };
 
   // Check if SAM3 model is selected (supports text prompts)
@@ -4212,6 +4266,289 @@ function NormalizeConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen
 }
 
 // ============================================================================
+// Smoothing Config - Classical CV Preprocessing
+// ============================================================================
+function SmoothingConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: ConfigSectionProps) {
+  const smoothingType = (config.smoothing_type as string) ?? "gaussian";
+
+  return (
+    <div className="space-y-4">
+      {/* Smoothing Type */}
+      <div className="space-y-2">
+        <Label className="text-xs">Smoothing Type</Label>
+        <Select
+          value={smoothingType}
+          onValueChange={(v) => onConfigChange("smoothing_type", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="gaussian">Gaussian Blur</SelectItem>
+            <SelectItem value="median">Median Blur</SelectItem>
+            <SelectItem value="bilateral">Bilateral Filter</SelectItem>
+            <SelectItem value="box">Box Blur</SelectItem>
+            <SelectItem value="motion">Motion Blur</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {smoothingType === "gaussian" && "General purpose smoothing, noise reduction"}
+          {smoothingType === "median" && "Salt-pepper noise removal, edge preserving"}
+          {smoothingType === "bilateral" && "Edge-preserving smoothing, best quality"}
+          {smoothingType === "box" && "Simple average, fast performance"}
+          {smoothingType === "motion" && "Directional blur for augmentation"}
+        </p>
+      </div>
+
+      {/* Kernel Size - for all except bilateral */}
+      {smoothingType !== "bilateral" && smoothingType !== "motion" && (
+        <div className="space-y-2">
+          <Label className="text-xs">Kernel Size</Label>
+          <div className="flex items-center gap-3">
+            <Slider
+              value={[(config.kernel_size as number) ?? 5]}
+              onValueChange={([v]) => {
+                // Ensure odd value
+                const oddVal = v % 2 === 0 ? v + 1 : v;
+                onConfigChange("kernel_size", oddVal);
+              }}
+              min={1}
+              max={31}
+              step={2}
+              className="flex-1"
+            />
+            <span className="text-sm font-mono w-8 text-right">
+              {(config.kernel_size as number) ?? 5}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">Larger = more blur (must be odd)</p>
+        </div>
+      )}
+
+      {/* Gaussian-specific: Sigma */}
+      {smoothingType === "gaussian" && (
+        <div className="space-y-2">
+          <Label className="text-xs">Sigma X</Label>
+          <div className="flex items-center gap-3">
+            <Slider
+              value={[(config.sigma_x as number) ?? 0]}
+              onValueChange={([v]) => onConfigChange("sigma_x", v)}
+              min={0}
+              max={10}
+              step={0.5}
+              className="flex-1"
+            />
+            <span className="text-sm font-mono w-10 text-right">
+              {(config.sigma_x as number) ?? 0}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">0 = auto from kernel size</p>
+        </div>
+      )}
+
+      {/* Bilateral-specific options */}
+      {smoothingType === "bilateral" && (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Diameter (d)</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.d as number) ?? 9]}
+                onValueChange={([v]) => onConfigChange("d", v)}
+                min={1}
+                max={25}
+                step={2}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-8 text-right">
+                {(config.d as number) ?? 9}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Sigma Color</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.sigma_color as number) ?? 75]}
+                onValueChange={([v]) => onConfigChange("sigma_color", v)}
+                min={10}
+                max={200}
+                step={5}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-10 text-right">
+                {(config.sigma_color as number) ?? 75}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">Larger = more colors mixed</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Sigma Space</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.sigma_space as number) ?? 75]}
+                onValueChange={([v]) => onConfigChange("sigma_space", v)}
+                min={10}
+                max={200}
+                step={5}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-10 text-right">
+                {(config.sigma_space as number) ?? 75}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">Larger = farther pixels influence</p>
+          </div>
+        </div>
+      )}
+
+      {/* Motion blur options */}
+      {smoothingType === "motion" && (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Motion Length</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.motion_length as number) ?? 15]}
+                onValueChange={([v]) => onConfigChange("motion_length", v)}
+                min={3}
+                max={51}
+                step={2}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-8 text-right">
+                {(config.motion_length as number) ?? 15}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Motion Angle (degrees)</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.motion_angle as number) ?? 0]}
+                onValueChange={([v]) => onConfigChange("motion_angle", v)}
+                min={0}
+                max={360}
+                step={15}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-10 text-right">
+                {(config.motion_angle as number) ?? 0}°
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">0° = horizontal, 90° = vertical</p>
+          </div>
+        </div>
+      )}
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground w-full py-2">
+          <Settings2 className="h-3 w-3" />
+          <span>Advanced Options</span>
+          <ChevronDown
+            className={`h-3 w-3 ml-auto transition-transform ${
+              advancedOpen ? "rotate-180" : ""
+            }`}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Iterations */}
+          <div className="space-y-2">
+            <Label className="text-xs">Iterations</Label>
+            <div className="flex items-center gap-3">
+              <Slider
+                value={[(config.iterations as number) ?? 1]}
+                onValueChange={([v]) => onConfigChange("iterations", v)}
+                min={1}
+                max={5}
+                step={1}
+                className="flex-1"
+              />
+              <span className="text-sm font-mono w-6 text-right">
+                {(config.iterations as number) ?? 1}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">Apply filter multiple times</p>
+          </div>
+
+          {/* ROI Option */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Apply to ROI Only</Label>
+              <p className="text-xs text-muted-foreground">Smooth only a region</p>
+            </div>
+            <Switch
+              checked={(config.apply_roi as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("apply_roi", v)}
+            />
+          </div>
+
+          {/* ROI coordinates when enabled */}
+          {!!config.apply_roi && (
+            <div className="space-y-2 pl-4 border-l-2 border-muted">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">X (0-1)</Label>
+                  <Input
+                    type="number"
+                    value={(config.roi_x as number) ?? 0}
+                    onChange={(e) => onConfigChange("roi_x", parseFloat(e.target.value))}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Y (0-1)</Label>
+                  <Input
+                    type="number"
+                    value={(config.roi_y as number) ?? 0}
+                    onChange={(e) => onConfigChange("roi_y", parseFloat(e.target.value))}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Width (0-1)</Label>
+                  <Input
+                    type="number"
+                    value={(config.roi_width as number) ?? 1}
+                    onChange={(e) => onConfigChange("roi_width", parseFloat(e.target.value))}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Height (0-1)</Label>
+                  <Input
+                    type="number"
+                    value={(config.roi_height as number) ?? 1}
+                    onChange={(e) => onConfigChange("roi_height", parseFloat(e.target.value))}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ============================================================================
 // Filter Config - SOTA
 // ============================================================================
 function FilterConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: ConfigSectionProps) {
@@ -5141,6 +5478,636 @@ function DrawBoxesConfig({
               max={32}
               step={2}
               className="w-full"
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ============================================================================
+// Draw Masks Config - SOTA Segmentation Visualization
+// ============================================================================
+function DrawMasksConfig({
+  config,
+  onConfigChange,
+  advancedOpen,
+  setAdvancedOpen,
+}: ConfigSectionProps) {
+  return (
+    <div className="space-y-4">
+      {/* Rendering Mode */}
+      <div className="space-y-2">
+        <Label className="text-xs">Rendering Mode</Label>
+        <Select
+          value={(config.mode as string) ?? "overlay"}
+          onValueChange={(v) => onConfigChange("mode", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="overlay">Overlay (transparent)</SelectItem>
+            <SelectItem value="contour">Contour Only</SelectItem>
+            <SelectItem value="filled">Filled (solid)</SelectItem>
+            <SelectItem value="side_by_side">Side by Side</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Color Palette */}
+      <div className="space-y-2">
+        <Label className="text-xs">Color Palette</Label>
+        <Select
+          value={(config.palette as string) ?? "rainbow"}
+          onValueChange={(v) => onConfigChange("palette", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="rainbow">Rainbow (vibrant)</SelectItem>
+            <SelectItem value="category">Category (COCO style)</SelectItem>
+            <SelectItem value="pastel">Pastel (soft)</SelectItem>
+            <SelectItem value="viridis">Viridis (scientific)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Opacity */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Opacity</Label>
+          <span className="text-xs text-muted-foreground">
+            {Math.round(((config.opacity as number) ?? 0.5) * 100)}%
+          </span>
+        </div>
+        <Slider
+          value={[((config.opacity as number) ?? 0.5) * 100]}
+          onValueChange={([v]) => onConfigChange("opacity", v / 100)}
+          min={0}
+          max={100}
+          step={5}
+          className="w-full"
+        />
+      </div>
+
+      {/* Draw Contours */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Draw Contours</Label>
+          <p className="text-xs text-muted-foreground">Show mask edges</p>
+        </div>
+        <Switch
+          checked={(config.draw_contours as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("draw_contours", v)}
+        />
+      </div>
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground w-full py-2">
+          <Settings2 className="h-3 w-3" />
+          <span>Advanced Options</span>
+          <ChevronDown
+            className={`h-3 w-3 ml-auto transition-transform ${
+              advancedOpen ? "rotate-180" : ""
+            }`}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Contour Thickness */}
+          {Boolean(config.draw_contours) && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Contour Thickness</Label>
+                <span className="text-xs text-muted-foreground">
+                  {(config.contour_thickness as number) ?? 2}px
+                </span>
+              </div>
+              <Slider
+                value={[(config.contour_thickness as number) ?? 2]}
+                onValueChange={([v]) => onConfigChange("contour_thickness", v)}
+                min={1}
+                max={5}
+                step={1}
+                className="w-full"
+              />
+            </div>
+          )}
+
+          {/* Show Labels */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Show Labels</Label>
+              <p className="text-xs text-muted-foreground">Display class names</p>
+            </div>
+            <Switch
+              checked={(config.show_labels as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("show_labels", v)}
+            />
+          </div>
+
+          {/* Show Areas */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Show Areas</Label>
+              <p className="text-xs text-muted-foreground">Display pixel counts</p>
+            </div>
+            <Switch
+              checked={(config.show_areas as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("show_areas", v)}
+            />
+          </div>
+
+          {/* Show IoU */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Show IoU Scores</Label>
+              <p className="text-xs text-muted-foreground">Display confidence</p>
+            </div>
+            <Switch
+              checked={(config.show_iou as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("show_iou", v)}
+            />
+          </div>
+
+          {/* Min Area Filter */}
+          <div className="space-y-2">
+            <Label className="text-xs">Min Area (pixels)</Label>
+            <Input
+              type="number"
+              value={(config.min_area as number) ?? 0}
+              onChange={(e) => onConfigChange("min_area", parseInt(e.target.value) || 0)}
+              min={0}
+              className="h-8"
+            />
+          </div>
+
+          {/* Max Masks */}
+          <div className="space-y-2">
+            <Label className="text-xs">Max Masks to Display</Label>
+            <Input
+              type="number"
+              value={(config.max_masks as number) ?? 100}
+              onChange={(e) => onConfigChange("max_masks", parseInt(e.target.value) || 100)}
+              min={1}
+              max={500}
+              className="h-8"
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ============================================================================
+// Heatmap Config - SOTA Attention/Activation Visualization
+// ============================================================================
+function HeatmapConfig({
+  config,
+  onConfigChange,
+  advancedOpen,
+  setAdvancedOpen,
+}: ConfigSectionProps) {
+  return (
+    <div className="space-y-4">
+      {/* Colormap */}
+      <div className="space-y-2">
+        <Label className="text-xs">Colormap</Label>
+        <Select
+          value={(config.colormap as string) ?? "jet"}
+          onValueChange={(v) => onConfigChange("colormap", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="jet">Jet (blue→red)</SelectItem>
+            <SelectItem value="viridis">Viridis (purple→yellow)</SelectItem>
+            <SelectItem value="hot">Hot (black→white)</SelectItem>
+            <SelectItem value="cool">Cool (cyan→magenta)</SelectItem>
+            <SelectItem value="plasma">Plasma</SelectItem>
+            <SelectItem value="inferno">Inferno</SelectItem>
+            <SelectItem value="magma">Magma</SelectItem>
+            <SelectItem value="turbo">Turbo</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Opacity */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Opacity</Label>
+          <span className="text-xs text-muted-foreground">
+            {Math.round(((config.opacity as number) ?? 0.6) * 100)}%
+          </span>
+        </div>
+        <Slider
+          value={[((config.opacity as number) ?? 0.6) * 100]}
+          onValueChange={([v]) => onConfigChange("opacity", v / 100)}
+          min={0}
+          max={100}
+          step={5}
+          className="w-full"
+        />
+      </div>
+
+      {/* Blend Mode */}
+      <div className="space-y-2">
+        <Label className="text-xs">Blend Mode</Label>
+        <Select
+          value={(config.blend_mode as string) ?? "overlay"}
+          onValueChange={(v) => onConfigChange("blend_mode", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="overlay">Overlay (standard)</SelectItem>
+            <SelectItem value="multiply">Multiply (darker)</SelectItem>
+            <SelectItem value="screen">Screen (lighter)</SelectItem>
+            <SelectItem value="add">Add (bright)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Threshold */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Threshold</Label>
+          <span className="text-xs text-muted-foreground">
+            {Math.round(((config.threshold as number) ?? 0) * 100)}%
+          </span>
+        </div>
+        <Slider
+          value={[((config.threshold as number) ?? 0) * 100]}
+          onValueChange={([v]) => onConfigChange("threshold", v / 100)}
+          min={0}
+          max={50}
+          step={5}
+          className="w-full"
+        />
+        <p className="text-xs text-muted-foreground">Hide low values (0 = show all)</p>
+      </div>
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground w-full py-2">
+          <Settings2 className="h-3 w-3" />
+          <span>Advanced Options</span>
+          <ChevronDown
+            className={`h-3 w-3 ml-auto transition-transform ${
+              advancedOpen ? "rotate-180" : ""
+            }`}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Normalize */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Normalize Values</Label>
+              <p className="text-xs text-muted-foreground">Scale to 0-1 range</p>
+            </div>
+            <Switch
+              checked={(config.normalize as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("normalize", v)}
+            />
+          </div>
+
+          {/* Normalization Method */}
+          {config.normalize !== false && (
+            <div className="space-y-2">
+              <Label className="text-xs">Normalization Method</Label>
+              <Select
+                value={(config.normalize_method as string) ?? "minmax"}
+                onValueChange={(v) => onConfigChange("normalize_method", v)}
+              >
+                <SelectTrigger className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="minmax">Min-Max (full range)</SelectItem>
+                  <SelectItem value="percentile">Percentile (robust)</SelectItem>
+                  <SelectItem value="zscore">Z-Score (standard)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Smooth */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Smooth Heatmap</Label>
+              <p className="text-xs text-muted-foreground">Gaussian blur</p>
+            </div>
+            <Switch
+              checked={(config.smooth as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("smooth", v)}
+            />
+          </div>
+
+          {/* Smooth Sigma */}
+          {config.smooth !== false && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Smooth Sigma</Label>
+                <span className="text-xs text-muted-foreground">
+                  {(config.smooth_sigma as number) ?? 2}
+                </span>
+              </div>
+              <Slider
+                value={[(config.smooth_sigma as number) ?? 2]}
+                onValueChange={([v]) => onConfigChange("smooth_sigma", v)}
+                min={1}
+                max={10}
+                step={1}
+                className="w-full"
+              />
+            </div>
+          )}
+
+          {/* Output Colorbar */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Generate Colorbar</Label>
+              <p className="text-xs text-muted-foreground">Output legend image</p>
+            </div>
+            <Switch
+              checked={(config.output_colorbar as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("output_colorbar", v)}
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ============================================================================
+// Comparison Config - SOTA Visual Comparison
+// ============================================================================
+function ComparisonConfig({
+  config,
+  onConfigChange,
+  advancedOpen,
+  setAdvancedOpen,
+}: ConfigSectionProps) {
+  const mode = (config.mode as string) ?? "side_by_side";
+
+  return (
+    <div className="space-y-4">
+      {/* Comparison Mode */}
+      <div className="space-y-2">
+        <Label className="text-xs">Comparison Mode</Label>
+        <Select
+          value={mode}
+          onValueChange={(v) => onConfigChange("mode", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="side_by_side">Side by Side</SelectItem>
+            <SelectItem value="top_bottom">Top / Bottom</SelectItem>
+            <SelectItem value="overlay">Overlay Blend</SelectItem>
+            <SelectItem value="difference">Difference Map</SelectItem>
+            <SelectItem value="checkerboard">Checkerboard</SelectItem>
+            <SelectItem value="grid">Grid Layout</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {mode === "side_by_side" && "Images placed horizontally"}
+          {mode === "top_bottom" && "Images stacked vertically"}
+          {mode === "overlay" && "Transparent blend of both"}
+          {mode === "difference" && "Highlight differences"}
+          {mode === "checkerboard" && "Alternating tiles"}
+          {mode === "grid" && "Multiple images in grid"}
+        </p>
+      </div>
+
+      {/* Labels */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Show Labels</Label>
+          <p className="text-xs text-muted-foreground">Display image labels</p>
+        </div>
+        <Switch
+          checked={(config.show_labels as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("show_labels", v)}
+        />
+      </div>
+
+      {/* Label Inputs */}
+      {config.show_labels !== false && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Label A</Label>
+            <Input
+              type="text"
+              value={(config.label_a as string) ?? "Before"}
+              onChange={(e) => onConfigChange("label_a", e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Label B</Label>
+            <Input
+              type="text"
+              value={(config.label_b as string) ?? "After"}
+              onChange={(e) => onConfigChange("label_b", e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Overlay Opacity (for overlay mode) */}
+      {mode === "overlay" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Blend Opacity</Label>
+            <span className="text-xs text-muted-foreground">
+              {Math.round(((config.overlay_opacity as number) ?? 0.5) * 100)}%
+            </span>
+          </div>
+          <Slider
+            value={[((config.overlay_opacity as number) ?? 0.5) * 100]}
+            onValueChange={([v]) => onConfigChange("overlay_opacity", v / 100)}
+            min={0}
+            max={100}
+            step={5}
+            className="w-full"
+          />
+        </div>
+      )}
+
+      {/* Difference Options */}
+      {mode === "difference" && (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Difference Type</Label>
+            <Select
+              value={(config.diff_type as string) ?? "absolute"}
+              onValueChange={(v) => onConfigChange("diff_type", v)}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="absolute">Absolute Difference</SelectItem>
+                <SelectItem value="signed">Signed Difference</SelectItem>
+                <SelectItem value="edge">Edge Difference</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Colorize Difference</Label>
+              <p className="text-xs text-muted-foreground">Green=same, Red=different</p>
+            </div>
+            <Switch
+              checked={(config.diff_colorize as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("diff_colorize", v)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Amplify Difference</Label>
+              <span className="text-xs text-muted-foreground">
+                {(config.diff_amplify as number) ?? 1}x
+              </span>
+            </div>
+            <Slider
+              value={[(config.diff_amplify as number) ?? 1]}
+              onValueChange={([v]) => onConfigChange("diff_amplify", v)}
+              min={1}
+              max={10}
+              step={1}
+              className="w-full"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Checkerboard Size */}
+      {mode === "checkerboard" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Tile Size</Label>
+            <span className="text-xs text-muted-foreground">
+              {(config.checker_size as number) ?? 50}px
+            </span>
+          </div>
+          <Slider
+            value={[(config.checker_size as number) ?? 50]}
+            onValueChange={([v]) => onConfigChange("checker_size", v)}
+            min={20}
+            max={200}
+            step={10}
+            className="w-full"
+          />
+        </div>
+      )}
+
+      {/* Grid Columns */}
+      {mode === "grid" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Grid Columns</Label>
+            <span className="text-xs text-muted-foreground">
+              {(config.grid_cols as number) ?? 2}
+            </span>
+          </div>
+          <Slider
+            value={[(config.grid_cols as number) ?? 2]}
+            onValueChange={([v]) => onConfigChange("grid_cols", v)}
+            min={2}
+            max={6}
+            step={1}
+            className="w-full"
+          />
+        </div>
+      )}
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground w-full py-2">
+          <Settings2 className="h-3 w-3" />
+          <span>Advanced Options</span>
+          <ChevronDown
+            className={`h-3 w-3 ml-auto transition-transform ${
+              advancedOpen ? "rotate-180" : ""
+            }`}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Show Border */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Show Border</Label>
+              <p className="text-xs text-muted-foreground">Border between images</p>
+            </div>
+            <Switch
+              checked={(config.show_border as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("show_border", v)}
+            />
+          </div>
+
+          {/* Border Width */}
+          {config.show_border !== false && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Border Width</Label>
+                <span className="text-xs text-muted-foreground">
+                  {(config.border_width as number) ?? 2}px
+                </span>
+              </div>
+              <Slider
+                value={[(config.border_width as number) ?? 2]}
+                onValueChange={([v]) => onConfigChange("border_width", v)}
+                min={1}
+                max={10}
+                step={1}
+                className="w-full"
+              />
+            </div>
+          )}
+
+          {/* Border Color */}
+          {config.show_border !== false && (
+            <div className="space-y-2">
+              <Label className="text-xs">Border Color</Label>
+              <div className="flex gap-2">
+                <Input
+                  type="color"
+                  value={(config.border_color as string) ?? "#ffffff"}
+                  onChange={(e) => onConfigChange("border_color", e.target.value)}
+                  className="h-8 w-12 p-1"
+                />
+                <Input
+                  type="text"
+                  value={(config.border_color as string) ?? "#ffffff"}
+                  onChange={(e) => onConfigChange("border_color", e.target.value)}
+                  className="h-8 flex-1"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Compute Diff Stats */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Compute Diff Stats</Label>
+              <p className="text-xs text-muted-foreground">MSE, PSNR, changed %</p>
+            </div>
+            <Switch
+              checked={(config.compute_diff_stats as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("compute_diff_stats", v)}
             />
           </div>
         </CollapsibleContent>
@@ -6248,7 +7215,7 @@ function CollectConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }
       </div>
 
       {/* Flatten Depth */}
-      {config.flatten && (
+      {!!config.flatten && (
         <div className="space-y-2 pl-4 border-l-2 border-muted">
           <div className="flex items-center justify-between">
             <Label className="text-xs">Flatten Depth</Label>
@@ -6288,7 +7255,7 @@ function CollectConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }
             />
           </div>
 
-          {config.sort_results && (
+          {!!config.sort_results && (
             <div className="space-y-3 pl-4 border-l-2 border-muted">
               <div className="space-y-2">
                 <Label className="text-xs">Sort By</Label>
@@ -6611,6 +7578,752 @@ function MapConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: Co
         <p>
           <strong>results:</strong> Transformed array<br />
           <strong>count:</strong> Number of items
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// API Response Config - SOTA REST API Response Formatting
+// ============================================================================
+function APIResponseConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: ConfigSectionProps) {
+  return (
+    <div className="space-y-4">
+      {/* Response Format */}
+      <div className="space-y-2">
+        <Label className="text-xs">Response Format</Label>
+        <Select
+          value={(config.format as string) ?? "standard"}
+          onValueChange={(v) => onConfigChange("format", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="standard">Standard JSON</SelectItem>
+            <SelectItem value="hal">HAL (Hypertext)</SelectItem>
+            <SelectItem value="jsonapi">JSON:API</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          REST API response specification
+        </p>
+      </div>
+
+      {/* Pagination Enabled */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Enable Pagination</Label>
+          <p className="text-xs text-muted-foreground">
+            Add pagination metadata
+          </p>
+        </div>
+        <Switch
+          checked={(config.pagination_enabled as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("pagination_enabled", v)}
+        />
+      </div>
+
+      {/* Pagination Style */}
+      {(config.pagination_enabled ?? true) && (
+        <div className="space-y-2">
+          <Label className="text-xs">Pagination Style</Label>
+          <Select
+            value={(config.pagination_style as string) ?? "offset"}
+            onValueChange={(v) => onConfigChange("pagination_style", v)}
+          >
+            <SelectTrigger className="h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="offset">Offset/Limit</SelectItem>
+              <SelectItem value="cursor">Cursor-based</SelectItem>
+              <SelectItem value="page">Page Numbers</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Per Page */}
+      {(config.pagination_enabled ?? true) && (
+        <div className="space-y-2">
+          <Label className="text-xs">Items Per Page</Label>
+          <Input
+            type="number"
+            value={(config.per_page as number) ?? 50}
+            onChange={(e) => onConfigChange("per_page", parseInt(e.target.value) || 50)}
+            min={1}
+            max={1000}
+            className="h-8"
+          />
+        </div>
+      )}
+
+      {/* Include Metadata */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Include Metadata</Label>
+          <p className="text-xs text-muted-foreground">
+            Workflow ID, execution time, timestamp
+          </p>
+        </div>
+        <Switch
+          checked={(config.include_metadata as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("include_metadata", v)}
+        />
+      </div>
+
+      {/* Include Timing */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Include Timing</Label>
+          <p className="text-xs text-muted-foreground">
+            Execution time in milliseconds
+          </p>
+        </div>
+        <Switch
+          checked={(config.include_timing as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("include_timing", v)}
+        />
+      </div>
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="w-full justify-between h-8">
+            <span className="text-xs">Advanced Options</span>
+            <ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Resource Name */}
+          <div className="space-y-2">
+            <Label className="text-xs">Resource Name</Label>
+            <Input
+              type="text"
+              value={(config.resource_name as string) ?? "items"}
+              onChange={(e) => onConfigChange("resource_name", e.target.value)}
+              placeholder="items"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Name for the data collection (used in HAL/JSON:API)
+            </p>
+          </div>
+
+          {/* Base URL */}
+          <div className="space-y-2">
+            <Label className="text-xs">Base URL</Label>
+            <Input
+              type="text"
+              value={(config.base_url as string) ?? "/api/v1"}
+              onChange={(e) => onConfigChange("base_url", e.target.value)}
+              placeholder="/api/v1"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Base URL for pagination links
+            </p>
+          </div>
+
+          {/* Include Links */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Include Link Headers</Label>
+              <p className="text-xs text-muted-foreground">
+                RFC 5988 Link headers for pagination
+              </p>
+            </div>
+            <Switch
+              checked={(config.include_links as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("include_links", v)}
+            />
+          </div>
+
+          {/* Wrap Single */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Wrap Single Item</Label>
+              <p className="text-xs text-muted-foreground">
+                Wrap single item in array
+              </p>
+            </div>
+            <Switch
+              checked={(config.wrap_single as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("wrap_single", v)}
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* Info Box */}
+      <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
+        <p className="font-medium text-foreground mb-1">Outputs</p>
+        <p>
+          <strong>response:</strong> Formatted API response<br />
+          <strong>status_code:</strong> HTTP status code<br />
+          <strong>headers:</strong> Response headers
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Webhook Config - External API Integration
+// ============================================================================
+function WebhookConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: ConfigSectionProps) {
+  return (
+    <div className="space-y-4">
+      {/* Webhook URL */}
+      <div className="space-y-2">
+        <Label className="text-xs">Webhook URL</Label>
+        <Input
+          type="text"
+          value={(config.url as string) ?? ""}
+          onChange={(e) => onConfigChange("url", e.target.value)}
+          placeholder="https://api.example.com/webhook"
+          className="h-8 font-mono text-xs"
+        />
+        <p className="text-xs text-muted-foreground">
+          Endpoint to receive workflow results
+        </p>
+      </div>
+
+      {/* HTTP Method */}
+      <div className="space-y-2">
+        <Label className="text-xs">HTTP Method</Label>
+        <Select
+          value={(config.method as string) ?? "POST"}
+          onValueChange={(v) => onConfigChange("method", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="POST">POST</SelectItem>
+            <SelectItem value="PUT">PUT</SelectItem>
+            <SelectItem value="PATCH">PATCH</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Authentication */}
+      <div className="space-y-2">
+        <Label className="text-xs">Authentication</Label>
+        <Select
+          value={(config.auth_type as string) ?? "none"}
+          onValueChange={(v) => onConfigChange("auth_type", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No Authentication</SelectItem>
+            <SelectItem value="api_key">API Key</SelectItem>
+            <SelectItem value="bearer">Bearer Token</SelectItem>
+            <SelectItem value="basic">Basic Auth</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Auth Value */}
+      {Boolean(config.auth_type) && config.auth_type !== "none" && (
+        <div className="space-y-2">
+          <Label className="text-xs">
+            {config.auth_type === "api_key" && "API Key"}
+            {config.auth_type === "bearer" && "Bearer Token"}
+            {config.auth_type === "basic" && "Credentials (user:pass)"}
+          </Label>
+          <Input
+            type="password"
+            value={(config.auth_value as string) ?? ""}
+            onChange={(e) => onConfigChange("auth_value", e.target.value)}
+            placeholder={
+              config.auth_type === "basic" ? "username:password" : "your-secret-key"
+            }
+            className="h-8 font-mono text-xs"
+          />
+        </div>
+      )}
+
+      {/* Retry Enabled */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Label className="text-xs">Enable Retry</Label>
+          <p className="text-xs text-muted-foreground">
+            Retry on failure with backoff
+          </p>
+        </div>
+        <Switch
+          checked={(config.retry_enabled as boolean) ?? true}
+          onCheckedChange={(v) => onConfigChange("retry_enabled", v)}
+        />
+      </div>
+
+      {/* Advanced Options */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="w-full justify-between h-8">
+            <span className="text-xs">Advanced Options</span>
+            <ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-4 pt-2">
+          {/* Timeout */}
+          <div className="space-y-2">
+            <Label className="text-xs">Timeout (seconds)</Label>
+            <Input
+              type="number"
+              value={(config.timeout as number) ?? 30}
+              onChange={(e) => onConfigChange("timeout", parseInt(e.target.value) || 30)}
+              min={1}
+              max={300}
+              className="h-8"
+            />
+          </div>
+
+          {/* Max Retries */}
+          {(config.retry_enabled ?? true) && (
+            <div className="space-y-2">
+              <Label className="text-xs">Max Retries</Label>
+              <Input
+                type="number"
+                value={(config.retry_max as number) ?? 3}
+                onChange={(e) => onConfigChange("retry_max", parseInt(e.target.value) || 3)}
+                min={0}
+                max={10}
+                className="h-8"
+              />
+            </div>
+          )}
+
+          {/* Batching */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Enable Batching</Label>
+              <p className="text-xs text-muted-foreground">
+                Split large datasets into batches
+              </p>
+            </div>
+            <Switch
+              checked={(config.batch_enabled as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("batch_enabled", v)}
+            />
+          </div>
+
+          {Boolean(config.batch_enabled) && (
+            <div className="space-y-2">
+              <Label className="text-xs">Batch Size</Label>
+              <Input
+                type="number"
+                value={(config.batch_size as number) ?? 100}
+                onChange={(e) => onConfigChange("batch_size", parseInt(e.target.value) || 100)}
+                min={1}
+                max={10000}
+                className="h-8"
+              />
+            </div>
+          )}
+
+          {/* Fire and Forget */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Fire and Forget</Label>
+              <p className="text-xs text-muted-foreground">
+                Don&apos;t wait for response (async)
+              </p>
+            </div>
+            <Switch
+              checked={(config.fire_and_forget as boolean) ?? false}
+              onCheckedChange={(v) => onConfigChange("fire_and_forget", v)}
+            />
+          </div>
+
+          {/* Include Metadata */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Include Metadata</Label>
+              <p className="text-xs text-muted-foreground">
+                Add workflow ID, timestamp to request
+              </p>
+            </div>
+            <Switch
+              checked={(config.include_metadata as boolean) ?? true}
+              onCheckedChange={(v) => onConfigChange("include_metadata", v)}
+            />
+          </div>
+
+          {/* Data Field Name */}
+          <div className="space-y-2">
+            <Label className="text-xs">Data Field Name</Label>
+            <Input
+              type="text"
+              value={(config.data_field as string) ?? "data"}
+              onChange={(e) => onConfigChange("data_field", e.target.value)}
+              placeholder="data"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Field name to wrap data in request body
+            </p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* Info Box */}
+      <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
+        <p className="font-medium text-foreground mb-1">Outputs</p>
+        <p>
+          <strong>response:</strong> API response body<br />
+          <strong>status_code:</strong> HTTP status<br />
+          <strong>success:</strong> Whether request succeeded<br />
+          <strong>request_id:</strong> Tracking ID
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Aggregation Config - Data Processing & Summarization
+// ============================================================================
+function AggregationConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen }: ConfigSectionProps) {
+  const operation = (config.operation as string) ?? "flatten";
+
+  return (
+    <div className="space-y-4">
+      {/* Operation Type */}
+      <div className="space-y-2">
+        <Label className="text-xs">Operation</Label>
+        <Select
+          value={operation}
+          onValueChange={(v) => onConfigChange("operation", v)}
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="flatten">Flatten Nested Arrays</SelectItem>
+            <SelectItem value="group">Group By Field</SelectItem>
+            <SelectItem value="stats">Calculate Statistics</SelectItem>
+            <SelectItem value="top_n">Top N Items</SelectItem>
+            <SelectItem value="pivot">Pivot Table</SelectItem>
+            <SelectItem value="dedupe">Remove Duplicates</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {operation === "flatten" && "Flatten detection→matches into flat table"}
+          {operation === "group" && "Group items by field and aggregate"}
+          {operation === "stats" && "Calculate min, max, avg, percentiles"}
+          {operation === "top_n" && "Get top N items by field"}
+          {operation === "pivot" && "Create pivot table from data"}
+          {operation === "dedupe" && "Remove duplicate entries"}
+        </p>
+      </div>
+
+      {/* Flatten Config */}
+      {operation === "flatten" && (
+        <div className="space-y-4 border-l-2 border-muted pl-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Child Field</Label>
+            <Input
+              type="text"
+              value={(config.flatten_config as Record<string, unknown>)?.child_field as string ?? "matches"}
+              onChange={(e) => onConfigChange("flatten_config", {
+                ...((config.flatten_config as Record<string, unknown>) ?? {}),
+                child_field: e.target.value,
+              })}
+              placeholder="matches"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Field containing nested array to flatten
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Parent Prefix</Label>
+            <Input
+              type="text"
+              value={(config.flatten_config as Record<string, unknown>)?.parent_prefix as string ?? "parent_"}
+              onChange={(e) => onConfigChange("flatten_config", {
+                ...((config.flatten_config as Record<string, unknown>) ?? {}),
+                parent_prefix: e.target.value,
+              })}
+              placeholder="parent_"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Add Index Columns</Label>
+            <Switch
+              checked={(config.flatten_config as Record<string, unknown>)?.add_index as boolean ?? true}
+              onCheckedChange={(v) => onConfigChange("flatten_config", {
+                ...((config.flatten_config as Record<string, unknown>) ?? {}),
+                add_index: v,
+              })}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Group Config */}
+      {operation === "group" && (
+        <div className="space-y-4 border-l-2 border-muted pl-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Group By Field</Label>
+            <Input
+              type="text"
+              value={(config.group_config as Record<string, unknown>)?.by as string ?? "class_name"}
+              onChange={(e) => onConfigChange("group_config", {
+                ...((config.group_config as Record<string, unknown>) ?? {}),
+                by: e.target.value,
+              })}
+              placeholder="class_name"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Aggregation Function</Label>
+            <Select
+              value={(config.group_config as Record<string, unknown>)?.agg_func as string ?? "count"}
+              onValueChange={(v) => onConfigChange("group_config", {
+                ...((config.group_config as Record<string, unknown>) ?? {}),
+                agg_func: v,
+              })}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="count">Count</SelectItem>
+                <SelectItem value="sum">Sum</SelectItem>
+                <SelectItem value="avg">Average</SelectItem>
+                <SelectItem value="min">Minimum</SelectItem>
+                <SelectItem value="max">Maximum</SelectItem>
+                <SelectItem value="collect">Collect Values</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Aggregate Field (optional)</Label>
+            <Input
+              type="text"
+              value={(config.group_config as Record<string, unknown>)?.agg_field as string ?? ""}
+              onChange={(e) => onConfigChange("group_config", {
+                ...((config.group_config as Record<string, unknown>) ?? {}),
+                agg_field: e.target.value,
+              })}
+              placeholder="confidence"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Sort Order</Label>
+            <Select
+              value={(config.group_config as Record<string, unknown>)?.sort_order as string ?? "desc"}
+              onValueChange={(v) => onConfigChange("group_config", {
+                ...((config.group_config as Record<string, unknown>) ?? {}),
+                sort_order: v,
+              })}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="desc">Descending (highest first)</SelectItem>
+                <SelectItem value="asc">Ascending (lowest first)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+
+      {/* Stats Config */}
+      {operation === "stats" && (
+        <div className="space-y-4 border-l-2 border-muted pl-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Fields to Analyze</Label>
+            <Input
+              type="text"
+              value={
+                Array.isArray((config.stats_config as Record<string, unknown>)?.fields)
+                  ? ((config.stats_config as Record<string, unknown>)?.fields as string[]).join(", ")
+                  : "confidence, score, similarity"
+              }
+              onChange={(e) => {
+                const fields = e.target.value.split(",").map((f) => f.trim()).filter(Boolean);
+                onConfigChange("stats_config", {
+                  ...((config.stats_config as Record<string, unknown>) ?? {}),
+                  fields,
+                });
+              }}
+              placeholder="confidence, score"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Comma-separated numeric fields
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-xs">Include Distribution</Label>
+              <p className="text-xs text-muted-foreground">
+                Add percentiles (p25, p50, p75, p90)
+              </p>
+            </div>
+            <Switch
+              checked={(config.stats_config as Record<string, unknown>)?.include_distribution as boolean ?? false}
+              onCheckedChange={(v) => onConfigChange("stats_config", {
+                ...((config.stats_config as Record<string, unknown>) ?? {}),
+                include_distribution: v,
+              })}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Top N Config */}
+      {operation === "top_n" && (
+        <div className="space-y-4 border-l-2 border-muted pl-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Number of Items (N)</Label>
+            <Input
+              type="number"
+              value={(config.top_n_config as Record<string, unknown>)?.n as number ?? 10}
+              onChange={(e) => onConfigChange("top_n_config", {
+                ...((config.top_n_config as Record<string, unknown>) ?? {}),
+                n: parseInt(e.target.value) || 10,
+              })}
+              min={1}
+              max={10000}
+              className="h-8"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Sort By Field</Label>
+            <Input
+              type="text"
+              value={(config.top_n_config as Record<string, unknown>)?.by as string ?? "confidence"}
+              onChange={(e) => onConfigChange("top_n_config", {
+                ...((config.top_n_config as Record<string, unknown>) ?? {}),
+                by: e.target.value,
+              })}
+              placeholder="confidence"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Order</Label>
+            <Select
+              value={(config.top_n_config as Record<string, unknown>)?.order as string ?? "desc"}
+              onValueChange={(v) => onConfigChange("top_n_config", {
+                ...((config.top_n_config as Record<string, unknown>) ?? {}),
+                order: v,
+              })}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="desc">Highest First</SelectItem>
+                <SelectItem value="asc">Lowest First</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Per Group (optional)</Label>
+            <Input
+              type="text"
+              value={(config.top_n_config as Record<string, unknown>)?.group_by as string ?? ""}
+              onChange={(e) => onConfigChange("top_n_config", {
+                ...((config.top_n_config as Record<string, unknown>) ?? {}),
+                group_by: e.target.value || undefined,
+              })}
+              placeholder="class_name"
+              className="h-8 font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Get top N per group (leave empty for global)
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Dedupe Config */}
+      {operation === "dedupe" && (
+        <div className="space-y-4 border-l-2 border-muted pl-3">
+          <div className="space-y-2">
+            <Label className="text-xs">Deduplicate By Field</Label>
+            <Input
+              type="text"
+              value={(config.dedupe_config as Record<string, unknown>)?.by as string ?? "id"}
+              onChange={(e) => onConfigChange("dedupe_config", {
+                ...((config.dedupe_config as Record<string, unknown>) ?? {}),
+                by: e.target.value,
+              })}
+              placeholder="product_id"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">Keep Strategy</Label>
+            <Select
+              value={(config.dedupe_config as Record<string, unknown>)?.keep as string ?? "first"}
+              onValueChange={(v) => onConfigChange("dedupe_config", {
+                ...((config.dedupe_config as Record<string, unknown>) ?? {}),
+                keep: v,
+              })}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first">Keep First</SelectItem>
+                <SelectItem value="last">Keep Last</SelectItem>
+                <SelectItem value="highest">Highest Score</SelectItem>
+                <SelectItem value="lowest">Lowest Score</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {((config.dedupe_config as Record<string, unknown>)?.keep === "highest" ||
+            (config.dedupe_config as Record<string, unknown>)?.keep === "lowest") && (
+            <div className="space-y-2">
+              <Label className="text-xs">Score Field</Label>
+              <Input
+                type="text"
+                value={(config.dedupe_config as Record<string, unknown>)?.score_field as string ?? "confidence"}
+                onChange={(e) => onConfigChange("dedupe_config", {
+                  ...((config.dedupe_config as Record<string, unknown>) ?? {}),
+                  score_field: e.target.value,
+                })}
+                placeholder="confidence"
+                className="h-8 font-mono text-xs"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Info Box */}
+      <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
+        <p className="font-medium text-foreground mb-1">Outputs</p>
+        <p>
+          <strong>result:</strong> Processed data<br />
+          <strong>summary:</strong> Statistics/metadata<br />
+          <strong>flat:</strong> Flattened records
         </p>
       </div>
     </div>

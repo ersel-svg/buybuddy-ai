@@ -1,4 +1,45 @@
 // ===========================================
+// Data Loading Types (Shared across all training types)
+// ===========================================
+
+export interface PreloadConfig {
+  enabled?: boolean;
+  batched?: boolean;
+  batch_size?: number;
+  max_workers?: number;
+  http_timeout?: number;
+  retry_attempts?: number;
+  retry_delay?: number;
+}
+
+export interface DataLoaderConfig {
+  num_workers?: number;
+  pin_memory?: boolean;
+  prefetch_factor?: number;
+}
+
+export interface DataLoadingConfig {
+  preload?: PreloadConfig;
+  dataloader?: DataLoaderConfig;
+}
+
+export const DEFAULT_PRELOAD_CONFIG: PreloadConfig = {
+  enabled: true,
+  batched: false,
+  batch_size: 500,
+  max_workers: 16,
+  http_timeout: 30,
+  retry_attempts: 3,
+  retry_delay: 1.0,
+};
+
+export const DEFAULT_DATALOADER_CONFIG: DataLoaderConfig = {
+  num_workers: 4,
+  pin_memory: true,
+  prefetch_factor: 2,
+};
+
+// ===========================================
 // Core Domain Types
 // ===========================================
 
@@ -758,6 +799,48 @@ export interface EvaluationExtractionResponse {
   failed_count: number;
 }
 
+// Tab 4: Production Extraction (SOTA: multi-view + augmentation at index time)
+export interface ProductionExtractionRequest {
+  // Model selection - either base model OR trained model
+  model_id?: string;
+  training_run_id?: string;
+  checkpoint_id?: string;
+
+  // Product source
+  product_source: "all" | "dataset" | "selected";
+  product_dataset_id?: string;
+  product_ids?: string[];
+
+  // Image types (default: all for production)
+  image_types: ImageType[];
+
+  // Frame selection
+  frame_selection: FrameSelection | "all";
+  frame_interval?: number;
+  max_frames?: number;
+
+  // Collection configuration
+  collection_mode: "create" | "replace";
+  collection_name?: string;
+}
+
+export interface ProductionExtractionResponse {
+  job_id: string;
+  status: string;
+  collection_name: string;
+  product_count: number;
+  image_stats: {
+    synthetic: number;
+    real: number;
+    augmented: number;
+  };
+  total_embeddings: number;
+  failed_count: number;
+  model_type: string;
+  embedding_dim: number;
+  has_trained_model: boolean;
+}
+
 // Matched Products Stats
 export interface MatchedProductsStats {
   total_matched_products: number;
@@ -765,7 +848,7 @@ export interface MatchedProductsStats {
 }
 
 // Embedding Collection Metadata
-export type CollectionType = "products" | "cutouts" | "training" | "evaluation";
+export type CollectionType = "products" | "cutouts" | "training" | "evaluation" | "production";
 
 export interface EmbeddingCollection {
   id: string;
@@ -1022,6 +1105,7 @@ export interface TrainingRunCreate {
   training_config: TrainingRunConfig;
   sota_config?: SOTAConfig;  // SOTA training features (multi-loss, P-K sampling, etc.)
   hard_negative_pairs?: Array<[string, string]>;  // Pairs of product IDs that look similar but are different
+  data_loading?: DataLoadingConfig;  // Data loading configuration (preload, dataloader)
 }
 
 export interface TrainingRunConfig {

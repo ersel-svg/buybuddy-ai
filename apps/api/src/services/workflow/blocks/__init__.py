@@ -29,6 +29,10 @@ from .transform_blocks import (
     StitchBlock,
     RotateFlipBlock,
     NormalizeBlock,
+    SmoothingBlock,
+    DrawMasksBlock,
+    HeatmapBlock,
+    ComparisonBlock,
 )
 
 # Logic and output blocks
@@ -40,6 +44,9 @@ from .placeholder_blocks import (
     MapBlock,
     GridBuilderBlock,
     JsonOutputBlock,
+    APIResponseBlock,
+    WebhookBlock,
+    AggregationBlock,
 )
 
 
@@ -59,12 +66,18 @@ _BLOCK_REGISTRY: Dict[str, Type[BaseBlock]] = {
     # Transform blocks
     "crop": CropBlock,
     "blur_region": BlurRegionBlock,
-    "draw_boxes": DrawBoxesBlock,
     "resize": ResizeBlock,
     "tile": TileBlock,
     "stitch": StitchBlock,
     "rotate_flip": RotateFlipBlock,
     "normalize": NormalizeBlock,
+    "smoothing": SmoothingBlock,
+
+    # Visualization blocks
+    "draw_boxes": DrawBoxesBlock,
+    "draw_masks": DrawMasksBlock,
+    "heatmap": HeatmapBlock,
+    "comparison": ComparisonBlock,
 
     # Logic blocks
     "condition": ConditionBlock,
@@ -76,6 +89,9 @@ _BLOCK_REGISTRY: Dict[str, Type[BaseBlock]] = {
 
     # Output blocks
     "json_output": JsonOutputBlock,
+    "api_response": APIResponseBlock,
+    "webhook": WebhookBlock,
+    "aggregation": AggregationBlock,
 }
 
 
@@ -127,7 +143,7 @@ BLOCK_CATEGORIES = {
     "transform": {
         "name": "Transform",
         "color": "#10B981",  # Green
-        "blocks": ["crop", "resize", "tile", "stitch", "rotate_flip", "normalize", "blur_region"],
+        "blocks": ["crop", "resize", "tile", "stitch", "rotate_flip", "normalize", "smoothing", "blur_region"],
     },
     "logic": {
         "name": "Logic",
@@ -137,11 +153,11 @@ BLOCK_CATEGORIES = {
     "visualization": {
         "name": "Visualization",
         "color": "#EC4899",  # Pink
-        "blocks": ["draw_boxes"],
+        "blocks": ["draw_boxes", "draw_masks", "heatmap", "comparison"],
     },
     "output": {
         "name": "Output",
         "color": "#EF4444",  # Red
-        "blocks": ["json_output"],
+        "blocks": ["json_output", "api_response", "webhook", "aggregation"],
     },
 }

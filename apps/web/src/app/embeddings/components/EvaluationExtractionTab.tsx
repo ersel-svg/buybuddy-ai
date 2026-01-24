@@ -626,8 +626,8 @@ export function EvaluationExtractionTab({ models }: EvaluationExtractionTabProps
                       <span>Frame Selection</span>
                       <TooltipProvider>
                         <Tooltip>
-                          <TooltipTrigger onClick={(e) => e.stopPropagation()}>
-                            <Info className="h-3 w-3 text-muted-foreground" />
+                          <TooltipTrigger asChild onClick={(e) => e.stopPropagation()}>
+                            <span className="inline-flex"><Info className="h-3 w-3 text-muted-foreground" /></span>
                           </TooltipTrigger>
                           <TooltipContent side="right" className="max-w-xs">
                             <p className="text-xs">For evaluation, first frame only is usually sufficient - it represents the canonical product view. Use key frames if you want to evaluate multi-view matching.</p>

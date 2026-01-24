@@ -122,6 +122,7 @@ class DetectionBlock(ModelBlock):
     ]
     output_ports = [
         {"name": "detections", "type": "array", "description": "List of detected objects with bbox, class, confidence"},
+        {"name": "first_detection", "type": "object", "description": "First/best detection (for single-item Crop connection)"},
         {"name": "annotated_image", "type": "image", "description": "Image with bounding boxes drawn"},
         {"name": "count", "type": "number", "description": "Number of detections"},
     ]
@@ -785,6 +786,7 @@ class DetectionBlock(ModelBlock):
             return BlockResult(
                 outputs={
                     "detections": formatted_detections,
+                    "first_detection": formatted_detections[0] if formatted_detections else None,
                     "annotated_image": f"data:image/jpeg;base64,{annotated_base64}",
                     "count": len(formatted_detections),
                 },
@@ -1365,6 +1367,7 @@ class EmbeddingBlock(ModelBlock):
     ]
     output_ports = [
         {"name": "embeddings", "type": "array", "description": "Embedding vectors (list of float arrays)"},
+        {"name": "embedding", "type": "array", "description": "First/single embedding vector (for direct SimilaritySearch connection)"},
         {"name": "metadata", "type": "object", "description": "Embedding metadata (dim, model, etc.)"},
     ]
     config_schema = {
@@ -1679,7 +1682,14 @@ class EmbeddingBlock(ModelBlock):
             if output_format != "base64" and embeddings:
                 final_embedding_dim = len(embeddings[0])
 
-            outputs = {"embeddings": embeddings}
+            # Add singular 'embedding' output for convenience (first/single embedding)
+            # This makes it easy to connect directly to SimilaritySearch in ForEach loops
+            single_embedding = embeddings[0] if embeddings else None
+
+            outputs = {
+                "embeddings": embeddings,
+                "embedding": single_embedding,
+            }
 
             # Build metadata
             if output_format == "vector_with_meta" or include_model_info:
@@ -1753,12 +1763,15 @@ class SimilaritySearchBlock(BaseBlock):
     description = "Search for similar products in Qdrant vector database"
 
     input_ports = [
-        {"name": "embeddings", "type": "array", "required": True, "description": "Query embedding vectors"},
+        {"name": "embeddings", "type": "array", "required": False, "description": "Query embedding vectors (array)"},
+        {"name": "embedding", "type": "array", "required": False, "description": "Single query embedding vector"},
         {"name": "text_queries", "type": "array", "required": False, "description": "Text queries for hybrid search"},
     ]
     output_ports = [
-        {"name": "matches", "type": "array", "description": "Matching products with similarity scores"},
+        {"name": "matches", "type": "array", "description": "Matching products (nested: one list per query)"},
+        {"name": "flat_matches", "type": "array", "description": "Flattened matches (single list for ForEach use)"},
         {"name": "best_match", "type": "object", "description": "Top matching product"},
+        {"name": "match_count", "type": "number", "description": "Total number of matches"},
     ]
     config_schema = {
         "type": "object",
@@ -2058,10 +2071,24 @@ class SimilaritySearchBlock(BaseBlock):
         """Search for similar items in Qdrant with SOTA features."""
         start_time = time.time()
 
+        # Support both singular 'embedding' and plural 'embeddings' input
         embeddings = inputs.get("embeddings", [])
+        single_embedding = inputs.get("embedding")
+
+        # If singular embedding provided, wrap in list
+        if single_embedding is not None and not embeddings:
+            if isinstance(single_embedding, list) and len(single_embedding) > 0:
+                # Check if it's a single vector (list of floats) or list of vectors
+                if isinstance(single_embedding[0], (int, float)):
+                    embeddings = [single_embedding]  # Single vector
+                else:
+                    embeddings = single_embedding  # Already list of vectors
+            else:
+                embeddings = [single_embedding]
+
         if not embeddings:
             return BlockResult(
-                error="No embeddings provided",
+                error="No embeddings provided (use 'embedding' or 'embeddings' input)",
                 duration_ms=round((time.time() - start_time) * 1000, 2),
             )
 
@@ -2248,19 +2275,32 @@ class SimilaritySearchBlock(BaseBlock):
 
             duration = (time.time() - start_time) * 1000
 
-            # For single query, also output flattened best_match
+            # Create flat_matches (single list, useful for ForEach iterations)
+            flat_matches = []
+            for matches in final_matches:
+                flat_matches.extend(matches)
+
+            # For single query, also output best_match
             best_match = None
             if len(final_matches) == 1 and final_matches[0]:
                 best_match = final_matches[0][0]
+            elif flat_matches:
+                best_match = flat_matches[0]
 
-            outputs = {"matches": final_matches}
+            total_match_count = len(flat_matches)
+
+            outputs = {
+                "matches": final_matches,
+                "flat_matches": flat_matches,
+                "match_count": total_match_count,
+            }
             if best_match:
                 outputs["best_match"] = best_match
 
             metrics = {
                 "collection": collection,
                 "query_count": len(embeddings),
-                "total_matches": sum(len(m) for m in final_matches),
+                "total_matches": total_match_count,
                 "threshold": threshold,
                 "search_mode": search_mode,
             }

@@ -49,6 +49,7 @@ import {
   GraduationCap,
   FlaskConical,
   Download,
+  Rocket,
 } from "lucide-react";
 import {
   Dialog,
@@ -68,10 +69,11 @@ import {
 import { Label } from "@/components/ui/label";
 import type { EmbeddingJob, EmbeddingModel, CollectionInfo } from "@/types";
 
-// Import new extraction tabs
+// Import extraction tabs
 import { MatchingExtractionTab } from "./components/MatchingExtractionTab";
 import { TrainingExtractionTab } from "./components/TrainingExtractionTab";
 import { EvaluationExtractionTab } from "./components/EvaluationExtractionTab";
+import { ProductionExtractionTab } from "./components/ProductionExtractionTab";
 
 export default function EmbeddingsPage() {
   const queryClient = useQueryClient();
@@ -323,7 +325,7 @@ export default function EmbeddingsPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="matching" className="flex items-center gap-1">
             <Package className="h-4 w-4" />
             Matching
@@ -335,6 +337,10 @@ export default function EmbeddingsPage() {
           <TabsTrigger value="evaluation" className="flex items-center gap-1">
             <FlaskConical className="h-4 w-4" />
             Evaluation
+          </TabsTrigger>
+          <TabsTrigger value="production" className="flex items-center gap-1">
+            <Rocket className="h-4 w-4" />
+            Production
           </TabsTrigger>
           <TabsTrigger value="models" className="flex items-center gap-1">
             <Layers className="h-4 w-4" />
@@ -363,6 +369,11 @@ export default function EmbeddingsPage() {
         {/* Evaluation Extraction Tab */}
         <TabsContent value="evaluation">
           <EvaluationExtractionTab models={models} />
+        </TabsContent>
+
+        {/* Production Extraction Tab */}
+        <TabsContent value="production">
+          <ProductionExtractionTab models={models} />
         </TabsContent>
 
         {/* Models Tab */}

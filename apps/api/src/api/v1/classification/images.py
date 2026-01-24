@@ -1334,6 +1334,145 @@ async def bulk_delete(data: BulkOperationRequest):
 
 
 # ===========================================
+# Async Bulk Operations (Background Jobs)
+# ===========================================
+
+ASYNC_DELETE_THRESHOLD = 100
+ASYNC_ADD_THRESHOLD = 100
+ASYNC_TAG_THRESHOLD = 200
+
+
+@router.post("/bulk/delete/async")
+async def bulk_delete_async(data: BulkOperationRequest):
+    """
+    Async version: Delete multiple images as a background job.
+
+    Use this for large deletions (>100 images).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_DELETE_THRESHOLD:
+        # Use sync version for small batches
+        return await bulk_delete(data)
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_delete_images",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "image_ids": data.image_ids,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk delete job queued for {len(data.image_ids)} images",
+    }
+
+
+@router.post("/bulk/add-to-dataset/async")
+async def bulk_add_to_dataset_async(data: BulkAddToDatasetRequest):
+    """
+    Async version: Add multiple images to a dataset as a background job.
+
+    Use this for large additions (>100 images).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_ADD_THRESHOLD:
+        # Use sync version for small batches
+        return await bulk_add_to_dataset(data)
+
+    # Verify dataset exists
+    dataset = supabase_service.client.table("cls_datasets")\
+        .select("id, name")\
+        .eq("id", data.dataset_id)\
+        .single()\
+        .execute()
+
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_add_to_dataset",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "dataset_id": data.dataset_id,
+            "image_ids": data.image_ids,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk add job queued for {len(data.image_ids)} images to '{dataset.data['name']}'",
+    }
+
+
+@router.post("/bulk/tags/async")
+async def bulk_update_tags_async(data: BulkTagRequest):
+    """
+    Async version: Update tags for multiple images as a background job.
+
+    Use this for large tag updates (>200 images).
+    """
+    from uuid import uuid4
+    from datetime import datetime, timezone
+
+    if len(data.image_ids) < ASYNC_TAG_THRESHOLD:
+        # Use sync version for small batches
+        return await bulk_update_tags(data)
+
+    # Create job record
+    job_id = str(uuid4())
+    job_data = {
+        "id": job_id,
+        "type": "local_cls_bulk_update_tags",
+        "status": "pending",
+        "progress": 0,
+        "config": {
+            "image_ids": data.image_ids,
+            "action": data.action,
+            "tags": data.tags,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    result = supabase_service.client.table("jobs").insert(job_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create job")
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": f"Bulk tag update job queued for {len(data.image_ids)} images",
+    }
+
+
+# ===========================================
 # Duplicate Detection
 # ===========================================
 

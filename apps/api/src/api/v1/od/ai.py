@@ -560,15 +560,20 @@ async def batch_annotate(
             "hf_token": settings.hf_token,  # For SAM3 model access
         }
 
-    # TODO: Add webhook URL for production
-    # webhook_url = f"{settings.api_base_url}/api/v1/od/ai/webhook"
+    # Webhook URL for RunPod callback (primary completion mechanism)
+    webhook_url = None
+    if settings.api_url:
+        webhook_url = f"{settings.api_url.rstrip('/')}/api/v1/od/ai/webhook"
+        print(f"[AI Batch] Webhook URL configured: {webhook_url}")
+    else:
+        print("[AI Batch] Warning: api_url not configured, webhook disabled. Job completion relies on polling.")
 
     try:
         # Submit async job to RunPod
         runpod_response = await runpod_service.submit_job(
             endpoint_type=EndpointType.OD_ANNOTATION,
             input_data=runpod_input,
-            # webhook_url=webhook_url,
+            webhook_url=webhook_url,
         )
 
         runpod_job_id = runpod_response.get("id")
@@ -599,7 +604,12 @@ async def batch_annotate(
 
 @router.get("/jobs/{job_id}", response_model=AIJobStatusResponse)
 async def get_job_status(job_id: str) -> AIJobStatusResponse:
-    """Get batch annotation job status."""
+    """
+    Get batch annotation job status.
+
+    LAST RESORT completion mechanism - checks RunPod status on-demand.
+    Only processes completion if job is still in 'running' state (idempotent).
+    """
     # Get job from database
     job_result = supabase_service.client.table("jobs").select(
         "*"
@@ -611,7 +621,7 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
     job = job_result.data
     config = job.get("config", {})
 
-    # If job is still running, check RunPod status
+    # Only check RunPod if job is still running (idempotency - don't reprocess completed jobs)
     if job.get("status") == "running" and job.get("runpod_job_id"):
         try:
             runpod_status = await runpod_service.get_job_status(
@@ -636,19 +646,24 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
                         r["id"]: r.get("predictions", [])
                         for r in results if r.get("id")
                     }
-                    annotations_created = await _save_predictions_as_annotations(
-                        dataset_id=config["dataset_id"],
-                        predictions_by_image=predictions_by_image,
-                        class_mapping=config.get("class_mapping"),
-                        model=config.get("model"),
-                        filter_classes=config.get("filter_classes"),
-                    )
+                    try:
+                        annotations_created = await _save_predictions_as_annotations(
+                            dataset_id=config["dataset_id"],
+                            predictions_by_image=predictions_by_image,
+                            class_mapping=config.get("class_mapping"),
+                            model=config.get("model"),
+                            filter_classes=config.get("filter_classes"),
+                        )
+                        print(f"[AI Job Status] Created {annotations_created} annotations for job {job_id[:8]}...")
+                    except Exception as e:
+                        print(f"[AI Job Status] Failed to save annotations: {e}")
 
                 # Store predictions count in result for status response
                 result_data = {
                     **output,
                     "total_predictions": predictions_count,
                     "annotations_created": annotations_created,
+                    "completed_by": "status_check",
                 }
                 supabase_service.client.table("jobs").update({
                     "status": "completed",
@@ -658,19 +673,34 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
 
                 job["status"] = "completed"
                 job["result"] = result_data
+                print(f"[AI Job Status] Job {job_id[:8]}... completed ({predictions_count} predictions)")
 
             elif runpod_status.get("status") == "FAILED":
                 error = runpod_status.get("error", "Unknown error")
                 supabase_service.client.table("jobs").update({
                     "status": "failed",
                     "error": error,
+                    "result": {"failed_by": "status_check"},
                 }).eq("id", job_id).execute()
 
                 job["status"] = "failed"
                 job["error"] = error
+                print(f"[AI Job Status] Job {job_id[:8]}... failed: {error}")
 
         except Exception as e:
-            print(f"[AI Job Status] Error checking RunPod: {e}")
+            error_str = str(e)
+            # 404 means job expired from RunPod
+            if "404" in error_str:
+                print(f"[AI Job Status] Job {job_id[:8]}... expired from RunPod (404)")
+                supabase_service.client.table("jobs").update({
+                    "status": "failed",
+                    "error": "Job expired from RunPod. Results could not be retrieved. Please re-run the job.",
+                    "result": {"failed_by": "status_check", "reason": "runpod_expired"},
+                }).eq("id", job_id).execute()
+                job["status"] = "failed"
+                job["error"] = "Job expired from RunPod"
+            else:
+                print(f"[AI Job Status] Error checking RunPod: {e}")
 
     # Get predictions count from result (set when job completes)
     result = job.get("result", {}) or {}
@@ -693,7 +723,8 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
     """
     Handle RunPod webhook callback for batch jobs.
 
-    Updates job status and optionally saves predictions as annotations.
+    PRIMARY completion mechanism - called by RunPod when job finishes.
+    Always saves predictions as annotations (user can review/delete later).
     """
     print(f"[AI Webhook] Received: job_id={payload.id}, status={payload.status}")
 
@@ -710,6 +741,11 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
     job_id = job["id"]
     config = job.get("config", {})
 
+    # Check if job is already completed (avoid duplicate processing)
+    if job.get("status") == "completed":
+        print(f"[AI Webhook] Job {job_id[:8]}... already completed, skipping")
+        return {"status": "ignored", "reason": "already_completed"}
+
     if payload.status == "COMPLETED" and payload.output:
         output = payload.output
 
@@ -719,21 +755,27 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
             len(r.get("predictions", [])) for r in results
         )
 
-        # Convert results array to dict for auto_accept processing
+        # Convert results array to dict for processing
         predictions_by_image = {
             r["id"]: r.get("predictions", [])
             for r in results if r.get("id")
         }
 
-        # Optionally save predictions as annotations
-        if config.get("auto_accept") and predictions_by_image:
-            await _save_predictions_as_annotations(
-                dataset_id=config["dataset_id"],
-                predictions_by_image=predictions_by_image,
-                class_mapping=config.get("class_mapping"),
-                model=config.get("model"),
-                filter_classes=config.get("filter_classes"),
-            )
+        # Always save predictions as annotations (user can review/delete later)
+        # This ensures no predictions are lost even if user closed the modal
+        annotations_created = 0
+        if predictions_by_image:
+            try:
+                annotations_created = await _save_predictions_as_annotations(
+                    dataset_id=config["dataset_id"],
+                    predictions_by_image=predictions_by_image,
+                    class_mapping=config.get("class_mapping"),
+                    model=config.get("model"),
+                    filter_classes=config.get("filter_classes"),
+                )
+                print(f"[AI Webhook] Created {annotations_created} annotations for job {job_id[:8]}...")
+            except Exception as e:
+                print(f"[AI Webhook] Failed to save annotations: {e}")
 
         # Update job status
         supabase_service.client.table("jobs").update({
@@ -742,17 +784,22 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
             "result": {
                 "total_predictions": total_predictions,
                 "images_processed": len(results),
+                "annotations_created": annotations_created,
+                "completed_by": "webhook",
             },
         }).eq("id", job_id).execute()
 
-        return {"status": "success", "job_id": job_id}
+        print(f"[AI Webhook] Job {job_id[:8]}... completed ({total_predictions} predictions, {annotations_created} annotations)")
+        return {"status": "success", "job_id": job_id, "annotations_created": annotations_created}
 
     elif payload.status == "FAILED":
         supabase_service.client.table("jobs").update({
             "status": "failed",
             "error": payload.error or "Unknown error",
+            "result": {"failed_by": "webhook"},
         }).eq("id", job_id).execute()
 
+        print(f"[AI Webhook] Job {job_id[:8]}... failed: {payload.error}")
         return {"status": "failed", "job_id": job_id, "error": payload.error}
 
     return {"status": "ignored", "reason": f"unhandled_status_{payload.status}"}

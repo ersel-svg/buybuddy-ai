@@ -115,6 +115,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Resume interrupted Roboflow imports (runs in background, doesn't block startup)
     asyncio.create_task(resume_interrupted_roboflow_imports())
 
+    # Start local job worker
+    from services.local_jobs import local_job_worker
+    worker_task = asyncio.create_task(local_job_worker.start())
+    print(f"   Local job worker started ({local_job_worker.worker_id})")
+
+    # Start background job poller (SOTA: ensures jobs complete even if webhook fails)
+    from services.job_poller import job_poller
+    poller_task = asyncio.create_task(job_poller.start())
+    print(f"   Background job poller started (interval: {job_poller.poll_interval}s)")
+
     # Cleanup old import files
     try:
         from services.import_checkpoint import checkpoint_service
@@ -128,6 +138,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     print(f"👋 Shutting down {settings.app_name}")
+
+    # Stop background job poller gracefully
+    print("   Stopping background job poller...")
+    await job_poller.stop()
+    poller_task.cancel()
+    try:
+        await poller_task
+    except asyncio.CancelledError:
+        pass
+    print("   Background job poller stopped")
+
+    # Stop local job worker gracefully
+    print("   Stopping local job worker...")
+    await local_job_worker.stop()
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+    print("   Local job worker stopped")
 
 
 # Create FastAPI app
