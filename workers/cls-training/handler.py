@@ -360,13 +360,10 @@ class URLImageDataset(Dataset):
 
         # Apply transforms
         if self.transform is not None:
-            # Check if albumentations by checking class name or module
-            transform_class = type(self.transform).__name__
+            # Check if albumentations by module name only
+            # (torchvision.transforms also has Compose with 'transforms' attr)
             transform_module = type(self.transform).__module__
-            is_albumentations = (
-                'albumentations' in transform_module or
-                (transform_class == 'Compose' and hasattr(self.transform, 'transforms'))
-            )
+            is_albumentations = 'albumentations' in transform_module
 
             if is_albumentations:
                 # Albumentations style: pass image as keyword argument
