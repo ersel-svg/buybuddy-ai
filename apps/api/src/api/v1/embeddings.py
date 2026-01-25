@@ -585,7 +585,6 @@ async def cancel_embedding_job(
     # Update job status to cancelled
     await db.update_embedding_job(job_id, {
         "status": "cancelled",
-        "updated_at": datetime.utcnow().isoformat(),
     })
 
     print(f"[Embeddings] Job {job_id} cancelled")
