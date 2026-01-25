@@ -925,47 +925,67 @@ def handler(job):
             else:
                 print(f"  {key}: {value}")
 
-        # Upload final checkpoint
-        report_progress(training_job_id, "running", 0.95, message="Uploading checkpoint...")
+        # Get final checkpoint info
+        # NOTE: Final checkpoint already uploaded in epoch_callback (epoch 10, is_final=True)
+        # No need to re-upload, just get the info for the result
+        report_progress(training_job_id, "running", 0.95, message="Finalizing...")
 
-        checkpoint_info = trainer.save_final_checkpoint()
-        print(f"Final checkpoint info: {checkpoint_info}")
+        final_client = get_supabase_client()
+        checkpoint_info = {"uploaded": False, "url": None}
 
-        # Save final checkpoint record to database (fallback if per-epoch saves failed)
-        if checkpoint_info.get("uploaded") and checkpoint_info.get("url"):
-            final_client = get_supabase_client()
-            if final_client:
-                # Get best val metrics from training result
-                final_train_loss = training_result.get("final_metrics", {}).get("train_loss", 0)
-                final_val_metrics = {
-                    "loss": training_result.get("best_val_loss"),
-                    "recall@1": training_result.get("best_recall_at_1"),
-                    "recall@5": training_result.get("final_metrics", {}).get("val_recall_at_5"),
+        if final_client:
+            # Check if final checkpoint was already uploaded in epoch callback
+            existing = final_client.table("training_checkpoints").select(
+                "id,checkpoint_url,epoch"
+            ).eq("training_run_id", training_job_id).eq("is_final", True).execute()
+
+            if existing.data:
+                # Final checkpoint already exists from epoch callback
+                checkpoint_info = {
+                    "uploaded": True,
+                    "url": existing.data[0]["checkpoint_url"],
+                    "epoch": existing.data[0]["epoch"],
                 }
+                print(f"Final checkpoint already uploaded (epoch {existing.data[0]['epoch']}): {checkpoint_info['url']}")
+            else:
+                # Fallback: Upload best checkpoint using fast checkpoint_upload module
+                print("Final checkpoint not found in database, uploading now...")
+                best_checkpoint = trainer.checkpoint_manager.get_best_checkpoint()
 
-                # Check if we already have this checkpoint saved
-                existing = final_client.table("training_checkpoints").select("id").eq(
-                    "training_run_id", training_job_id
-                ).eq("is_final", True).execute()
-
-                if not existing.data:
-                    print(f"Saving final checkpoint record to database...")
-                    record_id = save_checkpoint_record(
+                if best_checkpoint and best_checkpoint.exists():
+                    # Use the same fast upload method as epoch checkpoints
+                    checkpoint_url = upload_checkpoint_to_storage(
                         client=final_client,
+                        checkpoint_path=str(best_checkpoint),
                         training_run_id=training_job_id,
                         epoch=training_result.get("best_epoch", config["epochs"]) - 1,
-                        checkpoint_url=checkpoint_info["url"],
-                        train_loss=final_train_loss,
-                        val_metrics=final_val_metrics,
                         is_best=True,
-                        is_final=True,
                     )
-                    if record_id:
-                        print(f"Final checkpoint record saved: {record_id}")
+
+                    if checkpoint_url:
+                        # Save final checkpoint record
+                        final_train_loss = training_result.get("final_metrics", {}).get("train_loss", 0)
+                        final_val_metrics = {
+                            "loss": training_result.get("best_val_loss"),
+                            "recall@1": training_result.get("best_recall_at_1"),
+                            "recall@5": training_result.get("final_metrics", {}).get("val_recall_at_5"),
+                        }
+
+                        record_id = save_checkpoint_record(
+                            client=final_client,
+                            training_run_id=training_job_id,
+                            epoch=training_result.get("best_epoch", config["epochs"]) - 1,
+                            checkpoint_url=checkpoint_url,
+                            train_loss=final_train_loss,
+                            val_metrics=final_val_metrics,
+                            is_best=True,
+                            is_final=True,
+                        )
+
+                        checkpoint_info = {"uploaded": True, "url": checkpoint_url}
+                        print(f"Final checkpoint uploaded: {checkpoint_url}")
                     else:
-                        print("WARNING: Failed to save final checkpoint record")
-                else:
-                    print(f"Final checkpoint already exists in database")
+                        print("WARNING: Failed to upload final checkpoint")
 
         # Prepare result
         result = {
