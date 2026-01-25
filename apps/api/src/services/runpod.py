@@ -19,6 +19,7 @@ class EndpointType(str, Enum):
     OD_TRAINING = "od_training"  # OD model training (RF-DETR, RT-DETR, YOLO-NAS)
     CLS_ANNOTATION = "cls_annotation"  # Classification AI annotation (CLIP, DINOv2)
     CLS_TRAINING = "cls_training"  # Classification model training
+    INFERENCE = "inference"  # Unified inference (detection, classification, embedding)
 
 
 class RunpodService:
@@ -38,6 +39,7 @@ class RunpodService:
             EndpointType.OD_TRAINING: settings.runpod_endpoint_od_training,
             EndpointType.CLS_ANNOTATION: settings.runpod_endpoint_cls_annotation,
             EndpointType.CLS_TRAINING: settings.runpod_endpoint_cls_training,
+            EndpointType.INFERENCE: settings.runpod_endpoint_inference,
         }
 
     def _get_headers(self) -> dict[str, str]:

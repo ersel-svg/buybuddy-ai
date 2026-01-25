@@ -186,23 +186,23 @@ export function BulkAnnotateModal({
     return detectionModels.find((m) => m.id === selectedModel);
   }, [detectionModels, selectedModel]);
   
-  // Check if selected model is a Roboflow model (closed-vocabulary)
-  const isRoboflowModel = selectedModel.startsWith("rf:");
-  
+  // Check if selected model is a closed-vocabulary model (Roboflow or trained)
+  const isClosedVocabModel = selectedModel.startsWith("rf:") || selectedModel.startsWith("trained:");
+
   // Memoize modelClasses to prevent infinite useEffect loops
   const modelClasses = useMemo(() => {
     return selectedModelInfo?.classes || [];
   }, [selectedModelInfo]);
-  
-  // Initialize Roboflow class configs when model changes
+
+  // Initialize closed-vocab class configs when model changes
   useEffect(() => {
-    const isRF = selectedModel.startsWith("rf:");
+    const isClosedVocab = selectedModel.startsWith("rf:") || selectedModel.startsWith("trained:");
     
-    if (isRF) {
+    if (isClosedVocab) {
       // Find the model info for this model
       const modelInfo = detectionModels.find((m) => m.id === selectedModel);
       const classes = modelInfo?.classes || [];
-      
+
       if (classes.length > 0) {
         // Create new configs for this model
         const newConfigs: RoboflowClassConfig[] = classes.map((cls) => {
@@ -212,7 +212,7 @@ export function BulkAnnotateModal({
               c.name.toLowerCase() === cls.toLowerCase() ||
               c.display_name?.toLowerCase() === cls.toLowerCase()
           );
-          
+
           return {
             className: cls,
             enabled: true,  // Include by default
@@ -224,7 +224,7 @@ export function BulkAnnotateModal({
         setRfClassConfigs([]);
       }
     } else {
-      // Clear Roboflow configs when switching to open-vocab model
+      // Clear class configs when switching to open-vocab model
       setRfClassConfigs([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -247,7 +247,7 @@ export function BulkAnnotateModal({
       const classMapping: Record<string, string> = {};
       let filterClasses: string[] | undefined;
       
-      if (isRoboflowModel) {
+      if (isClosedVocabModel) {
         // Roboflow model: use rfClassConfigs for filtering and mapping
         const enabledConfigs = rfClassConfigs.filter((c) => c.enabled);
         
@@ -287,7 +287,7 @@ export function BulkAnnotateModal({
         dataset_id: datasetId,
         image_ids: imageIds,
         model: selectedModel,
-        text_prompt: isRoboflowModel ? undefined : textPrompt,  // Not needed for Roboflow
+        text_prompt: isClosedVocabModel ? undefined : textPrompt,  // Not needed for Roboflow
         box_threshold: confidence,
         auto_accept: autoAccept,
         class_mapping: Object.keys(classMapping).length > 0 ? classMapping : undefined,
@@ -341,7 +341,7 @@ export function BulkAnnotateModal({
   // Handle form submission
   const handleSubmit = () => {
     // Validation based on model type
-    if (isRoboflowModel) {
+    if (isClosedVocabModel) {
       // Roboflow model: check if at least one class is enabled
       const enabledCount = rfClassConfigs.filter((c) => c.enabled).length;
       if (enabledCount === 0) {
@@ -481,7 +481,7 @@ export function BulkAnnotateModal({
             </div>
 
             {/* Text Prompt - Only for open-vocab models */}
-            {!isRoboflowModel && (
+            {!isClosedVocabModel && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="prompt">Detection Prompt</Label>
@@ -512,7 +512,7 @@ export function BulkAnnotateModal({
             )}
 
             {/* Roboflow Model Class Configuration */}
-            {isRoboflowModel && rfClassConfigs.length > 0 && (
+            {isClosedVocabModel && rfClassConfigs.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <Label>Model Classes</Label>
@@ -634,7 +634,7 @@ export function BulkAnnotateModal({
             </div>
 
             {/* Class Mapping - Only for open-vocab models */}
-            {!isRoboflowModel && classMappings.length > 0 && (
+            {!isClosedVocabModel && classMappings.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
                   <Checkbox
@@ -807,7 +807,7 @@ export function BulkAnnotateModal({
               <Button
                 onClick={handleSubmit}
                 disabled={
-                  (isRoboflowModel
+                  (isClosedVocabModel
                     ? rfClassConfigs.filter((c) => c.enabled).length === 0
                     : !textPrompt.trim()) ||
                   getImageCount() === 0 ||

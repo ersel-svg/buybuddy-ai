@@ -347,7 +347,7 @@ async def create_training_run(
     elif request.data_source == "dataset":
         if not request.dataset_id:
             raise HTTPException(status_code=400, detail="dataset_id required for 'dataset' data source")
-        products = await db.get_dataset_products(request.dataset_id)
+        products = await db.get_products_for_training(dataset_id=request.dataset_id)
     elif request.data_source == "selected":
         if not request.product_ids:
             raise HTTPException(status_code=400, detail="product_ids required for 'selected' data source")
@@ -388,17 +388,34 @@ async def create_training_run(
             label_to_products[label] = []
         label_to_products[label].append(p["id"])
 
-    # Filter classes with minimum samples
-    valid_labels = {
-        label: pids for label, pids in label_to_products.items()
-        if len(pids) >= min_samples
-    }
+    # Special handling for product_id: check frame count instead of product count
+    if label_field == "product_id":
+        # For product_id, each product is a class
+        # Filter products with enough frames (not enough products per class)
+        products_by_id = {p["id"]: p for p in products}
+        valid_labels = {}
+        for product_id in label_to_products.keys():
+            product = products_by_id.get(product_id)
+            if product and product.get("frame_count", 0) >= min_samples:
+                valid_labels[product_id] = [product_id]
 
-    if len(valid_labels) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Not enough classes with minimum {min_samples} samples. Found {len(valid_labels)} classes.",
-        )
+        if len(valid_labels) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough products with minimum {min_samples} frames. Found {len(valid_labels)} products with sufficient frames.",
+            )
+    else:
+        # For other label fields (brand, category), check product count per class
+        valid_labels = {
+            label: pids for label, pids in label_to_products.items()
+            if len(pids) >= min_samples
+        }
+
+        if len(valid_labels) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough classes with minimum {min_samples} samples. Found {len(valid_labels)} classes.",
+            )
 
     # Split by label (class) to prevent data leakage
     from random import Random
@@ -457,7 +474,8 @@ async def create_training_run(
         if frame_selection == "first":
             indices = [0]
         elif frame_selection == "all":
-            indices = list(range(min(frame_count, max_frames)))
+            # Use ALL frames (ignore max_frames limit)
+            indices = list(range(frame_count))
         elif frame_selection == "key_frames":
             # Pick 4 frames at 0°, 90°, 180°, 270° (roughly)
             step = max(1, frame_count // 4)
@@ -1210,14 +1228,16 @@ async def get_label_field_stats(
     stats = {}
 
     # Product ID (default - each product is a class)
+    # For product_id, "samples" are frames, not products
+    frame_counts = [p.get("frame_count", 0) for p in products if p.get("frame_count", 0) > 0]
     stats["product_id"] = {
         "label": "Product ID",
-        "description": "Each product becomes its own class",
+        "description": "Each product becomes its own class (samples = frames per product)",
         "total_products": len(products),
         "total_classes": len(products),
-        "min_samples_per_class": 1,
-        "max_samples_per_class": 1,
-        "avg_samples_per_class": 1.0,
+        "min_samples_per_class": min(frame_counts) if frame_counts else 0,
+        "max_samples_per_class": max(frame_counts) if frame_counts else 0,
+        "avg_samples_per_class": sum(frame_counts) / len(frame_counts) if frame_counts else 0,
     }
 
     # Define all groupable fields with their labels

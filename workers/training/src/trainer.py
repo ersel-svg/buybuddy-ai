@@ -1013,6 +1013,10 @@ class UnifiedTrainer:
         if not supabase_url or not supabase_key:
             raise ValueError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
 
+        # Ensure trailing slash for storage endpoint (required by SDK)
+        if not supabase_url.endswith("/"):
+            supabase_url += "/"
+
         client = create_client(supabase_url, supabase_key)
 
         # Generate storage path: checkpoints/{job_id}/{filename}

@@ -34,6 +34,8 @@ def recalculate_dataset_counts(dataset_id: str) -> dict:
     - od_datasets.annotation_count
     - od_datasets.annotated_image_count
     - od_dataset_images.annotation_count (for each image)
+    - od_dataset_images.status (set to 'completed' if annotations exist)
+    - od_classes.annotation_count (for each class)
 
     Returns dict with the updated counts.
     """
@@ -56,36 +58,76 @@ def recalculate_dataset_counts(dataset_id: str) -> dict:
         )
         annotation_count = annotation_count_result.count or 0
 
-        # 3. Get all images in dataset
-        all_images = (
-            supabase_service.client.table("od_dataset_images")
-            .select("image_id")
-            .eq("dataset_id", dataset_id)
-            .execute()
-        )
+        # 3. Get all images in dataset WITH PAGINATION (Supabase default limit is 1000)
+        all_image_ids = []
+        offset = 0
+        page_size = 1000
+        while True:
+            page_result = (
+                supabase_service.client.table("od_dataset_images")
+                .select("image_id")
+                .eq("dataset_id", dataset_id)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            if not page_result.data:
+                break
+            all_image_ids.extend([row.get("image_id") for row in page_result.data])
+            if len(page_result.data) < page_size:
+                break
+            offset += page_size
 
-        # 4. Update each image's annotation_count
+        logger.info(f"Recalculating counts for {len(all_image_ids)} images in dataset {dataset_id}")
+
+        # 4. Update each image's annotation_count and status
         annotated_image_count = 0
-        if all_images.data:
-            for row in all_images.data:
-                img_id = row.get("image_id")
-                # Count annotations for this image
-                img_ann_count = (
-                    supabase_service.client.table("od_annotations")
-                    .select("id", count="exact")
-                    .eq("dataset_id", dataset_id)
-                    .eq("image_id", img_id)
-                    .execute()
-                ).count or 0
+        for img_id in all_image_ids:
+            # Count annotations for this image
+            img_ann_count = (
+                supabase_service.client.table("od_annotations")
+                .select("id", count="exact")
+                .eq("dataset_id", dataset_id)
+                .eq("image_id", img_id)
+                .execute()
+            ).count or 0
 
-                if img_ann_count > 0:
-                    annotated_image_count += 1
-
+            if img_ann_count > 0:
+                annotated_image_count += 1
+                # Update annotation_count AND status to 'completed'
+                supabase_service.client.table("od_dataset_images").update({
+                    "annotation_count": img_ann_count,
+                    "status": "completed"
+                }).eq("dataset_id", dataset_id).eq("image_id", img_id).execute()
+            else:
+                # Just update annotation_count, keep status as-is
                 supabase_service.client.table("od_dataset_images").update({
                     "annotation_count": img_ann_count
                 }).eq("dataset_id", dataset_id).eq("image_id", img_id).execute()
 
-        # 5. Update dataset counts
+        # 5. Update each class's annotation_count
+        classes_result = (
+            supabase_service.client.table("od_classes")
+            .select("id")
+            .eq("dataset_id", dataset_id)
+            .execute()
+        )
+
+        if classes_result.data:
+            for cls in classes_result.data:
+                class_id = cls.get("id")
+                # Count annotations for this class
+                class_ann_count = (
+                    supabase_service.client.table("od_annotations")
+                    .select("id", count="exact")
+                    .eq("class_id", class_id)
+                    .execute()
+                ).count or 0
+
+                supabase_service.client.table("od_classes").update({
+                    "annotation_count": class_ann_count
+                }).eq("id", class_id).execute()
+
+        # 6. Update dataset counts
         supabase_service.client.table("od_datasets").update({
             "image_count": image_count,
             "annotation_count": annotation_count,
@@ -428,10 +470,11 @@ class RoboflowStreamingImporter:
                     supabase_service.client.table("od_annotations").insert(annotations_batch).execute()
                     annotations_count = len(annotations_batch)
 
-                    # Update od_dataset_images.annotation_count so UI shows annotations immediately
+                    # Update od_dataset_images: annotation_count AND status to 'completed'
                     try:
                         update_result = supabase_service.client.table("od_dataset_images").update({
-                            "annotation_count": annotations_count
+                            "annotation_count": annotations_count,
+                            "status": "completed"  # Mark as completed when annotations exist
                         }).eq("dataset_id", self.dataset_id).eq("image_id", db_image_id).execute()
 
                         if not update_result.data:

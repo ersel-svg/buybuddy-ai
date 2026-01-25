@@ -749,21 +749,23 @@ export default function TrainingPage() {
                     </div>
                   )}
 
-                  <div className="space-y-2">
-                    <Label className="text-xs">Max Frames per Type: {formData.image_config.max_frames_per_type}</Label>
-                    <Slider
-                      value={[formData.image_config.max_frames_per_type]}
-                      onValueChange={([v]) =>
-                        setFormData({
-                          ...formData,
-                          image_config: { ...formData.image_config, max_frames_per_type: v },
-                        })
-                      }
-                      min={1}
-                      max={50}
-                      step={1}
-                    />
-                  </div>
+                  {formData.image_config.frame_selection !== "all" && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">Max Frames per Type: {formData.image_config.max_frames_per_type}</Label>
+                      <Slider
+                        value={[formData.image_config.max_frames_per_type]}
+                        onValueChange={([v]) =>
+                          setFormData({
+                            ...formData,
+                            image_config: { ...formData.image_config, max_frames_per_type: v },
+                          })
+                        }
+                        min={1}
+                        max={50}
+                        step={1}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

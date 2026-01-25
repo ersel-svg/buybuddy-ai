@@ -260,13 +260,38 @@ async def delete_class(class_id: str, force: bool = False):
 
     # If force=true and annotations exist, delete them first
     if annotation_count > 0 and force:
+        # Get all annotations before deleting to update counts
+        annotations = supabase_service.client.table("od_annotations").select("dataset_id, image_id").eq("class_id", class_id).execute()
+
+        # Delete annotations
         supabase_service.client.table("od_annotations").delete().eq("class_id", class_id).execute()
+
+        # Update counts for affected images and datasets
+        affected_datasets = set()
+        affected_images = set()
+        for ann in annotations.data or []:
+            affected_datasets.add(ann["dataset_id"])
+            affected_images.add((ann["dataset_id"], ann["image_id"]))
+
+        # Recalculate counts for affected images
+        from api.v1.od.annotations import _recalculate_image_annotation_count
+        for dataset_id, image_id in affected_images:
+            _recalculate_image_annotation_count(dataset_id, image_id)
+
+        # Recalculate counts for affected datasets
+        from api.v1.od.annotations import _recalculate_dataset_annotation_count
+        for dataset_id in affected_datasets:
+            _recalculate_dataset_annotation_count(dataset_id)
 
     # Delete the class
     try:
         supabase_service.client.table("od_classes").delete().eq("id", class_id).execute()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Cannot delete class: {str(e)}")
+        import traceback
+        error_detail = f"Cannot delete class: {str(e)}"
+        print(f"ERROR deleting class {class_id}: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_detail)
 
     return {"status": "deleted", "id": class_id}
 

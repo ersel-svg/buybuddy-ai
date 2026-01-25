@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# Build outputs
+.next/
+dist/
+build/
+.turbo/
+*.standalone/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Large model files
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pb
+*.safetensors
+weights*.pt
+
+# Vector DB storage
+qdrant_storage/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.coverage
+htmlcov/
+
+# Git
+.git/
+.gitignore
+
+# Media files (can be large)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wav
+*.mp3
+
+# Image datasets (can be large)
+test_frames*/
+integration_test_results/
+augmentation_samples/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Documentation (reference only when needed)
+*.md
+!.claude

@@ -57,3 +57,4 @@ outputs/*
 qdrant_storage/
 apps/api/data/
 notebooks/
+qdrant_storage/

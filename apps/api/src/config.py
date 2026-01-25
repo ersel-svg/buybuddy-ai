@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     runpod_endpoint_od_training: str = ""  # OD model training worker
     runpod_endpoint_cls_annotation: str = ""  # CLS AI annotation worker (CLIP, SigLIP)
     runpod_endpoint_cls_training: str = ""  # CLS model training worker
+    runpod_endpoint_inference: str = ""  # Unified inference worker (detection, classification, embedding)
 
     # External APIs
     gemini_api_key: str = ""

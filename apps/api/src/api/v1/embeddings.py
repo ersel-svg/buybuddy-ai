@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from services.supabase import SupabaseService, supabase_service
 from services.qdrant import qdrant_service
 from services.runpod import runpod_service, EndpointType
+from services.job_manager import job_manager, JobMode
 from services.export import export_service
 from auth.dependencies import get_current_user
 from auth.service import UserInfo
@@ -132,9 +133,9 @@ class MatchingExtractionRequest(BaseModel):
     cutout_collection_name: Optional[str] = None  # Auto-generated if not provided
 
     # Frame selection for products
-    frame_selection: Literal["first", "key_frames", "interval"] = "first"
+    frame_selection: Literal["first", "key_frames", "interval", "all"] = "first"
     frame_interval: int = 5
-    max_frames: int = 10
+    max_frames: int = 10  # Ignored when frame_selection = "all"
 
 
 class TrainingExtractionRequest(BaseModel):
@@ -150,7 +151,7 @@ class TrainingExtractionRequest(BaseModel):
     # Frame selection for synthetic images
     frame_selection: Literal["first", "key_frames", "interval", "all"] = "key_frames"
     frame_interval: int = 5
-    max_frames: int = 10
+    max_frames: int = 10  # Ignored when frame_selection = "all"
 
     # Include matched cutouts as positives
     include_matched_cutouts: bool = True
@@ -544,6 +545,58 @@ async def get_embedding_job(
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_embedding_job(
+    job_id: str,
+    db: SupabaseService = Depends(get_supabase),
+):
+    """
+    Cancel a running embedding extraction job.
+
+    Cancels the job on Runpod and updates status to 'cancelled'.
+    Only jobs with status 'queued' or 'running' can be cancelled.
+    """
+    # Get job
+    job = await db.get_embedding_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Check if job can be cancelled
+    status = job.get("status")
+    if status in ["completed", "failed", "cancelled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel job with status: {status}",
+        )
+
+    # Cancel on Runpod if job_id exists
+    runpod_job_id = job.get("runpod_job_id")
+    if runpod_job_id:
+        try:
+            await runpod_service.cancel_job(
+                endpoint_type=EndpointType.EMBEDDING,
+                job_id=runpod_job_id,
+            )
+            print(f"[Embeddings] Cancelled Runpod job {runpod_job_id}")
+        except Exception as e:
+            print(f"[Embeddings] Failed to cancel Runpod job {runpod_job_id}: {e}")
+            # Continue to update DB status even if Runpod cancel fails
+
+    # Update job status to cancelled
+    await db.update_embedding_job(job_id, {
+        "status": "cancelled",
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+
+    print(f"[Embeddings] Job {job_id} cancelled")
+
+    return {
+        "status": "cancelled",
+        "message": "Job cancelled successfully",
+        "job_id": job_id,
+    }
+
+
 @router.post("/jobs")
 async def start_embedding_job(
     request: EmbeddingJobCreate,
@@ -655,7 +708,7 @@ async def start_embedding_job(
         "embedding_model_id": model_id,
         "job_type": request.job_type,
         "source": request.source,
-        "status": "running",
+        "status": "queued",  # Start as queued, worker will update to running
         "total_images": total_images,
         "processed_images": 0,
     }
@@ -670,111 +723,91 @@ async def start_embedding_job(
         distance="Cosine",
     )
 
-    # Process in batches
-    batch_size = 50
-    processed_count = 0
-    failed_count = 0
-
+    # NEW ARCHITECTURE (Phase 2 Migration):
+    # Submit single job to worker with all images
+    # Worker will handle batch processing, Qdrant upserts, and progress updates
     try:
-        for i in range(0, total_images, batch_size):
-            batch = images_to_process[i:i + batch_size]
+        # Prepare job input for worker
+        job_input = {
+            "job_id": job_id,
+            "model_type": model_type,
+            "embedding_dim": embedding_dim,
+            "collection_name": collection_name,
+            # Send all images to worker
+            "images": [
+                {
+                    "id": img["id"],
+                    "url": img["url"],
+                    "type": img["type"],
+                    "metadata": img["metadata"],
+                }
+                for img in images_to_process
+            ],
+            # Worker credentials
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
+        }
 
-            # Prepare worker input (matching worker's expected format)
-            worker_input = {
-                "images": [
-                    {"id": img["id"], "url": img["url"], "type": img["type"]}
-                    for img in batch
-                ],
-                "model_type": model_type,
-                "batch_size": min(16, len(batch)),
-            }
+        # Submit job using JobManager (ASYNC mode)
+        # NOTE: Worker must be updated to handle this new format
+        # TODO (Worker): Implement batch processing loop (50 images per batch)
+        # TODO (Worker): Upsert embeddings to Qdrant
+        # TODO (Worker): Update progress to Supabase (embedding_jobs table)
+        # TODO (Worker): Update cutout_images.has_embedding = True
+        # TODO (Worker): Set final status (completed/failed)
+        job_result = await job_manager.submit_runpod_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=job_input,
+            mode=JobMode.ASYNC,  # Fire and forget, worker updates DB
+            webhook_url=None,  # Worker does direct Supabase writes (OD training pattern)
+        )
 
-            try:
-                # Call worker synchronously
-                result = await runpod_service.submit_job_sync(
-                    endpoint_type=EndpointType.EMBEDDING,
-                    input_data=worker_input,
-                    timeout=300,
-                )
-
-                # Check result
-                output = result.get("output", {})
-                if output.get("status") != "success":
-                    error = output.get("error", "Unknown worker error")
-                    print(f"Worker error: {error}")
-                    failed_count += len(batch)
-                    continue
-
-                # Get embeddings from worker response
-                embeddings = output.get("embeddings", [])
-                embedding_map = {e["id"]: e for e in embeddings}
-
-                # Prepare Qdrant points
-                qdrant_points = []
-                for img in batch:
-                    emb_data = embedding_map.get(img["id"])
-                    if emb_data and emb_data.get("vector"):
-                        qdrant_points.append({
-                            "id": img["id"],
-                            "vector": emb_data["vector"],
-                            "payload": img["metadata"],
-                        })
-                        processed_count += 1
-                    else:
-                        failed_count += 1
-
-                # Upsert to Qdrant
-                if qdrant_points:
-                    await qdrant_service.upsert_points(collection_name, qdrant_points)
-
-                # Update cutout records in Supabase
-                for img in batch:
-                    if img["type"] == "cutout" and img["id"] in embedding_map:
-                        try:
-                            db.client.table("cutout_images").update({
-                                "has_embedding": True,
-                                "embedding_model_id": model_id,
-                                "qdrant_point_id": img["id"],
-                            }).eq("id", img["id"]).execute()
-                        except Exception as e:
-                            print(f"Cutout update error: {e}")
-
-            except Exception as e:
-                print(f"Batch processing error: {e}")
-                failed_count += len(batch)
-
-            # Update job progress
-            await db.update_embedding_job(job_id, {
-                "processed_images": processed_count + failed_count,
-            })
-
-        # Mark job as completed
+        # Store runpod_job_id for cancellation support
         await db.update_embedding_job(job_id, {
-            "status": "completed",
-            "processed_images": processed_count,
-            "completed_at": datetime.utcnow().isoformat(),
+            "runpod_job_id": job_result["job_id"],
+            "status": "running",
         })
 
-        # Update model's vector count
-        try:
-            info = await qdrant_service.get_collection_info(collection_name)
-            qdrant_count = info.get("points_count", 0) if info else 0
-            db.client.table("embedding_models").update({
-                "qdrant_vector_count": qdrant_count,
-            }).eq("id", model_id).execute()
-        except Exception:
-            pass
+        print(f"[EMBEDDING] Job {job_id} submitted to Runpod: {job_result['job_id']}")
 
     except Exception as e:
-        # Mark job as failed
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[EMBEDDING] Error submitting job {job_id}: {e}")
+        print(f"[EMBEDDING] Traceback:\n{error_traceback}")
+
+        # Update status to failed
         await db.update_embedding_job(job_id, {
             "status": "failed",
             "error_message": str(e),
         })
-        raise HTTPException(status_code=500, detail=f"Job failed: {str(e)}")
+        raise
 
-    # Return updated job record
-    return await db.get_embedding_job(job_id)
+    # Return job record (job will be processed by worker)
+    return job
+
+
+# OLD IMPLEMENTATION (kept as reference, remove after worker migration):
+# ==============================================================================
+# This was the previous batch-by-batch processing approach.
+# Problems:
+# - Used submit_job_sync() which blocks API for up to 5 minutes per batch
+# - No runpod_job_id tracking, so jobs were NOT cancellable
+# - API handled batch processing instead of worker
+# - For 10,000 images = 200 batches × 300s = 16 hours of blocking!
+#
+# Process in batches:
+# for i in range(0, total_images, batch_size=50):
+#     batch = images_to_process[i:i + batch_size]
+#     result = await runpod_service.submit_job_sync(...)  # NO JOB ID!
+#     # Process embeddings, upsert to Qdrant
+#     # Update progress
+#
+# Mark job as completed
+# Update model's vector count
+# ==============================================================================
 
 
 # ===========================================
@@ -1054,99 +1087,91 @@ async def sync_embeddings(
         images_to_process = images_to_process[:request.limit]
 
     total_images = len(images_to_process)
-    processed_count = 0
-    failed_count = 0
 
-    # Process in batches
-    for i in range(0, total_images, request.batch_size):
-        batch = images_to_process[i:i + request.batch_size]
+    # Create a job record for tracking (synchronous endpoints also use jobs now)
+    job_data = {
+        "embedding_model_id": model_id,
+        "job_type": "sync",
+        "source": request.source,
+        "status": "queued",
+        "total_images": total_images,
+        "processed_images": 0,
+    }
 
-        # Prepare worker input (new format)
-        worker_input = {
-            "images": [
-                {"id": img["id"], "url": img["url"], "type": img["type"]}
-                for img in batch
-            ],
+    job = await db.create_embedding_job(job_data)
+    job_id = job["id"]
+
+    # NEW ARCHITECTURE (Phase 2 Migration):
+    # Submit single job to worker - same pattern as /jobs endpoint
+    try:
+        # Prepare job input for worker
+        job_input = {
+            "job_id": job_id,
             "model_type": model_type,
-            "batch_size": min(16, len(batch)),  # Worker internal batch size
+            "embedding_dim": embedding_dim,
+            "collection_name": collection_name,
+            # Send all images to worker
+            "images": [
+                {
+                    "id": img["id"],
+                    "url": img["url"],
+                    "type": img["type"],
+                    "metadata": img["metadata"],
+                }
+                for img in images_to_process
+            ],
+            # Worker credentials
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
         }
 
-        try:
-            # Call worker synchronously
-            result = await runpod_service.submit_job_sync(
-                endpoint_type=EndpointType.EMBEDDING,
-                input_data=worker_input,
-                timeout=300,  # 5 minutes per batch
-            )
+        # Submit job using JobManager (ASYNC mode)
+        job_result = await job_manager.submit_runpod_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=job_input,
+            mode=JobMode.ASYNC,
+            webhook_url=None,  # Worker does direct Supabase writes
+        )
 
-            # Check result
-            output = result.get("output", {})
-            if output.get("status") != "success":
-                error = output.get("error", "Unknown worker error")
-                print(f"Worker error: {error}")
-                failed_count += len(batch)
-                continue
+        # Store runpod_job_id for cancellation
+        await db.update_embedding_job(job_id, {
+            "runpod_job_id": job_result["job_id"],
+            "status": "running",
+        })
 
-            # Get embeddings from worker response
-            embeddings = output.get("embeddings", [])
-            embedding_map = {e["id"]: e for e in embeddings}
+        print(f"[EMBEDDING] Sync job {job_id} submitted to Runpod: {job_result['job_id']}")
 
-            # Prepare Qdrant points
-            qdrant_points = []
-            for img in batch:
-                emb_data = embedding_map.get(img["id"])
-                if emb_data and emb_data.get("vector"):
-                    qdrant_points.append({
-                        "id": img["id"],
-                        "vector": emb_data["vector"],
-                        "payload": img["metadata"],
-                    })
-                    processed_count += 1
-                else:
-                    failed_count += 1
+        # Return immediately - job will be processed by worker
+        return {
+            "status": "submitted",
+            "job_id": job_id,
+            "runpod_job_id": job_result["job_id"],
+            "model_id": model_id,
+            "collection_name": collection_name,
+            "total_images": total_images,
+            "message": "Job submitted. Poll /embeddings/jobs/{job_id} for progress.",
+        }
 
-            # Upsert to Qdrant
-            if qdrant_points:
-                await qdrant_service.upsert_points(collection_name, qdrant_points)
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[EMBEDDING] Error submitting sync job {job_id}: {e}")
+        print(f"[EMBEDDING] Traceback:\n{error_traceback}")
 
-            # Update cutout records in Supabase
-            for img in batch:
-                if img["type"] == "cutout" and img["id"] in embedding_map:
-                    try:
-                        db.client.table("cutout_images").update({
-                            "has_embedding": True,
-                            "embedding_model_id": model_id,
-                            "qdrant_point_id": img["id"],
-                        }).eq("id", img["id"]).execute()
-                    except Exception as e:
-                        print(f"Cutout update error: {e}")
+        # Update status to failed
+        await db.update_embedding_job(job_id, {
+            "status": "failed",
+            "error_message": str(e),
+        })
+        raise HTTPException(status_code=500, detail=f"Job submission failed: {str(e)}")
 
-        except Exception as e:
-            print(f"Batch processing error: {e}")
-            failed_count += len(batch)
-
-    # Get final Qdrant count
-    qdrant_count = 0
-    try:
-        info = await qdrant_service.get_collection_info(collection_name)
-        qdrant_count = info.get("points_count", 0) if info else 0
-
-        # Update model's vector count
-        db.client.table("embedding_models").update({
-            "qdrant_vector_count": qdrant_count,
-        }).eq("id", model_id).execute()
-    except Exception:
-        pass
-
-    return {
-        "status": "success",
-        "model_id": model_id,
-        "collection_name": collection_name,
-        "total_images": total_images,
-        "processed_count": processed_count,
-        "failed_count": failed_count,
-        "qdrant_count": qdrant_count,
-    }
+    # OLD IMPLEMENTATION (removed):
+    # - Batch-by-batch processing with submit_job_sync()
+    # - Blocked API for total_images / batch_size × 5 minutes
+    # - Not cancellable
+    # - API handled Qdrant upserts
 
 
 # ===========================================
@@ -1620,11 +1645,15 @@ async def start_advanced_embedding_job(
             elif frame_selection == "interval":
                 interval = request.product_config.frame_interval
                 frame_indices = list(range(0, frame_count, interval))
+            elif frame_selection == "all":
+                # All frames - no limit
+                frame_indices = list(range(frame_count))
             else:
                 frame_indices = [0]
 
-            # Limit frames
-            frame_indices = frame_indices[:request.product_config.max_frames]
+            # Limit frames ONLY if not "all"
+            if frame_selection != "all":
+                frame_indices = frame_indices[:request.product_config.max_frames]
 
             # Add each frame as a separate image
             for idx in frame_indices:
@@ -1940,10 +1969,16 @@ async def start_matching_extraction(
             frame_indices = [0] + [i * step for i in range(1, 4) if i * step < frame_count]
         elif request.frame_selection == "interval":
             frame_indices = list(range(0, frame_count, request.frame_interval))
+        elif request.frame_selection == "all":
+            # All frames - no limit
+            frame_indices = list(range(frame_count))
         else:
+            # Fallback to first frame
             frame_indices = [0]
 
-        frame_indices = frame_indices[:request.max_frames]
+        # Apply max_frames limit ONLY if not "all"
+        if request.frame_selection != "all":
+            frame_indices = frame_indices[:request.max_frames]
 
         for idx in frame_indices:
             frame_url = f"{frames_path.rstrip('/')}/frame_{idx:04d}.png"
@@ -1965,16 +2000,25 @@ async def start_matching_extraction(
 
     product_count = len(products)
 
-    # Process cutouts
+    # Process cutouts with pagination
     cutout_count = 0
     if request.include_cutouts:
-        query = db.client.table("cutout_images").select("id, image_url, predicted_upc")
+        # Use pagination to get ALL cutouts (not limited to 1000 or 10000)
+        filters = {}
         if request.cutout_filter_has_upc:
-            query = query.not_.is_("predicted_upc", "null")
+            filters["not_null"] = ["predicted_upc"]
 
-        cutouts_result = query.limit(10000).execute()
+        cutouts = await db.paginated_query(
+            table_name="cutout_images",
+            select="id, image_url, predicted_upc",
+            filters=filters if filters else None,
+            max_records=None  # No limit - get ALL cutouts
+        )
 
-        for c in cutouts_result.data or []:
+        for c in cutouts:
+            if not c.get("image_url"):
+                continue  # Skip cutouts without image URL
+
             images_to_process.append({
                 "id": c["id"],
                 "url": c["image_url"],
@@ -2385,7 +2429,7 @@ async def start_evaluation_extraction(
         "embedding_model_id": model_id,
         "job_type": "full",
         "source": "products",
-        "status": "running",
+        "status": "queued",  # Start as queued, worker will update
         "total_images": total_images,
         "processed_images": 0,
         "purpose": "evaluation",
@@ -2413,31 +2457,78 @@ async def start_evaluation_extraction(
         distance="Cosine",
     )
 
-    # Process and save embeddings
-    processed_count, failed_count = await _process_embedding_batch(
-        db, job_id, model_id, model_type, images_to_process, batch_size=50
-    )
-
-    # Create collection metadata
+    # NEW ARCHITECTURE (Phase 2 Migration):
+    # Submit single job to worker for evaluation extraction
     try:
-        existing = await db.get_embedding_collection_by_name(collection_name)
-        if existing:
-            await db.update_embedding_collection(existing["id"], {
-                "vector_count": processed_count,
-                "last_sync_at": datetime.utcnow().isoformat(),
-            })
-        else:
-            await db.create_embedding_collection({
-                "name": collection_name,
+        # Prepare job input for worker
+        job_input = {
+            "job_id": job_id,
+            "model_type": model_type,
+            "embedding_dim": embedding_dim,
+            "collection_name": collection_name,
+            "purpose": "evaluation",
+            # Send all images to worker
+            "images": [
+                {
+                    "id": img["id"],
+                    "url": img["url"],
+                    "type": img["type"],
+                    "collection": img["collection"],
+                    "metadata": img["metadata"],
+                }
+                for img in images_to_process
+            ],
+            # Worker credentials
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
+            # Collection metadata to create after completion
+            "collection_metadata": {
                 "collection_type": "evaluation",
                 "source_type": "dataset",
                 "source_dataset_id": request.dataset_id,
                 "embedding_model_id": model_id,
-                "vector_count": processed_count,
                 "image_types": request.image_types,
-            })
+            },
+        }
+
+        # Submit job using JobManager (ASYNC mode)
+        job_result = await job_manager.submit_runpod_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=job_input,
+            mode=JobMode.ASYNC,
+            webhook_url=None,  # Worker does direct Supabase writes
+        )
+
+        # Store runpod_job_id for cancellation
+        await db.update_embedding_job(job_id, {
+            "runpod_job_id": job_result["job_id"],
+            "status": "running",
+        })
+
+        print(f"[EMBEDDING] Evaluation job {job_id} submitted to Runpod: {job_result['job_id']}")
+
     except Exception as e:
-        print(f"Collection metadata error: {e}")
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[EMBEDDING] Error submitting evaluation job {job_id}: {e}")
+        print(f"[EMBEDDING] Traceback:\n{error_traceback}")
+
+        # Update status to failed
+        await db.update_embedding_job(job_id, {
+            "status": "failed",
+            "error_message": str(e),
+        })
+        raise
+
+    # Return job record (job will be processed by worker)
+    return job
+
+    # OLD IMPLEMENTATION (removed):
+    # - Used _process_embedding_batch() which called submit_job_sync() in loops
+    # - Not cancellable
+    # - API handled batch processing
 
     # Mark completed
     await db.update_embedding_job(job_id, {
@@ -2618,7 +2709,7 @@ async def start_production_extraction(
         "embedding_model_id": model_id,
         "job_type": "full",
         "source": "products",
-        "status": "running",
+        "status": "queued",  # Start as queued, worker will update
         "total_images": total_images,
         "processed_images": 0,
         "purpose": "production",
@@ -2647,52 +2738,90 @@ async def start_production_extraction(
         distance="Cosine",
     )
 
-    # Process embeddings with checkpoint if using trained model
-    processed_count, failed_count = await _process_embedding_batch(
-        db, job_id, model_id, model_type, images_to_process,
-        batch_size=50,
-        checkpoint_url=checkpoint_url,
-    )
-
-    # Create collection metadata
+    # NEW ARCHITECTURE (Phase 2 Migration):
+    # Submit single job to worker for production extraction
     try:
-        existing = await db.get_embedding_collection_by_name(collection_name)
-        if existing:
-            await db.update_embedding_collection(existing["id"], {
-                "vector_count": processed_count,
-                "last_sync_at": datetime.utcnow().isoformat(),
-            })
-        else:
-            await db.create_embedding_collection({
-                "name": collection_name,
+        # Prepare job input for worker
+        job_input = {
+            "job_id": job_id,
+            "model_type": model_type,
+            "embedding_dim": embedding_dim,
+            "collection_name": collection_name,
+            "purpose": "production",
+            "checkpoint_url": checkpoint_url,  # For trained models
+            # Send all images to worker
+            "images": [
+                {
+                    "id": img["id"],
+                    "url": img["url"],
+                    "type": img["type"],
+                    "collection": img["collection"],
+                    "metadata": img["metadata"],
+                }
+                for img in images_to_process
+            ],
+            # Worker credentials
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
+            # Collection metadata to create after completion
+            "collection_metadata": {
                 "collection_type": "production",
                 "source_type": request.product_source,
                 "embedding_model_id": model_id,
-                "vector_count": processed_count,
                 "image_types": request.image_types,
-            })
+            },
+        }
+
+        # Submit job using JobManager (ASYNC mode)
+        job_result = await job_manager.submit_runpod_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=job_input,
+            mode=JobMode.ASYNC,
+            webhook_url=None,  # Worker does direct Supabase writes
+        )
+
+        # Store runpod_job_id for cancellation
+        await db.update_embedding_job(job_id, {
+            "runpod_job_id": job_result["job_id"],
+            "status": "running",
+        })
+
+        print(f"[EMBEDDING] Production job {job_id} submitted to Runpod: {job_result['job_id']}")
+
+        # Return immediately - job will be processed by worker
+        return {
+            "job_id": job_id,
+            "runpod_job_id": job_result["job_id"],
+            "status": "submitted",
+            "collection_name": collection_name,
+            "product_count": len(products),
+            "image_stats": product_stats,
+            "total_images": total_images,
+            "model_type": model_type,
+            "embedding_dim": embedding_dim,
+            "has_trained_model": checkpoint_url is not None,
+            "message": "Job submitted. Poll /embeddings/jobs/{job_id} for progress.",
+        }
+
     except Exception as e:
-        print(f"Collection metadata error: {e}")
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[EMBEDDING] Error submitting production job {job_id}: {e}")
+        print(f"[EMBEDDING] Traceback:\n{error_traceback}")
 
-    # Mark job completed
-    await db.update_embedding_job(job_id, {
-        "status": "completed",
-        "processed_images": processed_count,
-        "completed_at": datetime.utcnow().isoformat(),
-    })
+        # Update status to failed
+        await db.update_embedding_job(job_id, {
+            "status": "failed",
+            "error_message": str(e),
+        })
+        raise
 
-    return {
-        "job_id": job_id,
-        "status": "completed",
-        "collection_name": collection_name,
-        "product_count": len(products),
-        "image_stats": product_stats,
-        "total_embeddings": processed_count,
-        "failed_count": failed_count,
-        "model_type": model_type,
-        "embedding_dim": embedding_dim,
-        "has_trained_model": checkpoint_url is not None,
-    }
+    # OLD IMPLEMENTATION (removed):
+    # - Used _process_embedding_batch() which called submit_job_sync() in loops
+    # - Not cancellable
+    # - Blocked API for hours on large datasets
 
 
 # ===========================================

@@ -100,6 +100,10 @@ def get_supabase_client() -> Optional[Client]:
     if not supabase_url or not supabase_key:
         return None
 
+    # Ensure trailing slash for storage endpoint (required by SDK)
+    if not supabase_url.endswith("/"):
+        supabase_url += "/"
+
     _supabase_client = create_client(supabase_url, supabase_key)
     return _supabase_client
 
@@ -316,7 +320,9 @@ def handle_evaluation(job_input: dict) -> dict:
         if client is None:
             # Fallback: create a new client with provided credentials
             from supabase import create_client
-            client = create_client(supabase_url, supabase_key)
+            # Ensure trailing slash for storage endpoint
+            url_with_slash = supabase_url if supabase_url.endswith("/") else supabase_url + "/"
+            client = create_client(url_with_slash, supabase_key)
 
         # Fetch test products using Supabase SDK
         try:
@@ -446,7 +452,9 @@ def handle_evaluation(job_input: dict) -> dict:
                 eval_client = get_supabase_client()
                 if eval_client is None and supabase_url and supabase_key:
                     from supabase import create_client
-                    eval_client = create_client(supabase_url, supabase_key)
+                    # Ensure trailing slash for storage endpoint
+                    url_with_slash = supabase_url if supabase_url.endswith("/") else supabase_url + "/"
+                    eval_client = create_client(url_with_slash, supabase_key)
                 if eval_client:
                     eval_client.table("training_checkpoints").update(
                         {"evaluation_status": "failed", "evaluation_error": error_msg}
@@ -587,7 +595,9 @@ def handler(job):
             handler_client = get_supabase_client()
             if handler_client is None:
                 from supabase import create_client
-                handler_client = create_client(supabase_url, supabase_key)
+                # Ensure trailing slash for storage endpoint
+                url_with_slash = supabase_url if supabase_url.endswith("/") else supabase_url + "/"
+                handler_client = create_client(url_with_slash, supabase_key)
 
             all_product_ids = list(training_images.keys())
             products_data = []

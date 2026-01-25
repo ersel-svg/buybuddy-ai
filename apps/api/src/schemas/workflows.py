@@ -100,7 +100,20 @@ class ExecutionInput(BaseModel):
 
 class WorkflowRunRequest(BaseModel):
     """Request to run a workflow."""
-    input: ExecutionInput
+    input: Optional[ExecutionInput] = None
+    inputs: Optional[dict] = None  # Alternative format from frontend
+
+    def get_execution_input(self) -> ExecutionInput:
+        """Get normalized execution input."""
+        if self.input:
+            return self.input
+        if self.inputs:
+            return ExecutionInput(
+                image_url=self.inputs.get("image_url"),
+                image_base64=self.inputs.get("image_base64"),
+                parameters=self.inputs.get("parameters", {}),
+            )
+        return ExecutionInput()
 
 
 class NodeMetrics(BaseModel):

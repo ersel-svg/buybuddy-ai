@@ -48,6 +48,7 @@ import {
   Info,
   CheckCircle2,
   AlertTriangle,
+  X,
 } from "lucide-react";
 import type {
   EmbeddingModel,
@@ -57,6 +58,7 @@ import type {
   FrameSelection,
   CollectionMode,
   OutputTarget,
+  EmbeddingJob,
 } from "@/types";
 
 interface TrainingExtractionTabProps {
@@ -94,6 +96,13 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
   const [frameConfigOpen, setFrameConfigOpen] = useState(false);
   const [outputConfigOpen, setOutputConfigOpen] = useState(false);
 
+  // Fetch active jobs with polling
+  const { data: activeJobs } = useQuery({
+    queryKey: ["embedding-jobs-active"],
+    queryFn: () => apiClient.getEmbeddingJobs("running"),
+    refetchInterval: 3000,
+  });
+
   // Fetch matched products stats
   const { data: matchedStats, isLoading: statsLoading } = useQuery({
     queryKey: ["matched-products-stats"],
@@ -120,6 +129,19 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
   const hasDimensionMismatch = collectionMode === "append" && selectedModel &&
     selectedCollection && selectedCollectionInfo &&
     selectedCollectionInfo.vector_size !== selectedModel.embedding_dim;
+
+  // Cancel job mutation
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) => apiClient.cancelEmbeddingJob(jobId),
+    onSuccess: () => {
+      toast.success("Job cancelled successfully");
+      queryClient.invalidateQueries({ queryKey: ["embedding-jobs-active"] });
+      queryClient.invalidateQueries({ queryKey: ["embedding-jobs"] });
+    },
+    onError: (error) => {
+      toast.error(`Failed to cancel job: ${error.message}`);
+    },
+  });
 
   // Start training extraction
   const startExtractionMutation = useMutation({
@@ -267,6 +289,46 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
           </div>
         </CardContent>
       </Card>
+
+      {/* Active Jobs Warning */}
+      {activeJobs && activeJobs.length > 0 && (
+        <Card className="border-orange-500/50 bg-orange-500/5">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Loader2 className="h-5 w-5 animate-spin text-orange-500" />
+              Active Extraction Job
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {activeJobs.map((job: EmbeddingJob) => (
+              <div key={job.id} className="flex items-center justify-between p-3 bg-background rounded-lg">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">
+                      Processing {job.processed_images.toLocaleString()} / {job.total_images.toLocaleString()} images
+                    </p>
+                    <Badge variant="secondary" className="text-xs">
+                      {Math.round((job.processed_images / job.total_images) * 100)}%
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Job ID: {job.id}
+                  </p>
+                </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => cancelJobMutation.mutate(job.id)}
+                  disabled={cancelJobMutation.isPending}
+                >
+                  <X className="h-4 w-4 mr-2" />
+                  Cancel
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {hasMatchedProducts && (
         <>

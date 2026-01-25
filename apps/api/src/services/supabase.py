@@ -19,7 +19,9 @@ def get_supabase_client() -> Client:
     """Get cached Supabase client (uses service role key to bypass RLS)."""
     if not settings.supabase_url or not settings.supabase_service_role_key:
         raise ValueError("Supabase URL and service role key must be configured")
-    return create_client(settings.supabase_url, settings.supabase_service_role_key)
+    # Ensure trailing slash for storage endpoint (required by SDK)
+    url = settings.supabase_url if settings.supabase_url.endswith("/") else settings.supabase_url + "/"
+    return create_client(url, settings.supabase_service_role_key)
 
 
 class SupabaseService:
@@ -34,6 +36,90 @@ class SupabaseService:
         if self._client is None:
             self._client = get_supabase_client()
         return self._client
+
+    # =========================================
+    # Helper Methods
+    # =========================================
+
+    async def paginated_query(
+        self,
+        table_name: str,
+        select: str = "*",
+        filters: Optional[dict] = None,
+        batch_size: int = 1000,
+        max_records: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Execute a paginated query to bypass Supabase's row limit.
+
+        Args:
+            table_name: Name of the table to query
+            select: Columns to select (default: "*")
+            filters: Dictionary of filters to apply (e.g., {"status": "ready", "not_null": ["frames_path"]})
+            batch_size: Number of records per batch (default: 1000, max safe value)
+            max_records: Maximum total records to fetch (None = unlimited)
+
+        Returns:
+            List of all records matching the query
+
+        Example:
+            results = await db.paginated_query(
+                "products",
+                select="id, name, frames_path",
+                filters={"status": ["ready", "complete"]},
+                max_records=50000
+            )
+        """
+        all_records = []
+        offset = 0
+        total_fetched = 0
+
+        while True:
+            # Build query
+            query = self.client.table(table_name).select(select)
+
+            # Apply filters
+            if filters:
+                for key, value in filters.items():
+                    if key == "in":
+                        for col, vals in value.items():
+                            query = query.in_(col, vals)
+                    elif key == "eq":
+                        for col, val in value.items():
+                            query = query.eq(col, val)
+                    elif key == "not_null":
+                        for col in value:
+                            query = query.not_.is_(col, "null")
+                    elif key == "gt":
+                        for col, val in value.items():
+                            query = query.gt(col, val)
+                    elif key == "gte":
+                        for col, val in value.items():
+                            query = query.gte(col, val)
+
+            # Apply pagination
+            end_offset = offset + batch_size - 1
+            if max_records and total_fetched + batch_size > max_records:
+                end_offset = offset + (max_records - total_fetched) - 1
+
+            response = query.range(offset, end_offset).execute()
+
+            if not response.data:
+                break
+
+            all_records.extend(response.data)
+            total_fetched += len(response.data)
+
+            # Check if we've reached max or no more data
+            if max_records and total_fetched >= max_records:
+                break
+            if len(response.data) < batch_size:
+                break
+
+            offset += batch_size
+
+        logger.info(f"Paginated query on {table_name}: fetched {len(all_records)} records")
+        return all_records
 
     # =========================================
     # Products
@@ -3379,108 +3465,150 @@ class SupabaseService:
         source_product_ids: Optional[list[str]] = None,
         source_dataset_id: Optional[str] = None,
         source_filter: Optional[dict] = None,
-        limit: int = 10000,
+        limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """
         Get products based on source configuration for extraction jobs.
+        Uses pagination to bypass Supabase row limits.
 
         Args:
             source_type: 'all', 'selected', 'dataset', 'matched', 'filter', 'new'
             source_product_ids: For 'selected' source_type
             source_dataset_id: For 'dataset' source_type
             source_filter: For 'filter' source_type (JSONB filter)
-            limit: Max products to return
+            limit: Max products to return (None = unlimited)
         """
         if source_type == "all":
-            response = (
-                self.client.table("products")
-                .select("*")
-                .eq("status", "complete")
-                .limit(limit)
-                .execute()
+            # Use pagination for "all" products with ready/complete status
+            return await self.paginated_query(
+                table_name="products",
+                select="*",
+                filters={
+                    "in": {"status": ["ready", "complete", "processed"]},
+                    "not_null": ["frames_path"],
+                    "gt": {"frame_count": 0}
+                },
+                max_records=limit
             )
-            return response.data
 
         elif source_type == "selected" and source_product_ids:
-            response = (
-                self.client.table("products")
-                .select("*")
-                .in_("id", source_product_ids)
-                .execute()
-            )
-            return response.data
+            # For selected products, batch query in chunks to avoid URL limits
+            if not source_product_ids:
+                return []
+
+            batch_size = 50  # UUID limit per query
+            all_products = []
+
+            for i in range(0, len(source_product_ids), batch_size):
+                batch_ids = source_product_ids[i:i + batch_size]
+                response = (
+                    self.client.table("products")
+                    .select("*")
+                    .in_("id", batch_ids)
+                    .execute()
+                )
+                all_products.extend(response.data)
+
+            return all_products[:limit] if limit else all_products
 
         elif source_type == "dataset" and source_dataset_id:
-            # Get product IDs from dataset
-            dp_response = (
-                self.client.table("dataset_products")
-                .select("product_id")
-                .eq("dataset_id", source_dataset_id)
-                .execute()
+            # Get product IDs from dataset (with pagination)
+            dataset_products = await self.paginated_query(
+                table_name="dataset_products",
+                select="product_id",
+                filters={"eq": {"dataset_id": source_dataset_id}}
             )
-            product_ids = [item["product_id"] for item in dp_response.data]
+
+            product_ids = [item["product_id"] for item in dataset_products]
             if not product_ids:
                 return []
 
-            response = (
-                self.client.table("products")
-                .select("*")
-                .in_("id", product_ids)
-                .execute()
-            )
-            return response.data
+            # Batch query for products
+            batch_size = 50
+            all_products = []
+
+            for i in range(0, len(product_ids), batch_size):
+                batch_ids = product_ids[i:i + batch_size]
+                response = (
+                    self.client.table("products")
+                    .select("*")
+                    .in_("id", batch_ids)
+                    .execute()
+                )
+                all_products.extend(response.data)
+
+            return all_products[:limit] if limit else all_products
 
         elif source_type == "matched":
-            # Get products with matched cutouts
-            matched_response = (
-                self.client.table("cutout_images")
-                .select("matched_product_id")
-                .not_.is_("matched_product_id", "null")
-                .execute()
+            # Get products with matched cutouts (with pagination)
+            matched_cutouts = await self.paginated_query(
+                table_name="cutout_images",
+                select="matched_product_id",
+                filters={"not_null": ["matched_product_id"]}
             )
+
             product_ids = list(set(
                 item["matched_product_id"]
-                for item in matched_response.data
+                for item in matched_cutouts
                 if item.get("matched_product_id")
             ))
+
             if not product_ids:
                 return []
 
-            response = (
-                self.client.table("products")
-                .select("*")
-                .in_("id", product_ids)
-                .execute()
-            )
-            return response.data
+            # Batch query for products
+            batch_size = 50
+            all_products = []
+
+            for i in range(0, len(product_ids), batch_size):
+                batch_ids = product_ids[i:i + batch_size]
+                response = (
+                    self.client.table("products")
+                    .select("*")
+                    .in_("id", batch_ids)
+                    .execute()
+                )
+                all_products.extend(response.data)
+
+            return all_products[:limit] if limit else all_products
 
         elif source_type == "filter" and source_filter:
-            # Build query from filter
-            query = self.client.table("products").select("*")
+            # Build filters for paginated query
+            filters = {}
 
             if source_filter.get("status"):
-                query = query.eq("status", source_filter["status"])
+                filters["eq"] = {"status": source_filter["status"]}
             if source_filter.get("category"):
-                query = query.in_("category", source_filter["category"])
+                if "in" not in filters:
+                    filters["in"] = {}
+                filters["in"]["category"] = source_filter["category"]
             if source_filter.get("brand"):
-                query = query.in_("brand_name", source_filter["brand"])
+                if "in" not in filters:
+                    filters["in"] = {}
+                filters["in"]["brand_name"] = source_filter["brand"]
             if source_filter.get("has_video") is True:
-                query = query.not_.is_("video_url", "null")
+                filters["not_null"] = filters.get("not_null", []) + ["video_url"]
             if source_filter.get("min_frame_count"):
-                query = query.gte("frame_count", source_filter["min_frame_count"])
+                filters["gte"] = {"frame_count": source_filter["min_frame_count"]}
 
-            response = query.limit(limit).execute()
-            return response.data
+            return await self.paginated_query(
+                table_name="products",
+                select="*",
+                filters=filters if filters else None,
+                max_records=limit
+            )
 
         elif source_type == "new":
-            # Products without embeddings (no qdrant_point_id or has_embedding)
-            # This requires checking which products don't have embeddings yet
-            response = (
-                self.client.table("products")
-                .select("*")
-                .eq("status", "complete")
-                .limit(limit)
-                .execute()
+            # Products without embeddings - use pagination with status filter
+            return await self.paginated_query(
+                table_name="products",
+                select="*",
+                filters={
+                    "in": {"status": ["ready", "complete", "processed"]},
+                    "not_null": ["frames_path"],
+                    "gt": {"frame_count": 0}
+                },
+                max_records=limit
             )
             # Note: actual filtering for "new" would need to check Qdrant
             return response.data

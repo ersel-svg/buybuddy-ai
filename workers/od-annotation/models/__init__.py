@@ -27,9 +27,9 @@ def get_model(
     Returns:
         Model instance
     """
-    # For Roboflow models, use checkpoint_url as cache key for uniqueness
-    if model_name == "roboflow" and model_config:
-        cache_key = f"roboflow:{model_config.get('checkpoint_url', '')}"
+    # For Roboflow and trained models, use checkpoint_url as cache key for uniqueness
+    if model_name in ["roboflow", "trained"] and model_config:
+        cache_key = f"{model_name}:{model_config.get('checkpoint_url', '')}"
     else:
         cache_key = model_name
 
@@ -91,6 +91,26 @@ def get_model(
             checkpoint_url=model_config["checkpoint_url"],
             architecture=model_config["architecture"],
             classes=model_config["classes"],
+            device=config.device,
+        )
+
+    elif model_name == "trained":
+        # Custom trained models (RT-DETR, D-FINE)
+        # Requires model_config with checkpoint_url, architecture, classes, class_mapping
+        if not model_config:
+            raise ValueError("model_config required for trained models")
+
+        required_keys = ["checkpoint_url", "architecture", "classes"]
+        missing = [k for k in required_keys if k not in model_config]
+        if missing:
+            raise ValueError(f"model_config missing required keys: {missing}")
+
+        from .trained_model import TrainedModel
+        model = TrainedModel(
+            checkpoint_url=model_config["checkpoint_url"],
+            architecture=model_config["architecture"],
+            classes=model_config["classes"],
+            class_mapping=model_config.get("class_mapping", {}),
             device=config.device,
         )
 

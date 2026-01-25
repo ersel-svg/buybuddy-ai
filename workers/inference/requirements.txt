@@ -1,0 +1,13 @@
+runpod==1.6.2
+torch==2.1.2
+torchvision==0.16.2
+transformers==4.36.2
+ultralytics==8.1.9
+pillow==10.2.0
+numpy==1.26.3
+httpx==0.26.0
+timm==0.9.12
+
+# Optional: For specific model support
+# super-gradients  # For YOLO-NAS
+# groundingdino  # For Grounding DINO

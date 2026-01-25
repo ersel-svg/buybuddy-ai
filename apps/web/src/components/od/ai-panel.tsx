@@ -97,6 +97,7 @@ const MODEL_ICONS: Record<string, string> = {
   sam3: "✨",
   florence2: "🔮",
   // Roboflow models get a robot icon
+  // Trained models get a brain icon
   default: "🤖",
 };
 

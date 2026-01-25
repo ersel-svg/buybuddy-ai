@@ -58,6 +58,7 @@ async def list_all_executions(
 
 
 @router.post("/{workflow_id}/run", response_model=ExecutionResponse)
+@router.post("/{workflow_id}/execute", response_model=ExecutionResponse, include_in_schema=False)
 async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
     """
     Run a workflow with the provided input.
@@ -79,19 +80,35 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
     if workflow.data.get("status") == "archived":
         raise HTTPException(status_code=400, detail="Cannot run archived workflow")
 
-    # Validate input
-    if not data.input.image_url and not data.input.image_base64:
-        raise HTTPException(
-            status_code=400,
-            detail="Either image_url or image_base64 must be provided"
-        )
+    # Normalize input from either format
+    execution_input = data.get_execution_input()
+
+    # If no image provided, use a placeholder test image for dry-run
+    # This allows testing the workflow structure without real input
+    if not execution_input.image_url and not execution_input.image_base64:
+        # Generate a simple test image placeholder
+        import base64
+        from io import BytesIO
+        try:
+            from PIL import Image
+            img = Image.new("RGB", (640, 480), color=(100, 100, 200))
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG")
+            buffer.seek(0)
+            execution_input.image_base64 = base64.b64encode(buffer.read()).decode("utf-8")
+            logger.info(f"Using test image for workflow {workflow_id} (no input provided)")
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="Either image_url or image_base64 must be provided"
+            )
 
     # Create execution record
     now = datetime.now(timezone.utc)
     execution_data = {
         "workflow_id": workflow_id,
         "status": "pending",
-        "input_data": data.input.model_dump(),
+        "input_data": execution_input.model_dump(),
         "created_at": now.isoformat(),
     }
 
@@ -116,7 +133,7 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
 
         engine_result = await engine.execute(
             workflow=workflow_definition,
-            inputs=data.input.model_dump(),
+            inputs=execution_input.model_dump(),
             workflow_id=workflow_id,
             execution_id=execution_id,
         )
@@ -205,6 +222,31 @@ async def get_execution(execution_id: str):
         raise HTTPException(status_code=404, detail="Execution not found")
 
     return result.data
+
+
+@router.post("/executions/{execution_id}/cancel")
+async def cancel_execution(execution_id: str):
+    """Cancel a running or pending execution."""
+    # Get current execution
+    result = supabase_service.client.table("wf_executions").select("*").eq("id", execution_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    current_status = result.data.get("status")
+    if current_status not in ["pending", "running"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel execution with status: {current_status}"
+        )
+
+    # Update to cancelled
+    updated = supabase_service.client.table("wf_executions").update({
+        "status": "cancelled",
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", execution_id).execute()
+
+    return {"status": "cancelled", "id": execution_id}
 
 
 @router.delete("/executions/{execution_id}")

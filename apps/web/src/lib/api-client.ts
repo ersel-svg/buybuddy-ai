@@ -1235,6 +1235,12 @@ class ApiClient {
     });
   }
 
+  async cancelEmbeddingJob(jobId: string): Promise<{ status: string; message: string; job_id: string }> {
+    return this.request(`/api/v1/embeddings/jobs/${jobId}/cancel`, {
+      method: "POST",
+    });
+  }
+
   // ===========================================
   // Qdrant Collections
   // ===========================================
@@ -4283,12 +4289,15 @@ class ApiClient {
     page?: number;
     limit?: number;
   }): Promise<{
-    items: Array<{
+    workflows: Array<{
       id: string;
       name: string;
       description?: string;
       status: string;
       definition: { nodes: unknown[]; edges: unknown[] };
+      run_count: number;
+      last_run_at?: string;
+      avg_duration_ms?: number;
       created_at: string;
       updated_at: string;
     }>;

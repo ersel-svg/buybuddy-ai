@@ -160,10 +160,13 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
     - sam3: Text prompt → mask → bounding box
     - florence2: Versatile vision tasks
     - rf:{model_id}: Roboflow trained models (closed-vocabulary, no text prompt needed)
+    - trained:{model_id}: Custom trained models (closed-vocabulary, no text prompt needed)
     """
-    # Check if this is a Roboflow model
+    # Check model type
     is_rf_model = is_roboflow_model(request.model)
+    is_trained_model = request.model.startswith("trained:")
     rf_model_data = None
+    trained_model_data = None
 
     if is_rf_model:
         # Extract Roboflow model ID and fetch from database
@@ -174,6 +177,35 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
             raise HTTPException(
                 status_code=404,
                 detail=f"Roboflow model '{rf_id}' not found or not active"
+            )
+    elif is_trained_model:
+        # Extract trained model ID and fetch from database
+        trained_id = request.model.replace("trained:", "")
+
+        try:
+            result = supabase_service.client.table("od_trained_models").select(
+                "id, name, model_type, checkpoint_url, class_mapping, is_active"
+            ).eq("id", trained_id).single().execute()
+
+            if not result.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Trained model '{trained_id}' not found"
+                )
+
+            trained_model_data = result.data
+
+            if not trained_model_data.get("is_active"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{trained_model_data['name']}' is not active"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch trained model: {str(e)}"
             )
     else:
         # Validate open-vocab model
@@ -222,6 +254,39 @@ async def predict_single(request: AIPredictRequest) -> AIPredictResponse:
             "image_url": image_url,
             "box_threshold": request.box_threshold,
             # text_prompt not needed for Roboflow models
+        }
+    elif is_trained_model and trained_model_data:
+        # Trained model - send model_config similar to Roboflow
+        # class_mapping format: {class_id: index}
+        class_mapping = trained_model_data.get("class_mapping", {})
+
+        # Get class names from od_classes table
+        classes = []
+        if class_mapping:
+            # Sort by index
+            sorted_classes = sorted(class_mapping.items(), key=lambda x: x[1])  # x[1] is the index
+            class_ids = [class_id for class_id, _ in sorted_classes]
+
+            if class_ids:
+                classes_result = supabase_service.client.table("od_classes").select(
+                    "id, name"
+                ).in_("id", class_ids).execute()
+
+                class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
+                classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+
+        runpod_input = {
+            "task": "detect",
+            "model": "trained",  # Generic handler in worker
+            "model_config": {
+                "checkpoint_url": trained_model_data["checkpoint_url"],
+                "architecture": trained_model_data["model_type"],  # rt-detr, d-fine
+                "classes": classes,
+                "class_mapping": class_mapping,  # Full mapping for reference
+            },
+            "image_url": image_url,
+            "box_threshold": request.box_threshold,
+            # text_prompt not needed for trained models
         }
     else:
         # Open-vocab model - existing logic
@@ -423,23 +488,56 @@ async def batch_annotate(
 
     Processes multiple images and optionally saves predictions as annotations.
     Use /jobs/{job_id} to check progress.
-    
-    Supports both open-vocabulary models (require text_prompt) and 
-    Roboflow closed-vocabulary models (rf:{model_id}).
+
+    Supports:
+    - Open-vocabulary models (require text_prompt)
+    - Roboflow closed-vocabulary models (rf:{model_id})
+    - Custom trained models (trained:{model_id})
     """
-    # Check if this is a Roboflow model
+    # Check model type
     is_rf_model = is_roboflow_model(request.model)
+    is_trained_model = request.model.startswith("trained:")
     rf_model_data = None
-    
+    trained_model_data = None
+
     if is_rf_model:
         # Extract Roboflow model ID and fetch from database
         rf_id = request.model.replace("rf:", "")
         rf_model_data = await get_roboflow_model(rf_id)
-        
+
         if not rf_model_data:
             raise HTTPException(
                 status_code=404,
                 detail=f"Roboflow model '{rf_id}' not found or not active"
+            )
+    elif is_trained_model:
+        # Extract trained model ID and fetch from database
+        trained_id = request.model.replace("trained:", "")
+
+        try:
+            result = supabase_service.client.table("od_trained_models").select(
+                "id, name, model_type, checkpoint_url, class_mapping, is_active"
+            ).eq("id", trained_id).single().execute()
+
+            if not result.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Trained model '{trained_id}' not found"
+                )
+
+            trained_model_data = result.data
+
+            if not trained_model_data.get("is_active"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{trained_model_data['name']}' is not active"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch trained model: {str(e)}"
             )
     else:
         # Validate open-vocab model
@@ -449,7 +547,7 @@ async def batch_annotate(
                 status_code=400,
                 detail=f"Invalid model '{request.model}'. Supported: {all_models}"
             )
-        
+
         # Open-vocab models require text_prompt
         if not request.text_prompt:
             raise HTTPException(
@@ -540,6 +638,40 @@ async def batch_annotate(
                 "checkpoint_url": rf_model_data["checkpoint_url"],
                 "architecture": rf_model_data["architecture"],
                 "classes": rf_model_data["classes"],
+            },
+            "images": image_data,
+            "box_threshold": request.box_threshold,
+            "filter_classes": request.filter_classes,  # Filter specific classes
+            "job_id": job_id,
+        }
+    elif is_trained_model and trained_model_data:
+        # Trained model - send model_config similar to Roboflow
+        # class_mapping format: {class_id: index}
+        class_mapping = trained_model_data.get("class_mapping", {})
+
+        # Get class names from od_classes table
+        classes = []
+        if class_mapping:
+            # Sort by index
+            sorted_classes = sorted(class_mapping.items(), key=lambda x: x[1])  # x[1] is the index
+            class_ids = [class_id for class_id, _ in sorted_classes]
+
+            if class_ids:
+                classes_result = supabase_service.client.table("od_classes").select(
+                    "id, name"
+                ).in_("id", class_ids).execute()
+
+                class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
+                classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+
+        runpod_input = {
+            "task": "batch",
+            "model": "trained",  # Generic handler in worker
+            "model_config": {
+                "checkpoint_url": trained_model_data["checkpoint_url"],
+                "architecture": trained_model_data["model_type"],  # rt-detr, d-fine
+                "classes": classes,
+                "class_mapping": class_mapping,
             },
             "images": image_data,
             "box_threshold": request.box_threshold,
@@ -1003,6 +1135,65 @@ async def list_available_models() -> dict:
     except Exception as e:
         # Table might not exist yet, just continue with base models
         print(f"[AI Models] Could not fetch Roboflow models: {e}")
+
+    # Fetch active trained models from database
+    try:
+        trained_result = supabase_service.client.table("od_trained_models").select(
+            "id, name, model_type, class_mapping, map, map_50, is_active"
+        ).eq("is_active", True).execute()
+
+        for trained in trained_result.data or []:
+            # Extract class list from class_mapping JSON
+            # Format: {class_id: index}
+            class_mapping = trained.get("class_mapping", {})
+
+            # Get class names from od_classes table
+            classes = []
+            if class_mapping:
+                # Create a list of (index, class_id) tuples and sort by index
+                sorted_classes = sorted(class_mapping.items(), key=lambda x: x[1])  # x[1] is the index
+
+                # Fetch class names in batch
+                class_ids = [class_id for class_id, _ in sorted_classes]
+                if class_ids:
+                    classes_result = supabase_service.client.table("od_classes").select(
+                        "id, name"
+                    ).in_("id", class_ids).execute()
+
+                    # Create a mapping of class_id -> name
+                    class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
+
+                    # Build ordered class list
+                    classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+
+            # Format metrics
+            map_val = trained.get("map", 0)
+            map_50_val = trained.get("map_50", 0)
+            metrics_str = f"mAP: {map_val:.2%}" if map_val else ""
+            if map_50_val:
+                metrics_str += f" | mAP@50: {map_50_val:.2%}" if metrics_str else f"mAP@50: {map_50_val:.2%}"
+
+            description = f"{trained['model_type'].upper()}"
+            if metrics_str:
+                description += f" - {metrics_str}"
+
+            detection_models.append({
+                "id": f"trained:{trained['id']}",
+                "name": trained["name"],
+                "description": description,
+                "tasks": ["detect"],
+                "requires_prompt": False,  # Closed-vocabulary - trained on specific classes
+                "model_type": "closed_vocab",
+                "classes": classes,  # Fixed classes from training
+                "architecture": trained["model_type"],  # rt-detr, d-fine
+                "metrics": {
+                    "map": trained.get("map"),
+                    "map_50": trained.get("map_50"),
+                },
+            })
+    except Exception as e:
+        # Table might not exist yet, just continue
+        print(f"[AI Models] Could not fetch trained models: {e}")
 
     return {
         "detection_models": detection_models,

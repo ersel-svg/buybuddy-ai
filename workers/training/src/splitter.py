@@ -45,7 +45,9 @@ class ProductSplitter:
         self.supabase_key = supabase_key
         self.random_seed = random_seed
         # Use Supabase SDK instead of raw httpx for better DNS handling
-        self.client: Client = create_client(supabase_url, supabase_key)
+        # Ensure trailing slash for storage endpoint (required by SDK)
+        url_with_slash = supabase_url if supabase_url.endswith("/") else supabase_url + "/"
+        self.client: Client = create_client(url_with_slash, supabase_key)
 
     def fetch_products(
         self,
