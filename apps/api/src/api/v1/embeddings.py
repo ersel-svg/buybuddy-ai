@@ -2043,7 +2043,7 @@ async def start_matching_extraction(
         "embedding_model_id": model_id,
         "job_type": "full" if request.collection_mode == "create" else "incremental",
         "source": "both" if request.include_cutouts else "products",
-        "status": "running",
+        "status": "queued",  # Start as queued, worker will update to running
         "total_images": total_images,
         "processed_images": 0,
         "purpose": "matching",
@@ -2051,6 +2051,8 @@ async def start_matching_extraction(
             "product_source": request.product_source,
             "include_cutouts": request.include_cutouts,
             "frame_selection": request.frame_selection,
+            "product_collection": product_collection,
+            "cutout_collection": cutout_collection if request.include_cutouts else None,
         },
     }
 
@@ -2074,49 +2076,82 @@ async def start_matching_extraction(
             distance="Cosine",
         )
 
-    # Process images and save embeddings
-    processed_count, failed_count = await _process_embedding_batch(
-        db, job_id, model_id, model_type, images_to_process, batch_size=50,
-        checkpoint_url=checkpoint_url,
-    )
+    # NEW ARCHITECTURE (Phase 2 Migration):
+    # Submit single job to worker for matching extraction
+    try:
+        # Prepare job input for worker
+        job_input = {
+            "job_id": job_id,
+            "model_type": model_type,
+            "embedding_dim": embedding_dim,
+            "collection_name": product_collection,  # Primary collection
+            "purpose": "matching",
+            "checkpoint_url": checkpoint_url,  # For trained models
+            # Send all images to worker
+            "images": [
+                {
+                    "id": img["id"],
+                    "url": img["url"],
+                    "type": img["type"],
+                    "collection": img["collection"],
+                    "metadata": img["metadata"],
+                }
+                for img in images_to_process
+            ],
+            # Worker credentials
+            "supabase_url": settings.supabase_url,
+            "supabase_service_key": settings.supabase_service_role_key,
+            "qdrant_url": settings.qdrant_url,
+            "qdrant_api_key": settings.qdrant_api_key,
+            # Collection metadata to create after completion
+            "collection_metadata": {
+                "collection_type": "matching",
+                "source_type": request.product_source,
+                "embedding_model_id": model_id,
+                "product_collection": product_collection,
+                "cutout_collection": cutout_collection if request.include_cutouts else None,
+                "frame_selection": request.frame_selection,
+            },
+        }
 
-    # Create collection metadata records
-    for coll in collections:
-        try:
-            coll_type = "products" if "products" in coll else "cutouts"
-            existing = await db.get_embedding_collection_by_name(coll)
-            if existing:
-                await db.update_embedding_collection(existing["id"], {
-                    "vector_count": processed_count,
-                    "last_sync_at": datetime.utcnow().isoformat(),
-                })
-            else:
-                await db.create_embedding_collection({
-                    "name": coll,
-                    "collection_type": coll_type,
-                    "source_type": request.product_source,
-                    "embedding_model_id": model_id,
-                    "vector_count": processed_count,
-                    "frame_selection": request.frame_selection,
-                })
-        except Exception as e:
-            print(f"Collection metadata error: {e}")
+        # Submit job using JobManager (ASYNC mode)
+        job_result = await job_manager.submit_runpod_job(
+            endpoint_type=EndpointType.EMBEDDING,
+            input_data=job_input,
+            mode=JobMode.ASYNC,
+            webhook_url=None,  # Worker does direct Supabase writes
+        )
 
-    # Mark job completed
-    await db.update_embedding_job(job_id, {
-        "status": "completed",
-        "processed_images": processed_count,
-        "completed_at": datetime.utcnow().isoformat(),
-    })
+        # Store runpod_job_id for cancellation
+        await db.update_embedding_job(job_id, {
+            "runpod_job_id": job_result["job_id"],
+            "status": "running",
+        })
 
+        print(f"[EMBEDDING] Matching job {job_id} submitted to Runpod: {job_result['job_id']}")
+
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"[EMBEDDING] Error submitting matching job {job_id}: {e}")
+        print(f"[EMBEDDING] Traceback:\n{error_traceback}")
+
+        # Update status to failed
+        await db.update_embedding_job(job_id, {
+            "status": "failed",
+            "error_message": str(e),
+        })
+        raise HTTPException(status_code=500, detail=f"Job submission failed: {str(e)}")
+
+    # Return job record immediately (job will be processed by worker)
     return {
         "job_id": job_id,
-        "status": "completed",
+        "status": "running",
         "product_collection": product_collection,
         "cutout_collection": cutout_collection if request.include_cutouts else None,
         "product_count": product_count,
         "cutout_count": cutout_count,
-        "total_embeddings": processed_count,
+        "total_images": total_images,
         "failed_count": failed_count,
     }
 
@@ -2246,7 +2281,7 @@ async def start_training_extraction(
         "embedding_model_id": model_id,
         "job_type": "full",
         "source": "both",
-        "status": "running",
+        "status": "queued",  # Start as queued, worker will update to running
         "total_images": total_images,
         "processed_images": 0,
         "purpose": "training",
@@ -2256,6 +2291,7 @@ async def start_training_extraction(
             "matched_products": len(matched_products),
             "image_types": request.image_types,
             "include_matched_cutouts": request.include_matched_cutouts,
+            "collection_name": collection_name,
         },
     }
 
@@ -2276,45 +2312,77 @@ async def start_training_extraction(
             distance="Cosine",
         )
 
-        # Process and save to Qdrant
-        processed_count, failed_count = await _process_embedding_batch(
-            db, job_id, model_id, model_type, images_to_process, batch_size=50
-        )
-
-        # Create collection metadata
+        # NEW ARCHITECTURE (Phase 2 Migration):
+        # Submit single job to worker for training extraction
         try:
-            existing = await db.get_embedding_collection_by_name(collection_name)
-            if existing:
-                await db.update_embedding_collection(existing["id"], {
-                    "vector_count": processed_count,
-                    "last_sync_at": datetime.utcnow().isoformat(),
-                })
-            else:
-                await db.create_embedding_collection({
-                    "name": collection_name,
+            # Prepare job input for worker
+            job_input = {
+                "job_id": job_id,
+                "model_type": model_type,
+                "embedding_dim": embedding_dim,
+                "collection_name": collection_name,
+                "purpose": "training",
+                # Send all images to worker
+                "images": [
+                    {
+                        "id": img["id"],
+                        "url": img["url"],
+                        "type": img["type"],
+                        "collection": img["collection"],
+                        "metadata": img["metadata"],
+                    }
+                    for img in images_to_process
+                ],
+                # Worker credentials
+                "supabase_url": settings.supabase_url,
+                "supabase_service_key": settings.supabase_service_role_key,
+                "qdrant_url": settings.qdrant_url,
+                "qdrant_api_key": settings.qdrant_api_key,
+                # Collection metadata to create after completion
+                "collection_metadata": {
                     "collection_type": "training",
                     "source_type": "matched",
                     "embedding_model_id": model_id,
-                    "vector_count": processed_count,
                     "image_types": request.image_types,
-                })
+                },
+            }
+
+            # Submit job using JobManager (ASYNC mode)
+            job_result = await job_manager.submit_runpod_job(
+                endpoint_type=EndpointType.EMBEDDING,
+                input_data=job_input,
+                mode=JobMode.ASYNC,
+                webhook_url=None,  # Worker does direct Supabase writes
+            )
+
+            # Store runpod_job_id for cancellation
+            await db.update_embedding_job(job_id, {
+                "runpod_job_id": job_result["job_id"],
+                "status": "running",
+            })
+
+            print(f"[EMBEDDING] Training job {job_id} submitted to Runpod: {job_result['job_id']}")
+
         except Exception as e:
-            print(f"Collection metadata error: {e}")
+            import traceback
+            error_traceback = traceback.format_exc()
+            print(f"[EMBEDDING] Error submitting training job {job_id}: {e}")
+            print(f"[EMBEDDING] Traceback:\n{error_traceback}")
 
-        # Mark completed
-        await db.update_embedding_job(job_id, {
-            "status": "completed",
-            "processed_images": processed_count,
-            "completed_at": datetime.utcnow().isoformat(),
-        })
+            # Update status to failed
+            await db.update_embedding_job(job_id, {
+                "status": "failed",
+                "error_message": str(e),
+            })
+            raise HTTPException(status_code=500, detail=f"Job submission failed: {str(e)}")
 
+        # Return job record immediately (job will be processed by worker)
         return {
             "job_id": job_id,
-            "status": "completed",
+            "status": "running",
             "collection_name": collection_name,
             "matched_product_count": len(matched_products),
-            "total_embeddings": processed_count,
-            "failed_count": failed_count,
+            "total_images": total_images,
             "output_target": "qdrant",
         }
 

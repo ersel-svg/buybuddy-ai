@@ -116,7 +116,10 @@ def upload_checkpoint_to_storage(
 
         # Get Supabase URL and key from client
         # Note: supabase_url might be a URL object, convert to string first
-        supabase_url = str(client.supabase_url).rstrip('/')
+        # Keep trailing slash for Storage API (required by SDK 2.24.0+)
+        supabase_url = str(client.supabase_url)
+        if not supabase_url.endswith('/'):
+            supabase_url += '/'
         supabase_key = client.supabase_key
 
         print(f"[DEBUG] Storage path: {storage_path}")
