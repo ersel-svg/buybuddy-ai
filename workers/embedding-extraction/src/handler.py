@@ -84,7 +84,6 @@ def _signal_handler(signum, frame):
             _supabase_client.table("embedding_jobs").update({
                 "status": "cancelled",
                 "error_message": "Job cancelled due to server shutdown",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", _current_job_id).execute()
             print(f"[SHUTDOWN] Embedding job {_current_job_id} marked as cancelled")
         except Exception as e:
@@ -187,7 +186,6 @@ def update_embedding_job(
         try:
             # Build update data
             update_data = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
 
             if status:
