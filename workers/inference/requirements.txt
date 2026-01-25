@@ -1,15 +1,21 @@
-runpod==1.6.2
-torch==2.1.2
-torchvision==0.16.2
-transformers==4.36.2
-ultralytics==8.1.9
-pillow==10.2.0
-numpy==1.26.3
-httpx==0.26.0
-timm==0.9.12
+# torch and torchvision come from base image (pytorch:2.8.0-cuda12.8)
+# DO NOT install via pip - causes CUDA binary mismatch
 
-# Optional: For specific model support
-# super-gradients  # For YOLO-NAS
-# groundingdino  # For Grounding DINO
-# D-FINE requires custom installation from: https://github.com/Peterande/D-FINE
-# RT-DETR is supported via ultralytics
+# RunPod serverless
+runpod>=1.6.0
+
+# HuggingFace transformers (for D-FINE, RT-DETR)
+transformers>=4.45.0
+
+# Ultralytics (for YOLO models)
+ultralytics>=8.1.0
+
+# Image processing
+pillow>=10.0.0
+numpy>=1.24.0
+
+# HTTP client
+httpx>=0.26.0
+
+# Vision models
+timm>=1.0.0
