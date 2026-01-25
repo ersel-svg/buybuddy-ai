@@ -177,8 +177,7 @@ def fetch_product_images(
         filters["id"] = product_ids
         print(f"    Filtering by {len(product_ids)} specific product IDs")
     elif source == "dataset" and product_dataset_id:
-        # Products from specific dataset
-        filters["dataset_id"] = product_dataset_id
+        # Products from specific dataset - will be filtered after fetch via dataset_products junction table
         print(f"    Filtering by dataset ID: {product_dataset_id}")
     elif source == "filter" and product_filter:
         # Custom filters
@@ -195,10 +194,17 @@ def fetch_product_images(
     products = fetch_with_pagination(
         client=client,
         table="products",
-        select="id, barcode, brand_name, product_name, frames_path, frame_count, dataset_id",
+        select="id, barcode, brand_name, product_name, frames_path, frame_count",
         filters=filters,
         page_size=page_size,
     )
+
+    # For "dataset" source, filter by products in the specified dataset
+    if source == "dataset" and product_dataset_id:
+        dataset_products_result = client.table("dataset_products").select("product_id").eq("dataset_id", product_dataset_id).execute()
+        dataset_product_ids = set(dp["product_id"] for dp in (dataset_products_result.data or []))
+        products = [p for p in products if p["id"] in dataset_product_ids]
+        print(f"    Filtered to {len(products)} products in dataset {product_dataset_id}")
 
     # For "matched" source, filter by products with matched cutouts
     if source == "matched":

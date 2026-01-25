@@ -97,11 +97,15 @@ export function TrainingExtractionTab({ activeModel, models }: TrainingExtractio
   const [outputConfigOpen, setOutputConfigOpen] = useState(false);
 
   // Fetch active jobs with polling
-  const { data: activeJobs } = useQuery({
+  // Fetch active embedding jobs (queued + running)
+  const { data: allJobs } = useQuery({
     queryKey: ["embedding-jobs-active"],
-    queryFn: () => apiClient.getEmbeddingJobs("running"),
+    queryFn: () => apiClient.getEmbeddingJobs(),
     refetchInterval: 3000,
   });
+
+  // Filter for cancellable jobs (queued or running)
+  const activeJobs = allJobs?.filter(job => job.status === "queued" || job.status === "running");
 
   // Fetch matched products stats
   const { data: matchedStats, isLoading: statsLoading } = useQuery({

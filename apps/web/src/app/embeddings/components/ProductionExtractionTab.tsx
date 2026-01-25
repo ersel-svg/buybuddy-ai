@@ -119,11 +119,15 @@ export function ProductionExtractionTab({ models }: ProductionExtractionTabProps
   });
 
   // Fetch active embedding jobs
-  const { data: activeJobs } = useQuery({
+  // Fetch active embedding jobs (queued + running)
+  const { data: allJobs } = useQuery({
     queryKey: ["embedding-jobs-active"],
-    queryFn: () => apiClient.getEmbeddingJobs("running"),
+    queryFn: () => apiClient.getEmbeddingJobs(),
     refetchInterval: 3000,
   });
+
+  // Filter for cancellable jobs (queued or running)
+  const activeJobs = allJobs?.filter(job => job.status === "queued" || job.status === "running");
 
   // Get selected dataset
   const selectedDataset = datasets?.find((d) => d.id === selectedDatasetId);

@@ -132,12 +132,15 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
     queryFn: () => apiClient.getQdrantCollections(),
   });
 
-  // Fetch active embedding jobs
-  const { data: activeJobs } = useQuery({
+  // Fetch active embedding jobs (queued + running)
+  const { data: allJobs } = useQuery({
     queryKey: ["embedding-jobs-active"],
-    queryFn: () => apiClient.getEmbeddingJobs("running"),
+    queryFn: () => apiClient.getEmbeddingJobs(),
     refetchInterval: 3000, // Poll every 3 seconds
   });
+
+  // Filter for cancellable jobs (queued or running)
+  const activeJobs = allJobs?.filter(job => job.status === "queued" || job.status === "running");
 
   // Cancel job mutation
   const cancelJobMutation = useMutation({
