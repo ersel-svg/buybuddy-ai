@@ -574,7 +574,7 @@ def handler(job):
             # SOTA PATTERN: Fetch from DB using source_config
             print("Using SOTA pattern: fetching from Supabase via source_config")
 
-            from src.data.supabase_fetcher import build_training_data
+            from data.supabase_fetcher import build_training_data
 
             train_data, val_data, test_data, train_images, val_images, test_images = build_training_data(
                 supabase_url=supabase_url,
