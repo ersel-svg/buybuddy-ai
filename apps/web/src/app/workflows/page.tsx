@@ -186,7 +186,7 @@ export default function WorkflowsPage() {
     });
   };
 
-  const workflows = data?.workflows || data?.items || [];
+  const workflows = data?.workflows || [];
 
   return (
     <div className="space-y-6">
