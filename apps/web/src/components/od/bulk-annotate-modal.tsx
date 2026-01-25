@@ -96,9 +96,13 @@ export function BulkAnnotateModal({
   const [autoAccept, setAutoAccept] = useState(false);
   const [enableClassMapping, setEnableClassMapping] = useState(true);
   const [classMappings, setClassMappings] = useState<ClassMapping[]>([]);
-  
+
   // Roboflow model class configuration
   const [rfClassConfigs, setRfClassConfigs] = useState<RoboflowClassConfig[]>([]);
+
+  // Limit options
+  const [enableLimit, setEnableLimit] = useState(false);
+  const [imageLimit, setImageLimit] = useState(100);
 
   // Job state
   const [jobStatus, setJobStatus] = useState<JobStatus>("idle");
@@ -165,17 +169,27 @@ export function BulkAnnotateModal({
 
   // Get image count based on selection mode
   const getImageCount = useCallback((): number => {
+    let count = 0;
     switch (selectionMode) {
       case "unannotated":
-        return unannotatedCount;
+        count = unannotatedCount;
+        break;
       case "selected":
-        return selectedImageIds.length;
+        count = selectedImageIds.length;
+        break;
       case "all":
-        return totalImages;
+        count = totalImages;
+        break;
       default:
-        return 0;
+        count = 0;
     }
-  }, [selectionMode, unannotatedCount, selectedImageIds.length, totalImages]);
+
+    // Apply limit if enabled
+    if (enableLimit && imageLimit < count) {
+      return imageLimit;
+    }
+    return count;
+  }, [selectionMode, unannotatedCount, selectedImageIds.length, totalImages, enableLimit, imageLimit]);
 
   // Detection models and selected model info - memoized to prevent infinite loops
   const detectionModels = useMemo(() => {
@@ -292,6 +306,7 @@ export function BulkAnnotateModal({
         auto_accept: autoAccept,
         class_mapping: Object.keys(classMapping).length > 0 ? classMapping : undefined,
         filter_classes: filterClasses,  // For Roboflow models
+        limit: enableLimit ? imageLimit : undefined,  // Limit number of images if enabled
       });
     },
     onSuccess: (data) => {
@@ -614,6 +629,42 @@ export function BulkAnnotateModal({
               <p className="text-xs text-muted-foreground">
                 Lower values detect more objects but may include false positives
               </p>
+            </div>
+
+            {/* Image Limit Option */}
+            <div className="space-y-3 p-3 border rounded-lg">
+              <div className="flex items-center gap-3">
+                <Checkbox
+                  id="enableLimit"
+                  checked={enableLimit}
+                  onCheckedChange={(checked) => setEnableLimit(checked === true)}
+                />
+                <div className="flex-1">
+                  <Label htmlFor="enableLimit" className="cursor-pointer font-medium">
+                    Limit number of images
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Process only the first N images (useful for testing)
+                  </p>
+                </div>
+              </div>
+              {enableLimit && (
+                <div className="flex items-center gap-2 pl-7">
+                  <Label htmlFor="imageLimit" className="text-sm whitespace-nowrap">
+                    Process first
+                  </Label>
+                  <Input
+                    id="imageLimit"
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={imageLimit}
+                    onChange={(e) => setImageLimit(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">images</span>
+                </div>
+              )}
             </div>
 
             {/* Auto-accept Option */}

@@ -591,6 +591,10 @@ async def batch_annotate(
             detail="No images found to process"
         )
 
+    # Apply limit if specified
+    if request.limit and request.limit < len(images):
+        images = images[:request.limit]
+
     # Create job record
     job_id = str(uuid.uuid4())
 

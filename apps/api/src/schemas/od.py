@@ -585,6 +585,12 @@ class AIBatchAnnotateRequest(BaseModel):
         default=None,
         description="Filter predictions to only include these classes. Useful for Roboflow models with fixed class sets. None = return all classes."
     )
+    limit: Optional[int] = Field(
+        default=None,
+        description="Limit the number of images to process. None = process all matching images. Useful for testing or cost control.",
+        ge=1,
+        le=10000
+    )
 
 
 class AIPrediction(BaseModel):

@@ -2759,6 +2759,7 @@ class ApiClient {
     auto_accept?: boolean;
     class_mapping?: Record<string, string>;
     filter_classes?: string[];  // Filter to only include these classes (for Roboflow models)
+    limit?: number;  // Limit number of images to process
   }): Promise<{
     job_id: string;
     status: string;
