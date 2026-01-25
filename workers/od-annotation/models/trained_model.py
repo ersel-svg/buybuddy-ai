@@ -271,15 +271,27 @@ class TrainedModel(BaseModel):
 
             x1, y1, x2, y2 = box
 
+            # Normalize coordinates to [0, 1] and clamp to valid range
+            norm_x = max(0.0, min(1.0, float(x1 / img_width)))
+            norm_y = max(0.0, min(1.0, float(y1 / img_height)))
+            norm_width = max(0.0, min(1.0, float((x2 - x1) / img_width)))
+            norm_height = max(0.0, min(1.0, float((y2 - y1) / img_height)))
+
+            # Ensure bbox stays within bounds
+            if norm_x + norm_width > 1.0:
+                norm_width = 1.0 - norm_x
+            if norm_y + norm_height > 1.0:
+                norm_height = 1.0 - norm_y
+
             # Map class index to name
             label = self.classes[int(label_idx)] if int(label_idx) < len(self.classes) else f"class_{int(label_idx)}"
 
             predictions.append({
                 "bbox": {
-                    "x": float(x1 / img_width),
-                    "y": float(y1 / img_height),
-                    "width": float((x2 - x1) / img_width),
-                    "height": float((y2 - y1) / img_height),
+                    "x": norm_x,
+                    "y": norm_y,
+                    "width": norm_width,
+                    "height": norm_height,
                 },
                 "label": label,
                 "confidence": float(score)
