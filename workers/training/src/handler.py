@@ -564,12 +564,67 @@ def handler(job):
         # Fetch training data
         report_progress(training_job_id, "running", 0.05, message="Fetching training data...")
 
-        # Check if API provided training_images (new format with URLs)
+        # SOTA PATTERN: Check for source_config (worker fetches from DB)
+        source_config = job_input.get("source_config")
+
+        # BACKWARD COMPAT: Check for training_images (old format with URLs in payload)
         training_images = job_input.get("training_images")
 
-        if training_images:
-            # NEW FORMAT: API provides images with URLs
-            print("Using NEW format: training_images provided by API")
+        if source_config:
+            # SOTA PATTERN: Fetch from DB using source_config
+            print("Using SOTA pattern: fetching from Supabase via source_config")
+
+            from src.data.supabase_fetcher import build_training_data
+
+            train_data, val_data, test_data, train_images, val_images, test_images = build_training_data(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+                source_config=source_config,
+            )
+
+            print(f"\nData Split (SOTA pattern):")
+            print(f"  Train: {len(train_data)} products, {sum(len(imgs) for imgs in train_images.values())} images")
+            print(f"  Val: {len(val_data)} products, {sum(len(imgs) for imgs in val_images.values())} images")
+            print(f"  Test: {len(test_data)} products, {sum(len(imgs) for imgs in test_images.values())} images")
+
+            if len(train_data) < 10:
+                return {"error": f"Not enough training data: {len(train_data)} products"}
+
+            # Create datasets with training_images
+            report_progress(training_job_id, "running", 0.10, message="Creating datasets...")
+
+            preload_config = config.get("preload_config", {})
+
+            train_dataset = ProductDataset(
+                products=train_data,
+                model_type=model_type,
+                augmentation_strength=config.get("augmentation_strength", "moderate"),
+                is_training=True,
+                training_images=train_images,
+                preload_config=preload_config,
+            )
+
+            val_dataset = ProductDataset(
+                products=val_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+                training_images=val_images,
+                preload_config=preload_config,
+            )
+
+            test_dataset = ProductDataset(
+                products=test_data,
+                model_type=model_type,
+                augmentation_strength="none",
+                is_training=False,
+                training_images=test_images,
+                preload_config=preload_config,
+            )
+
+        elif training_images:
+            # BACKWARD COMPAT: API provided images with URLs in payload
+            print("Using BACKWARD COMPAT format: training_images from payload")
 
             # Get product_ids for each split from config
             train_product_ids = set(data_config.get("train_product_ids", []) or config.get("train_product_ids", []))
@@ -659,8 +714,8 @@ def handler(job):
                 preload_config=preload_config,  # NEW: Configurable preload settings
             )
         else:
-            # LEGACY FORMAT: Fetch from Supabase using UPCStratifiedSplitter
-            print("Using LEGACY format: fetching from Supabase")
+            # FALLBACK: Fetch from Supabase using ProductSplitter (no source_config, no training_images)
+            print("Using FALLBACK format: fetching from Supabase via ProductSplitter")
 
             splitter = UPCStratifiedSplitter(
                 supabase_url=supabase_url,

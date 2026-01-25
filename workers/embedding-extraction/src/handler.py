@@ -312,7 +312,9 @@ def handler_stateful(job_input: Dict[str, Any]) -> Dict[str, Any]:
     collection_name = job_input.get("collection_name")
     purpose = job_input.get("purpose", "matching")
     checkpoint_url = job_input.get("checkpoint_url")
-    images = job_input.get("images", [])
+
+    # SOTA PATTERN: Check for source_config (new way - fetch from DB)
+    source_config = job_input.get("source_config")
 
     # Credentials
     supabase_url = job_input.get("supabase_url")
@@ -335,16 +337,39 @@ def handler_stateful(job_input: Dict[str, Any]) -> Dict[str, Any]:
     print(f"\n{'=' * 60}")
     print(f"EMBEDDING EXTRACTION (STATEFUL MODE)")
     print(f"  Job ID: {job_id}")
-    print(f"  Images: {len(images)}")
     print(f"  Model: {model_type}")
     print(f"  Collection: {collection_name}")
     print(f"  Purpose: {purpose}")
     print(f"  Batch size: {batch_size}")
-    print(f"{'=' * 60}\n")
+
+    # SOTA PATTERN: Fetch images from DB using source_config
+    if source_config:
+        print(f"  Mode: SOTA (fetching from DB)")
+        print(f"  Source config: {source_config}")
+        print(f"{'=' * 60}\n")
+
+        try:
+            from data.supabase_fetcher import build_extraction_data
+            images = build_extraction_data(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+                source_config=source_config,
+            )
+            print(f"[SOTA] Fetched {len(images)} images from database")
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch images from DB: {e}")
+            traceback.print_exc()
+            return {"status": "error", "error": f"Failed to fetch images: {str(e)}"}
+    else:
+        # LEGACY: Images provided in payload (backward compatible)
+        images = job_input.get("images", [])
+        print(f"  Mode: LEGACY (images in payload)")
+        print(f"  Images: {len(images)}")
+        print(f"{'=' * 60}\n")
 
     # Validate
     if not images:
-        return {"status": "error", "error": "No images provided"}
+        return {"status": "error", "error": "No images to process (check source_config or images payload)"}
 
     if not collection_name:
         return {"status": "error", "error": "collection_name is required"}

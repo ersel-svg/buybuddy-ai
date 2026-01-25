@@ -271,7 +271,8 @@ class RunpodService:
         training_run_id: str,
         model_type: str,
         config: dict[str, Any],
-        training_images: Optional[dict[str, list[dict]]] = None,
+        source_config: Optional[dict[str, Any]] = None,
+        training_images: Optional[dict[str, list[dict]]] = None,  # DEPRECATED: For backward compat
         checkpoint_url: Optional[str] = None,
         start_epoch: int = 0,
         webhook_url: Optional[str] = None,
@@ -283,7 +284,8 @@ class RunpodService:
             training_run_id: ID of the training run in database
             model_type: Model type (e.g., "dinov2-base")
             config: Training configuration dict
-            training_images: Dict mapping product_id to list of images with URLs
+            source_config: SOTA pattern - worker fetches from DB using this config
+            training_images: DEPRECATED - Dict mapping product_id to list of images
             checkpoint_url: Optional URL to resume from checkpoint
             start_epoch: Epoch to start from (for resume)
             webhook_url: Optional webhook URL for completion callback
@@ -300,7 +302,11 @@ class RunpodService:
             "hf_token": settings.hf_token,
         }
 
-        # Add training images if provided (new format with URLs)
+        # SOTA PATTERN: Worker fetches from DB using source_config
+        if source_config:
+            input_data["source_config"] = source_config
+
+        # DEPRECATED: Add training images if provided (backward compat)
         if training_images:
             input_data["training_images"] = training_images
 

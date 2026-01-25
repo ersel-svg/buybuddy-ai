@@ -342,9 +342,9 @@ async def submit_training_job(training_run_id: str):
     """
     Submit training job to RunPod in background.
 
-    Fetches dataset, prepares training data in worker's expected format, and submits to CLS_TRAINING endpoint.
+    SOTA Pattern: Sends dataset_id to worker, worker fetches images from Supabase.
+    This reduces payload from ~8MB (50K URLs) to ~3KB (just config + credentials).
     """
-    import random
 
     try:
         logger.info(f"[CLS Training] Submitting job for training run: {training_run_id}")
@@ -375,77 +375,25 @@ async def submit_training_job(training_run_id: str):
         if len(classes) < 2:
             raise Exception("Dataset must have at least 2 classes")
 
-        # Create class name list and ID to index mapping
+        # Create class name list for metadata
         class_names = [c.get("display_name") or c["name"] for c in classes]
-        class_id_to_index = {c["id"]: i for i, c in enumerate(classes)}
 
-        # Fetch labeled images with their labels (with pagination to handle >1000 records)
-        labels_data = []
-        page_size = 1000
-        offset = 0
+        # === SOTA PATTERN: Count labels only, don't fetch URLs ===
+        # Worker will fetch the actual images from Supabase using dataset_id
+        labels_count_result = supabase_service.client.table("cls_labels").select(
+            "id", count="exact"
+        ).eq("dataset_id", dataset_id).execute()
 
-        while True:
-            labels_result = supabase_service.client.table("cls_labels").select(
-                "image_id, class_id, cls_images!inner(id, image_url)"
-            ).eq("dataset_id", dataset_id).range(offset, offset + page_size - 1).execute()
+        total_labels = labels_count_result.count or 0
+        if total_labels < 10:
+            raise Exception(f"Not enough labeled images ({total_labels}). Minimum 10 required.")
 
-            batch = labels_result.data or []
-            labels_data.extend(batch)
-
-            if len(batch) < page_size:
-                break
-            offset += page_size
-
-        logger.info(f"[CLS Training] Fetched {len(labels_data)} labels with pagination")
-
-        if not labels_data:
-            raise Exception("No labeled images found in dataset")
-
-        # Build image data list with URL and label
-        all_images = []
-        seen_images = set()
-
-        for label in labels_data:
-            image_id = label["image_id"]
-            class_id = label["class_id"]
-            cls_image = label.get("cls_images", {})
-
-            if not cls_image or image_id in seen_images:
-                continue
-
-            image_url = cls_image.get("image_url")
-            if not image_url:
-                continue
-
-            class_index = class_id_to_index.get(class_id)
-            if class_index is None:
-                continue
-
-            all_images.append({
-                "url": image_url,
-                "label": class_index,
-            })
-            seen_images.add(image_id)
-
-        if len(all_images) < 10:
-            raise Exception(f"Not enough labeled images ({len(all_images)}). Minimum 10 required.")
-
-        # Split into train/val sets
+        # Calculate expected train/val split (for logging and metadata)
         train_split = config.get("train_split", 0.8)
-        random.seed(42)  # Reproducible split
-        random.shuffle(all_images)
+        estimated_train = int(total_labels * train_split)
+        estimated_val = total_labels - estimated_train
 
-        split_idx = int(len(all_images) * train_split)
-        train_urls = all_images[:split_idx]
-        val_urls = all_images[split_idx:]
-
-        # Ensure at least some validation samples
-        if len(val_urls) < 2:
-            # Move some from train to val
-            val_urls = all_images[-2:]
-            train_urls = all_images[:-2]
-
-        logger.info(f"[CLS Training] Prepared {len(train_urls)} train, {len(val_urls)} val images with {len(classes)} classes")
+        logger.info(f"[CLS Training] SOTA: dataset_id={dataset_id}, {total_labels} labels, ~{estimated_train} train, ~{estimated_val} val, {len(classes)} classes")
 
         # Map model config to worker's expected format
         model_type = training_run.get("model_type", "efficientnet")
@@ -485,7 +433,7 @@ async def submit_training_job(training_run_id: str):
         # ===========================================
         # Smart Defaults Based on Dataset Size
         # ===========================================
-        num_train_samples = len(train_urls)
+        num_train_samples = estimated_train
         is_small_dataset = num_train_samples < 5000
 
         # Augmentation preset - auto-select heavy for small datasets unless overridden
@@ -512,15 +460,14 @@ async def submit_training_job(training_run_id: str):
 
         logger.info(f"[CLS Training] Anti-overfitting config: drop_rate={drop_rate}, weight_decay={weight_decay}, mixup={use_mixup}")
 
-        # Prepare RunPod input in worker's expected format
+        # Prepare RunPod input in SOTA format
+        # Worker will fetch images from Supabase using dataset_id
         runpod_input = {
             "training_run_id": training_run_id,
-            "dataset": {
-                "train_urls": train_urls,
-                "val_urls": val_urls,
-                "class_names": class_names,
-            },
+            "dataset_id": dataset_id,  # SOTA: Worker fetches from DB
             "config": {
+                "train_split": train_split,
+                "seed": config.get("seed", 42),
                 "model_name": model_name,
                 "epochs": config.get("epochs", 30),
                 "batch_size": config.get("batch_size", 32),

@@ -2076,10 +2076,11 @@ async def start_matching_extraction(
             distance="Cosine",
         )
 
-    # NEW ARCHITECTURE (Phase 2 Migration):
-    # Submit single job to worker for matching extraction
+    # SOTA ARCHITECTURE (Phase 3):
+    # Send source_config instead of images - worker fetches from DB
+    # This avoids 22.5 MB payload issue (60K images * 370 bytes = 22.5 MB)
     try:
-        # Prepare job input for worker
+        # Prepare job input for worker - SOTA pattern (~1 KB payload)
         job_input = {
             "job_id": job_id,
             "model_type": model_type,
@@ -2087,22 +2088,28 @@ async def start_matching_extraction(
             "collection_name": product_collection,  # Primary collection
             "purpose": "matching",
             "checkpoint_url": checkpoint_url,  # For trained models
-            # Send all images to worker
-            "images": [
-                {
-                    "id": img["id"],
-                    "url": img["url"],
-                    "type": img["type"],
-                    "collection": img["collection"],
-                    "metadata": img["metadata"],
-                }
-                for img in images_to_process
-            ],
-            # Worker credentials
+
+            # SOTA: source_config tells worker what to fetch from DB
+            "source_config": {
+                "type": "both" if request.include_cutouts else "products",
+                "filters": {
+                    "has_embedding": False if request.collection_mode == "create" else None,
+                    "product_source": request.product_source,
+                    "cutout_filter_has_upc": request.cutout_filter_has_upc,
+                },
+                "frame_selection": request.frame_selection,
+                "frame_interval": request.frame_interval,
+                "max_frames": request.max_frames,
+                "product_collection": product_collection,
+                "cutout_collection": cutout_collection if request.include_cutouts else None,
+            },
+
+            # Worker credentials for Supabase and Qdrant
             "supabase_url": settings.supabase_url,
             "supabase_service_key": settings.supabase_service_role_key,
             "qdrant_url": settings.qdrant_url,
             "qdrant_api_key": settings.qdrant_api_key,
+
             # Collection metadata to create after completion
             "collection_metadata": {
                 "collection_type": "matching",
@@ -2312,32 +2319,38 @@ async def start_training_extraction(
             distance="Cosine",
         )
 
-        # NEW ARCHITECTURE (Phase 2 Migration):
-        # Submit single job to worker for training extraction
+        # SOTA ARCHITECTURE (Phase 3):
+        # Send source_config instead of images - worker fetches from DB
         try:
-            # Prepare job input for worker
+            # Prepare job input for worker - SOTA pattern (~1 KB payload)
             job_input = {
                 "job_id": job_id,
                 "model_type": model_type,
                 "embedding_dim": embedding_dim,
                 "collection_name": collection_name,
                 "purpose": "training",
-                # Send all images to worker
-                "images": [
-                    {
-                        "id": img["id"],
-                        "url": img["url"],
-                        "type": img["type"],
-                        "collection": img["collection"],
-                        "metadata": img["metadata"],
-                    }
-                    for img in images_to_process
-                ],
+
+                # SOTA: source_config tells worker what to fetch from DB
+                "source_config": {
+                    "type": "both" if request.include_matched_cutouts else "products",
+                    "filters": {
+                        "product_source": "matched",  # Only matched products for training
+                        "image_types": request.image_types,
+                        "include_matched_cutouts": request.include_matched_cutouts,
+                    },
+                    "frame_selection": request.frame_selection,
+                    "frame_interval": request.frame_interval,
+                    "max_frames": request.max_frames,
+                    "product_collection": collection_name,
+                    "cutout_collection": collection_name,  # Same collection for training
+                },
+
                 # Worker credentials
                 "supabase_url": settings.supabase_url,
                 "supabase_service_key": settings.supabase_service_role_key,
                 "qdrant_url": settings.qdrant_url,
                 "qdrant_api_key": settings.qdrant_api_key,
+
                 # Collection metadata to create after completion
                 "collection_metadata": {
                     "collection_type": "training",

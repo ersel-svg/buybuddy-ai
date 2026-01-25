@@ -3404,6 +3404,30 @@ class SupabaseService:
 
         return all_cutouts
 
+    async def count_matched_cutouts_for_products(
+        self,
+        product_ids: list[str],
+    ) -> int:
+        """Count cutouts matched to multiple products (efficient count query)."""
+        if not product_ids:
+            return 0
+
+        # Batch the query to avoid URL length limits
+        batch_size = 50
+        total_count = 0
+
+        for i in range(0, len(product_ids), batch_size):
+            batch_ids = product_ids[i:i + batch_size]
+            response = (
+                self.client.table("cutout_images")
+                .select("id", count="exact")
+                .in_("matched_product_id", batch_ids)
+                .execute()
+            )
+            total_count += response.count or 0
+
+        return total_count
+
     async def get_product_images_by_types(
         self,
         product_id: str,

@@ -633,7 +633,7 @@ export interface EmbeddingModel {
   updated_at: string;
 }
 
-export type EmbeddingJobStatus = "pending" | "running" | "completed" | "failed";
+export type EmbeddingJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "cancelled";
 export type EmbeddingJobType = "full" | "incremental";
 export type EmbeddingSource = "cutouts" | "products" | "both";
 

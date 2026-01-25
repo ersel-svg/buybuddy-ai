@@ -458,89 +458,49 @@ async def create_training_run(
             "identifiers": p.get("identifiers"),  # Additional identifiers (UPC, EAN, etc.)
         }
 
-    # Build training images for each product
-    # Uses frames_path directly for efficiency (skips slow product_images queries)
+    # SOTA PATTERN: Estimate image counts without building full URL dict
+    # Worker will fetch actual images from DB using source_config
     image_cfg = request.image_config
-    training_images: dict[str, list[dict]] = {}  # product_id -> list of images
     image_stats = {"synthetic": 0, "real": 0, "augmented": 0, "cutout": 0}
 
-    # Helper function to generate frame URLs from frames_path
-    def generate_frame_urls(frames_path: str, frame_count: int, frame_selection: str, frame_interval: int, max_frames: int) -> list[dict]:
-        """Generate frame URLs from frames_path."""
-        if not frames_path or frame_count <= 0:
-            return []
-
-        # Determine which frame indices to use
+    # Helper to estimate frame count based on selection
+    def estimate_frame_count(frame_count: int, frame_selection: str, max_frames: int) -> int:
+        if frame_count <= 0:
+            return 0
         if frame_selection == "first":
-            indices = [0]
+            return 1
         elif frame_selection == "all":
-            # Use ALL frames (ignore max_frames limit)
-            indices = list(range(frame_count))
+            return frame_count
         elif frame_selection == "key_frames":
-            # Pick 4 frames at 0°, 90°, 180°, 270° (roughly)
-            step = max(1, frame_count // 4)
-            indices = [0] + [i * step for i in range(1, 4) if i * step < frame_count]
-            indices = indices[:max_frames]
+            return min(4, frame_count, max_frames)
         elif frame_selection == "interval":
-            indices = list(range(0, frame_count, frame_interval))[:max_frames]
-        else:
-            indices = [0]
+            return min((frame_count + 4) // 5, max_frames)  # Approx with interval=5
+        return 1
 
-        # Generate URLs
-        base_url = frames_path.rstrip("/")
-        frames = []
-        for idx in indices:
-            frames.append({
-                "url": f"{base_url}/frame_{idx:04d}.png",
-                "image_type": "synthetic",
-                "frame_index": idx,
-                "domain": "synthetic",
-            })
-        return frames
-
-    # OPTIMIZED: Use frames_path directly for all products (avoids N queries)
-    # This is faster than querying product_images table for each product
+    # Estimate synthetic image count
     if "synthetic" in image_cfg.image_types:
         for product_id in all_product_ids:
             product_data = products_by_id.get(product_id, {})
-            frames_path = product_data.get("frames_path")
             frame_count = product_data.get("frame_count", 0)
-
-            if frames_path and frame_count > 0:
-                frames = generate_frame_urls(
-                    frames_path=frames_path,
-                    frame_count=frame_count,
-                    frame_selection=image_cfg.frame_selection,
-                    frame_interval=image_cfg.frame_interval,
-                    max_frames=image_cfg.max_frames_per_type,
+            if frame_count > 0:
+                estimated = estimate_frame_count(
+                    frame_count,
+                    image_cfg.frame_selection,
+                    image_cfg.max_frames_per_type,
                 )
-                if frames:
-                    training_images[product_id] = frames
-                    image_stats["synthetic"] += len(frames)
+                image_stats["synthetic"] += estimated
 
-    # Include matched cutouts as real-domain training data (batch query)
+    # Estimate cutout count (quick count query)
     if image_cfg.include_matched_cutouts:
-        all_cutouts = await db.get_matched_cutouts_for_products(list(all_product_ids))
-        for cutout in all_cutouts:
-            product_id = cutout.get("matched_product_id")
-            if product_id and product_id in all_product_ids:
-                if product_id not in training_images:
-                    training_images[product_id] = []
-                training_images[product_id].append({
-                    "url": cutout["image_url"],
-                    "image_type": "cutout",
-                    "frame_index": 0,
-                    "domain": "real",
-                    "cutout_id": cutout["id"],
-                })
-                image_stats["cutout"] += 1
+        cutout_count = await db.count_matched_cutouts_for_products(list(all_product_ids))
+        image_stats["cutout"] = cutout_count
 
-    # Check if we have enough images
-    total_images = sum(len(imgs) for imgs in training_images.values())
+    # Check if we have enough estimated images
+    total_images = sum(image_stats.values())
     if total_images < 100:
         raise HTTPException(
             status_code=400,
-            detail=f"Not enough training images: {total_images} (minimum 100). "
+            detail=f"Not enough training images (estimated): {total_images} (minimum 100). "
                    f"Stats: {image_stats}. Try including more image types.",
         )
 
@@ -562,6 +522,7 @@ async def create_training_run(
         config["sota_config"] = request.sota_config.model_dump()
 
     # Add split product IDs to config for worker
+    config["product_ids"] = list(all_product_ids)  # All products for LEGACY mode
     config["train_product_ids"] = train_product_ids
     config["val_product_ids"] = val_product_ids
     config["test_product_ids"] = test_product_ids
@@ -597,11 +558,22 @@ async def create_training_run(
 
     # Dispatch to RunPod (async)
     try:
+        # SOTA PATTERN: Send source_config, worker fetches from DB
+        # This keeps payload small (~5 KB) and avoids RunPod 400 errors
+        source_config = {
+            "product_ids": list(all_product_ids),
+            "train_product_ids": train_product_ids,
+            "val_product_ids": val_product_ids,
+            "test_product_ids": test_product_ids,
+            "image_config": image_cfg.model_dump(),
+            "label_config": request.label_config.model_dump(),
+        }
+
         runpod_job = await runpod_service.start_training_job(
             training_run_id=run["id"],
             model_type=request.base_model_type,
             config=config,
-            training_images=training_images,  # Pass images with URLs to worker
+            source_config=source_config,  # SOTA: Worker fetches from DB
         )
         await db.update_training_run(run["id"], {
             "runpod_job_id": runpod_job.get("id"),

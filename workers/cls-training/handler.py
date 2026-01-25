@@ -7,20 +7,27 @@ SOTA Classification Training with:
 - Augmentations: SOTA presets with MixUp, CutMix, RandAugment
 - Training: AMP, EMA, Gradient Accumulation, Early Stopping, etc.
 
-Input:
+Input (SOTA Pattern - Recommended):
 {
     "training_run_id": "uuid",
+    "dataset_id": "uuid",           # Worker fetches from DB
     "config": {
         "model_name": "vit_base_patch16_224",
-        "num_classes": 4,
         "epochs": 10,
         "batch_size": 32,
         "learning_rate": 1e-4,
-        "loss": "label_smoothing",
-        "augmentation": "sota",
-        "use_mixup": true,
+        "train_split": 0.8,         # Train/val split ratio
+        "seed": 42,                 # Random seed for split
         ...
     },
+    "supabase_url": "...",
+    "supabase_key": "..."
+}
+
+Input (Legacy - Backward Compatible):
+{
+    "training_run_id": "uuid",
+    "config": {...},
     "dataset": {
         "train_urls": [{"url": "...", "label": 0}, ...],
         "val_urls": [{"url": "...", "label": 0}, ...],
@@ -893,10 +900,32 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         # Extract inputs
         training_run_id = job_input.get("training_run_id", "unknown")
         config = job_input.get("config", {})
-        dataset = job_input.get("dataset", {})
         supabase_url = job_input.get("supabase_url")
         supabase_key = job_input.get("supabase_key")
         resume_from = job_input.get("resume_from")  # Checkpoint path for resume
+
+        # === SOTA PATTERN: Fetch dataset from Supabase if dataset_id provided ===
+        dataset_id = job_input.get("dataset_id")
+        dataset = job_input.get("dataset", {})
+
+        if dataset_id and supabase_url and supabase_key:
+            # SOTA PATTERN: Worker fetches from DB using dataset_id
+            print(f"Using SOTA pattern: fetching dataset {dataset_id} from Supabase")
+            from src.data.supabase_fetcher_cls import build_url_dataset_data
+
+            dataset = build_url_dataset_data(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+                dataset_id=dataset_id,
+                train_split=config.get("train_split", 0.8),
+                seed=config.get("seed", 42),
+            )
+            print(f"  Fetched: {len(dataset.get('train_urls', []))} train, {len(dataset.get('val_urls', []))} val images")
+        elif dataset:
+            # BACKWARD COMPAT: Dataset URLs provided directly in payload
+            print("Using BACKWARD COMPAT format: dataset URLs from payload")
+        else:
+            raise ValueError("Either dataset_id or dataset must be provided")
 
         # Track current training run for graceful shutdown
         global _current_training_run_id, _current_supabase_url, _current_supabase_key
