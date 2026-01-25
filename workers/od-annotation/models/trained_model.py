@@ -150,29 +150,39 @@ class TrainedModel(BaseModel):
 
         return local_path
 
-    def _extract_checkpoint_metadata(self, checkpoint: Dict) -> Tuple[str, str]:
+    def _extract_checkpoint_metadata(self, checkpoint: Dict) -> Tuple[str, str, int]:
         """
-        Extract model_size and actual architecture from checkpoint.
+        Extract model_size, actual architecture, and num_classes from checkpoint.
 
         Returns:
-            Tuple of (model_size, actual_architecture)
+            Tuple of (model_size, actual_architecture, num_classes)
         """
         # Try to get from checkpoint config
         training_config = checkpoint.get("config", {}).get("training", {})
+        dataset_config = checkpoint.get("config", {}).get("dataset", {})
 
         model_size = training_config.get("model_size", "m")  # Default to medium
         actual_architecture = training_config.get("model_type", self.architecture)
+
+        # Get num_classes from checkpoint - CRITICAL for correct model loading
+        # Try multiple sources
+        num_classes = (
+            dataset_config.get("num_classes") or
+            training_config.get("num_classes") or
+            len(self.classes)  # Fallback to provided classes
+        )
 
         # Store metadata for logging
         self._checkpoint_metadata = {
             "model_size": model_size,
             "model_type": actual_architecture,
+            "num_classes": num_classes,
             "precision": checkpoint.get("precision", "fp32"),
             "inference_only": checkpoint.get("inference_only", False),
             "best_map": checkpoint.get("best_map"),
         }
 
-        logger.info(f"Checkpoint metadata: model_size={model_size}, model_type={actual_architecture}")
+        logger.info(f"Checkpoint metadata: model_size={model_size}, model_type={actual_architecture}, num_classes={num_classes}")
 
         # Warn if architecture mismatch
         if actual_architecture.lower().replace("-", "") != self.architecture.replace("-", ""):
@@ -182,7 +192,15 @@ class TrainedModel(BaseModel):
                 f"Using checkpoint's actual architecture."
             )
 
-        return model_size, actual_architecture.lower()
+        # Warn if class count mismatch
+        if num_classes != len(self.classes):
+            logger.warning(
+                f"Class count mismatch! Provided {len(self.classes)} classes, "
+                f"but checkpoint was trained with {num_classes} classes. "
+                f"Using checkpoint's num_classes for model architecture."
+            )
+
+        return model_size, actual_architecture.lower(), num_classes
 
     def _load_model(self) -> Any:
         """Load the appropriate model based on checkpoint metadata."""
@@ -191,34 +209,34 @@ class TrainedModel(BaseModel):
         logger.info(f"Loading {self.architecture} trained model from {weights_path}...")
 
         # Load checkpoint to extract metadata
-        checkpoint = torch.load(weights_path, map_location="cpu")  # Load to CPU first
+        checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)  # Load to CPU first
 
-        # Get actual model size and architecture from checkpoint
-        model_size, actual_architecture = self._extract_checkpoint_metadata(checkpoint)
+        # Get actual model size, architecture and num_classes from checkpoint
+        model_size, actual_architecture, num_classes = self._extract_checkpoint_metadata(checkpoint)
 
         # Route to appropriate loader based on ACTUAL architecture
         if actual_architecture in ["rt-detr", "rtdetr"]:
-            return self._load_rtdetr(checkpoint, model_size)
+            return self._load_rtdetr(checkpoint, model_size, num_classes)
         elif actual_architecture in ["d-fine", "dfine"]:
-            return self._load_dfine(checkpoint, model_size)
+            return self._load_dfine(checkpoint, model_size, num_classes)
         else:
             raise ValueError(f"Unsupported trained model architecture: {actual_architecture}")
 
-    def _load_rtdetr(self, checkpoint: Dict, model_size: str) -> Any:
+    def _load_rtdetr(self, checkpoint: Dict, model_size: str, num_classes: int) -> Any:
         """
         Load RT-DETR model using HuggingFace transformers.
 
-        CRITICAL: Uses model_size from checkpoint to load correct architecture.
+        CRITICAL: Uses model_size and num_classes from checkpoint to load correct architecture.
         """
         from transformers import RTDetrForObjectDetection, RTDetrImageProcessor, RTDetrConfig
 
         # Get correct model name based on model_size
         model_name = self.RTDETR_MODEL_NAMES.get(model_size.lower(), self.RTDETR_MODEL_NAMES["m"])
-        logger.info(f"Loading RT-DETR architecture: {model_name} (size: {model_size})")
+        logger.info(f"Loading RT-DETR architecture: {model_name} (size: {model_size}, num_classes: {num_classes})")
 
-        # Load config and adjust num_labels
+        # Load config and adjust num_labels - USE CHECKPOINT'S NUM_CLASSES!
         model_config = RTDetrConfig.from_pretrained(model_name)
-        model_config.num_labels = len(self.classes)
+        model_config.num_labels = num_classes  # Use checkpoint's num_classes, not len(self.classes)
 
         # Ensure valid prior_prob
         if not hasattr(model_config, 'prior_prob') or model_config.prior_prob <= 0 or model_config.prior_prob >= 1:
@@ -263,25 +281,25 @@ class TrainedModel(BaseModel):
 
         return model
 
-    def _load_dfine(self, checkpoint: Dict, model_size: str) -> Any:
+    def _load_dfine(self, checkpoint: Dict, model_size: str, num_classes: int) -> Any:
         """
         Load D-FINE model using HuggingFace transformers.
 
-        CRITICAL: Uses model_size from checkpoint to load correct architecture.
+        CRITICAL: Uses model_size and num_classes from checkpoint to load correct architecture.
         Falls back to RT-DETR if D-FINE is not available.
         """
         from transformers import RTDetrImageProcessor
 
         # Get correct model name based on model_size
         model_name = self.DFINE_MODEL_NAMES.get(model_size.lower(), self.DFINE_MODEL_NAMES["l"])
-        logger.info(f"Loading D-FINE architecture: {model_name} (size: {model_size})")
+        logger.info(f"Loading D-FINE architecture: {model_name} (size: {model_size}, num_classes: {num_classes})")
 
         try:
             from transformers import AutoModelForObjectDetection, AutoConfig
 
-            # Load D-FINE config
+            # Load D-FINE config - USE CHECKPOINT'S NUM_CLASSES!
             model_config = AutoConfig.from_pretrained(model_name)
-            model_config.num_labels = len(self.classes)
+            model_config.num_labels = num_classes  # Use checkpoint's num_classes
 
             # Initialize model FROM PRETRAINED
             model = AutoModelForObjectDetection.from_pretrained(
@@ -303,7 +321,7 @@ class TrainedModel(BaseModel):
             logger.info(f"Falling back to RT-DETR: {fallback_model_name}")
 
             model_config = RTDetrConfig.from_pretrained(fallback_model_name)
-            model_config.num_labels = len(self.classes)
+            model_config.num_labels = num_classes  # Use checkpoint's num_classes
 
             if not hasattr(model_config, 'prior_prob') or model_config.prior_prob <= 0 or model_config.prior_prob >= 1:
                 model_config.prior_prob = 0.01
