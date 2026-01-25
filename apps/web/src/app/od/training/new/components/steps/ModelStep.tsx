@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { cn } from "@/lib/utils";
 import type { ModelStepData, ModelType, ModelSize } from "../../types/wizard";
 
@@ -101,7 +102,10 @@ export function ModelStep({ data, onChange, errors }: ModelStepProps) {
 
       {/* Model Type Selection */}
       <div className="space-y-3">
-        <Label className="text-base">Model Architecture</Label>
+        <div className="flex items-center gap-2">
+          <Label className="text-base">Model Architecture</Label>
+          <InfoTooltip content="RT-DETR is faster and simpler (50+ FPS), ideal for real-time applications. D-FINE has better accuracy especially for small objects, ideal for complex shelf detection." />
+        </div>
         <RadioGroup
           value={data.modelType}
           onValueChange={(value: ModelType) => {
@@ -153,7 +157,10 @@ export function ModelStep({ data, onChange, errors }: ModelStepProps) {
 
       {/* Model Size Selection */}
       <div className="space-y-3">
-        <Label className="text-base">Model Size</Label>
+        <div className="flex items-center gap-2">
+          <Label className="text-base">Model Size</Label>
+          <InfoTooltip content="Larger models have better accuracy but need more GPU memory and are slower. Small (S) is good for quick experiments, Medium (M) balances speed and accuracy, Large (L) for best results." />
+        </div>
         <RadioGroup
           value={data.modelSize}
           onValueChange={(value: ModelSize) => onChange({ modelSize: value })}
@@ -204,7 +211,10 @@ export function ModelStep({ data, onChange, errors }: ModelStepProps) {
       <div className="space-y-4 pt-4 border-t">
         <div className="flex items-center justify-between">
           <div>
-            <Label className="text-base">Use Pretrained Weights</Label>
+            <div className="flex items-center gap-2">
+              <Label className="text-base">Use Pretrained Weights</Label>
+              <InfoTooltip content="Start training from weights pre-trained on COCO dataset (80 classes, millions of images). This significantly speeds up training and improves accuracy. Almost always recommended unless you have a very specific use case." />
+            </div>
             <p className="text-sm text-muted-foreground">
               Start from COCO pretrained weights (recommended)
             </p>
@@ -217,7 +227,10 @@ export function ModelStep({ data, onChange, errors }: ModelStepProps) {
 
         <div className="flex items-center justify-between">
           <div>
-            <Label className="text-base">Freeze Backbone</Label>
+            <div className="flex items-center gap-2">
+              <Label className="text-base">Freeze Backbone</Label>
+              <InfoTooltip content="Keep the backbone (feature extractor) weights frozen for the first few epochs. Useful for small datasets to prevent overfitting. The model learns to adapt the detection head first, then fine-tunes the entire network." />
+            </div>
             <p className="text-sm text-muted-foreground">
               Freeze backbone layers for initial epochs
             </p>
@@ -230,8 +243,11 @@ export function ModelStep({ data, onChange, errors }: ModelStepProps) {
 
         {data.freezeBackbone && (
           <div className="space-y-2 pl-4 border-l-2 border-muted">
-            <div className="flex justify-between">
-              <Label>Freeze Epochs</Label>
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Label>Freeze Epochs</Label>
+                <InfoTooltip content="Number of epochs to keep backbone frozen. Typically 5-10 epochs. Longer freezing is better for very small datasets (<1000 images)." />
+              </div>
               <span className="text-sm font-medium">{data.freezeEpochs}</span>
             </div>
             <Slider

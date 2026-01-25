@@ -72,6 +72,7 @@ import {
   Cpu,
 } from "lucide-react";
 import { DataLoadingConfigPanel } from "@/components/training/DataLoadingConfig";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import type { DataLoadingConfig } from "@/types";
 
 interface TrainingRun {
@@ -785,7 +786,10 @@ export default function CLSTrainingPage() {
             {/* Model Selection */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Model Type</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium">Model Type</label>
+                  <InfoTooltip content="Choose the neural network architecture. ViT (Vision Transformer) is best for accuracy, ConvNeXt balances speed and accuracy, EfficientNet is lightweight for mobile deployment, ResNet is proven and reliable." />
+                </div>
                 <Select value={selectedModelType} onValueChange={(v) => {
                   setSelectedModelType(v);
                   const sizes = MODEL_TYPES.find((m) => m.value === v)?.sizes || [];
@@ -804,7 +808,10 @@ export default function CLSTrainingPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Model Size</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium">Model Size</label>
+                  <InfoTooltip content="Larger models have better accuracy but need more GPU memory and training time. Tiny/Small for quick experiments, Base for balanced performance, Large for maximum accuracy." />
+                </div>
                 <Select value={selectedModelSize} onValueChange={setSelectedModelSize}>
                   <SelectTrigger>
                     <SelectValue />
@@ -823,7 +830,10 @@ export default function CLSTrainingPage() {
             {/* Training Parameters */}
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Epochs</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium">Epochs</label>
+                  <InfoTooltip content="Number of complete passes through the training dataset. More epochs = more training but risk of overfitting. Start with 50-100, early stopping will automatically stop if no improvement." />
+                </div>
                 <Input
                   type="number"
                   value={epochs}
@@ -833,7 +843,10 @@ export default function CLSTrainingPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Batch Size</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium">Batch Size</label>
+                  <InfoTooltip content="Number of images processed together in each training step. Larger batches are more stable but use more GPU memory. 32 is a good default, use 16 if memory limited, 64-128 if you have lots of RAM." />
+                </div>
                 <Input
                   type="number"
                   value={batchSize}
@@ -843,7 +856,10 @@ export default function CLSTrainingPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Learning Rate</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-medium">Learning Rate</label>
+                  <InfoTooltip content="Controls how fast the model learns. Too high = unstable training, too low = very slow convergence. 0.0001 is a good default. The system uses cosine scheduling with warmup automatically." />
+                </div>
                 <Input
                   type="number"
                   value={learningRate}
@@ -856,7 +872,10 @@ export default function CLSTrainingPage() {
 
             {/* Augmentation */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Augmentation Preset</label>
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium">Augmentation Preset</label>
+                <InfoTooltip content="Data augmentation creates variations of training images (rotations, flips, color changes) to improve model generalization. Light for quick experiments, medium for most cases, strong for small datasets, none to disable." />
+              </div>
               <Select value={augmentationPreset} onValueChange={setAugmentationPreset}>
                 <SelectTrigger>
                   <SelectValue />
