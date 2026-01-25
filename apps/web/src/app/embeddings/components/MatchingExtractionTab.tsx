@@ -50,6 +50,7 @@ import {
   AlertTriangle,
   X,
 } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import type {
   EmbeddingModel,
   Dataset,
@@ -249,7 +250,10 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
-            <Label>Embedding Model</Label>
+            <div className="flex items-center gap-2">
+              <Label>Embedding Model</Label>
+              <InfoTooltip content="Choose which embedding model to use for extracting vector representations. Base models are pre-trained, trained models are fine-tuned on your data for better accuracy." />
+            </div>
             <Select
               value={selectedModelId}
               onValueChange={setSelectedModelId}

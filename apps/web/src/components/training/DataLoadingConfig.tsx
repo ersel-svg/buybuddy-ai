@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/collapsible";
 import { ChevronDown, Settings2 } from "lucide-react";
 import { useState } from "react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import type { DataLoadingConfig, PreloadConfig, DataLoaderConfig } from "@/types";
 
 interface DataLoadingConfigPanelProps {
@@ -60,17 +61,23 @@ export function DataLoadingConfigPanel({
       <CollapsibleContent className="pt-4 space-y-6">
         {/* Preload Section */}
         <div className="space-y-4">
-          <h4 className="text-sm font-medium text-muted-foreground">
-            Image Preloading
-          </h4>
+          <div className="flex items-center gap-2">
+            <h4 className="text-sm font-medium text-muted-foreground">
+              Image Preloading
+            </h4>
+            <InfoTooltip content="Download and cache images before training starts. This speeds up training by eliminating download time during the training loop." />
+          </div>
 
           <div className="grid grid-cols-2 gap-4">
             {/* Batched Preload Toggle */}
             <div className="flex items-center justify-between p-3 border rounded-lg">
               <div>
-                <Label htmlFor="batched" className="font-medium">
-                  Batched Preload
-                </Label>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="batched" className="font-medium">
+                    Batched Preload
+                  </Label>
+                  <InfoTooltip content="Load images in batches and run garbage collection between batches. Use this for large datasets (10K+ images) to prevent out-of-memory errors." />
+                </div>
                 <p className="text-xs text-muted-foreground mt-1">
                   Memory-efficient loading with gc.collect()
                 </p>
@@ -84,8 +91,11 @@ export function DataLoadingConfigPanel({
 
             {/* Batch Size */}
             <div className="space-y-2">
-              <div className="flex justify-between">
-                <Label>Batch Size</Label>
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <Label>Batch Size</Label>
+                  <InfoTooltip content="Number of images to load per batch. Larger batches are faster but use more memory. Start with 500 and increase if you have plenty of RAM." />
+                </div>
                 <span className="text-sm text-muted-foreground">
                   {preload.batch_size ?? 500}
                 </span>
@@ -105,8 +115,11 @@ export function DataLoadingConfigPanel({
 
             {/* Max Workers */}
             <div className="space-y-2">
-              <div className="flex justify-between">
-                <Label>Max Workers</Label>
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <Label>Max Workers</Label>
+                  <InfoTooltip content="Number of parallel threads for downloading images. More workers = faster downloads, but too many can overwhelm your network or server. Recommended: 16-32." />
+                </div>
                 <span className="text-sm text-muted-foreground">
                   {preload.max_workers ?? 16}
                 </span>
@@ -125,7 +138,10 @@ export function DataLoadingConfigPanel({
 
             {/* HTTP Timeout */}
             <div className="space-y-2">
-              <Label>HTTP Timeout (seconds)</Label>
+              <div className="flex items-center gap-2">
+                <Label>HTTP Timeout (seconds)</Label>
+                <InfoTooltip content="Maximum time to wait for each image download. If a download takes longer than this, it will be retried. Increase this if you have slow internet or large images." />
+              </div>
               <Input
                 type="number"
                 value={preload.http_timeout ?? 30}
@@ -142,15 +158,21 @@ export function DataLoadingConfigPanel({
         {/* DataLoader Section */}
         {showDataLoader && (
           <div className="space-y-4">
-            <h4 className="text-sm font-medium text-muted-foreground">
-              DataLoader Settings
-            </h4>
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm font-medium text-muted-foreground">
+                DataLoader Settings
+              </h4>
+              <InfoTooltip content="PyTorch DataLoader configuration for feeding batches to the GPU during training. These settings affect training speed and memory usage." />
+            </div>
 
             <div className="grid grid-cols-3 gap-4">
               {/* Num Workers */}
               <div className="space-y-2">
-                <div className="flex justify-between">
-                  <Label>Workers</Label>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <Label>Workers</Label>
+                    <InfoTooltip content="Number of CPU processes loading batches in parallel during training. 0 = main process only (slower), 4-8 = recommended. More workers can speed up training if CPU is the bottleneck." />
+                  </div>
                   <span className="text-sm text-muted-foreground">
                     {dataloader.num_workers ?? 4}
                   </span>
@@ -166,7 +188,10 @@ export function DataLoadingConfigPanel({
 
               {/* Pin Memory */}
               <div className="flex items-center justify-between p-3 border rounded-lg">
-                <Label htmlFor="pin_memory">Pin Memory</Label>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="pin_memory">Pin Memory</Label>
+                  <InfoTooltip content="Pin memory in RAM for faster GPU transfer. Should almost always be enabled for GPU training. Only disable if you run into memory issues." />
+                </div>
                 <Switch
                   id="pin_memory"
                   checked={dataloader.pin_memory ?? true}
@@ -176,8 +201,11 @@ export function DataLoadingConfigPanel({
 
               {/* Prefetch Factor */}
               <div className="space-y-2">
-                <div className="flex justify-between">
-                  <Label>Prefetch</Label>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <Label>Prefetch</Label>
+                    <InfoTooltip content="Number of batches each worker loads ahead of time. Higher values keep the GPU fed with data, but use more memory. 2 is usually optimal." />
+                  </div>
                   <span className="text-sm text-muted-foreground">
                     {dataloader.prefetch_factor ?? 2}
                   </span>
