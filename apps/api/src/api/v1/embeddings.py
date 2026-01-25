@@ -2034,6 +2034,7 @@ async def start_matching_extraction(
             cutout_count += 1
 
     total_images = len(images_to_process)
+    failed_count = 0  # Will be updated by worker
 
     if total_images == 0:
         raise HTTPException(status_code=400, detail="No images to process")
