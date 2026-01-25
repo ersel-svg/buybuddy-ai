@@ -882,6 +882,12 @@ def handler(job):
             shutdown_checker=is_shutdown_requested,
         )
 
+        # Prefetch test images for faster evaluation
+        report_progress(training_job_id, "running", 0.87, message="Prefetching test images...")
+        if hasattr(test_dataset, "prefetch_images"):
+            print("\nPrefetching test images...")
+            test_dataset.prefetch_images()
+
         # Evaluate on test set
         report_progress(training_job_id, "running", 0.90, message="Evaluating on test set...")
 
