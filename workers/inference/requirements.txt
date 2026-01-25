@@ -11,3 +11,5 @@ timm==0.9.12
 # Optional: For specific model support
 # super-gradients  # For YOLO-NAS
 # groundingdino  # For Grounding DINO
+# D-FINE requires custom installation from: https://github.com/Peterande/D-FINE
+# RT-DETR is supported via ultralytics

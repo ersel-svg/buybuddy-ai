@@ -191,7 +191,7 @@ def get_or_load_model(
 
     # Load based on task
     if task == "detection":
-        model = load_detection_model(model_type, model_source, checkpoint_url)
+        model = load_detection_model(model_type, model_source, checkpoint_url, num_classes)
     elif task == "classification":
         model = load_classification_model(model_type, model_source, checkpoint_url, num_classes)
     elif task == "embedding":
@@ -207,13 +207,162 @@ def get_or_load_model(
     return model, load_time
 
 
+def load_dfine_model(checkpoint_path: str, num_classes: int = 80, model_size: str = "l") -> Tuple[Any, Any]:
+    """
+    Load D-FINE model from checkpoint using HuggingFace transformers.
+
+    D-FINE checkpoints contain model state dict with specific keys.
+    Returns (model, processor) tuple.
+    """
+    from transformers import AutoModelForObjectDetection, AutoImageProcessor
+
+    print(f"Loading D-FINE model from {checkpoint_path}")
+
+    # D-FINE model names from HuggingFace
+    MODEL_NAMES = {
+        "s": "ustc-community/dfine-small-coco",
+        "small": "ustc-community/dfine-small-coco",
+        "m": "ustc-community/dfine-medium-coco",
+        "medium": "ustc-community/dfine-medium-coco",
+        "l": "ustc-community/dfine-large-coco",
+        "large": "ustc-community/dfine-large-coco",
+        "x": "ustc-community/dfine-xlarge-coco",
+        "xlarge": "ustc-community/dfine-xlarge-coco",
+    }
+
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Extract state dict from our training format
+    if isinstance(checkpoint, dict):
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif "ema_state_dict" in checkpoint:
+            state_dict = checkpoint["ema_state_dict"]
+        elif "ema" in checkpoint:
+            if isinstance(checkpoint["ema"], dict) and "module" in checkpoint["ema"]:
+                state_dict = checkpoint["ema"]["module"]
+            else:
+                state_dict = checkpoint["ema"]
+        elif "model" in checkpoint:
+            state_dict = checkpoint["model"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        # Try to get num_classes from checkpoint
+        num_classes = checkpoint.get("num_classes", checkpoint.get("config", {}).get("num_classes", num_classes))
+    else:
+        state_dict = checkpoint
+
+    # Load base model from HuggingFace
+    model_name = MODEL_NAMES.get(model_size.lower(), MODEL_NAMES["l"])
+
+    try:
+        model = AutoModelForObjectDetection.from_pretrained(
+            model_name,
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True,
+        )
+        processor = AutoImageProcessor.from_pretrained(model_name)
+
+        # Load trained weights
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded D-FINE weights from checkpoint")
+
+    except Exception as e:
+        print(f"D-FINE not available, falling back to RT-DETR: {e}")
+        # Fallback to RT-DETR
+        from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
+
+        model = RTDetrForObjectDetection.from_pretrained(
+            "PekingU/rtdetr_r101vd",
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True,
+        )
+        processor = RTDetrImageProcessor.from_pretrained("PekingU/rtdetr_r101vd")
+        model.load_state_dict(state_dict, strict=False)
+
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    return model, processor
+
+
+def load_rtdetr_model(checkpoint_path: str, model_variant: str = "rtdetr-l", num_classes: int = 80) -> Tuple[Any, Any]:
+    """
+    Load RT-DETR model from checkpoint using HuggingFace transformers.
+
+    Returns (model, processor) tuple.
+    """
+    from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
+
+    print(f"Loading RT-DETR model from {checkpoint_path}")
+
+    # RT-DETR model names from HuggingFace
+    MODEL_NAMES = {
+        "rtdetr-l": "PekingU/rtdetr_r50vd",
+        "rtdetr-x": "PekingU/rtdetr_r101vd",
+        "rtdetr_r50vd": "PekingU/rtdetr_r50vd",
+        "rtdetr_r101vd": "PekingU/rtdetr_r101vd",
+    }
+
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Extract state dict
+    if isinstance(checkpoint, dict):
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif "ema_state_dict" in checkpoint:
+            state_dict = checkpoint["ema_state_dict"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        # Try to get num_classes from checkpoint
+        num_classes = checkpoint.get("num_classes", checkpoint.get("config", {}).get("num_classes", num_classes))
+    else:
+        state_dict = checkpoint
+
+    # Load base model from HuggingFace
+    model_name = MODEL_NAMES.get(model_variant.lower(), "PekingU/rtdetr_r50vd")
+
+    model = RTDetrForObjectDetection.from_pretrained(
+        model_name,
+        num_labels=num_classes,
+        ignore_mismatched_sizes=True,
+    )
+    processor = RTDetrImageProcessor.from_pretrained(model_name)
+
+    # Load trained weights
+    model.load_state_dict(state_dict, strict=False)
+    print(f"Loaded RT-DETR weights from checkpoint")
+
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    return model, processor
+
+
 def load_detection_model(
     model_type: str,
     model_source: str,
     checkpoint_url: Optional[str] = None,
-) -> Any:
-    """Load detection model."""
+    num_classes: Optional[int] = None,
+) -> Tuple[Any, Any]:
+    """
+    Load detection model.
+
+    Returns (model, processor) tuple. Processor is None for YOLO models.
+    """
     from ultralytics import YOLO
+
+    processor = None
 
     if model_source == "pretrained":
         # Pretrained YOLO models
@@ -221,6 +370,26 @@ def load_detection_model(
             model_path = f"{model_type}.pt"
             print(f"Loading pretrained YOLO: {model_path}")
             model = YOLO(model_path)
+        elif model_type.startswith("rtdetr"):
+            # Use ultralytics for pretrained RT-DETR
+            model_path = f"{model_type}.pt"
+            print(f"Loading pretrained RT-DETR: {model_path}")
+            from ultralytics import RTDETR
+            model = RTDETR(model_path)
+        elif "d-fine" in model_type.lower() or "dfine" in model_type.lower():
+            # Pretrained D-FINE from HuggingFace
+            from transformers import AutoModelForObjectDetection, AutoImageProcessor
+            MODEL_NAMES = {
+                "dfine-s": "ustc-community/dfine-small-coco",
+                "dfine-m": "ustc-community/dfine-medium-coco",
+                "dfine-l": "ustc-community/dfine-large-coco",
+                "dfine-x": "ustc-community/dfine-xlarge-coco",
+            }
+            model_name = MODEL_NAMES.get(model_type.lower(), "ustc-community/dfine-large-coco")
+            model = AutoModelForObjectDetection.from_pretrained(model_name)
+            processor = AutoImageProcessor.from_pretrained(model_name)
+            if torch.cuda.is_available():
+                model = model.cuda()
         else:
             raise ValueError(f"Unsupported pretrained detection model: {model_type}")
     else:
@@ -231,21 +400,30 @@ def load_detection_model(
         local_path = download_checkpoint(checkpoint_url)
 
         # Load based on model type
-        if "detr" in model_type.lower() or "d-fine" in model_type.lower():
-            print(f"Loading {model_type} from {local_path}")
-            model = YOLO(local_path)
+        if "d-fine" in model_type.lower() or "dfine" in model_type.lower():
+            # D-FINE model using transformers
+            model, processor = load_dfine_model(local_path, num_classes or 80)
+        elif "rtdetr" in model_type.lower() or "rt-detr" in model_type.lower():
+            # RT-DETR model using transformers
+            model, processor = load_rtdetr_model(local_path, model_type, num_classes or 80)
         elif "yolo" in model_type.lower():
             print(f"Loading YOLO variant from {local_path}")
             model = YOLO(local_path)
         else:
-            print(f"Loading custom detection model from {local_path}")
-            model = YOLO(local_path)
+            # Try YOLO first, fallback to raw checkpoint
+            try:
+                print(f"Trying to load as YOLO model from {local_path}")
+                model = YOLO(local_path)
+            except Exception as e:
+                print(f"YOLO load failed: {e}, trying raw checkpoint")
+                checkpoint = torch.load(local_path, map_location="cpu", weights_only=False)
+                model = {"checkpoint": checkpoint, "type": "raw"}
 
-    # Move to GPU if available
-    if torch.cuda.is_available():
+    # Move to GPU if available (for YOLO models without processor)
+    if processor is None and hasattr(model, 'to') and torch.cuda.is_available():
         model.to("cuda")
 
-    return model
+    return model, processor
 
 
 def load_classification_model(
@@ -307,11 +485,16 @@ def load_classification_model(
         # Load trained weights
         if checkpoint_url:
             local_path = download_checkpoint(checkpoint_url)
-            state_dict = torch.load(local_path, map_location="cpu")
+            state_dict = torch.load(local_path, map_location="cpu", weights_only=False)
 
             # Handle different checkpoint formats
-            if "state_dict" in state_dict:
-                state_dict = state_dict["state_dict"]
+            if isinstance(state_dict, dict):
+                if "state_dict" in state_dict:
+                    state_dict = state_dict["state_dict"]
+                elif "model_state_dict" in state_dict:
+                    state_dict = state_dict["model_state_dict"]
+                elif "model" in state_dict:
+                    state_dict = state_dict["model"]
 
             model.load_state_dict(state_dict, strict=False)
             print(f"Loaded trained weights from {local_path}")
@@ -366,10 +549,13 @@ def load_embedding_model(
     # Load fine-tuned weights if provided
     if model_source == "trained" and checkpoint_url:
         local_path = download_checkpoint(checkpoint_url)
-        state_dict = torch.load(local_path, map_location="cpu")
+        state_dict = torch.load(local_path, map_location="cpu", weights_only=False)
 
-        if "state_dict" in state_dict:
-            state_dict = state_dict["state_dict"]
+        if isinstance(state_dict, dict):
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            elif "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
 
         model.load_state_dict(state_dict, strict=False)
         print(f"Loaded fine-tuned weights from {local_path}")
@@ -381,11 +567,90 @@ def load_embedding_model(
     return model, processor
 
 
-def run_detection(
+def run_transformers_detection(
     model: Any,
+    processor: Any,
     image: Image.Image,
     config: Dict[str, Any],
     class_mapping: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Run detection using HuggingFace transformers models (D-FINE, RT-DETR)."""
+    confidence = config.get("confidence", 0.5)
+    max_detections = config.get("max_detections", 300)
+
+    width, height = image.size
+
+    # Preprocess image
+    inputs = processor(images=image, return_tensors="pt")
+    if torch.cuda.is_available():
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+
+    # Run inference
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Post-process outputs
+    target_sizes = torch.tensor([[height, width]])
+    if torch.cuda.is_available():
+        target_sizes = target_sizes.cuda()
+
+    results = processor.post_process_object_detection(
+        outputs,
+        threshold=confidence,
+        target_sizes=target_sizes,
+    )[0]
+
+    detections = []
+    boxes = results["boxes"].cpu().numpy()
+    scores = results["scores"].cpu().numpy()
+    labels = results["labels"].cpu().numpy()
+
+    for i, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+        if i >= max_detections:
+            break
+
+        x1, y1, x2, y2 = box
+
+        # Normalize coordinates
+        x1_norm = float(x1) / width
+        y1_norm = float(y1) / height
+        x2_norm = float(x2) / width
+        y2_norm = float(y2) / height
+
+        cls_id = int(label)
+        if class_mapping:
+            cls_name = class_mapping.get(cls_id) or class_mapping.get(str(cls_id)) or f"class_{cls_id}"
+        else:
+            cls_name = f"class_{cls_id}"
+
+        detections.append({
+            "id": i,
+            "class_name": cls_name,
+            "class_id": cls_id,
+            "confidence": round(float(score), 4),
+            "bbox": {
+                "x1": round(x1_norm, 4),
+                "y1": round(y1_norm, 4),
+                "x2": round(x2_norm, 4),
+                "y2": round(y2_norm, 4),
+            },
+            "area": round((x2_norm - x1_norm) * (y2_norm - y1_norm), 6),
+        })
+
+    return {
+        "detections": detections,
+        "count": len(detections),
+        "image_size": {"width": width, "height": height},
+    }
+
+
+def run_detection(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    config: Dict[str, Any],
+    class_mapping: Optional[Dict] = None,
+    model_type: str = "yolo",
 ) -> Dict[str, Any]:
     """Run detection inference."""
     confidence = config.get("confidence", 0.5)
@@ -394,7 +659,21 @@ def run_detection(
     input_size = config.get("input_size", 640)
     agnostic_nms = config.get("agnostic_nms", False)
 
-    # Run inference
+    # Handle D-FINE/RT-DETR with transformers processor
+    if processor is not None:
+        return run_transformers_detection(model, processor, image, config, class_mapping)
+
+    # Handle raw checkpoints (fallback)
+    if isinstance(model, dict) and model.get("type") in ["dfine_raw", "raw"]:
+        print("Raw checkpoint - cannot run inference without proper model loader")
+        return {
+            "detections": [],
+            "count": 0,
+            "image_size": {"width": image.size[0], "height": image.size[1]},
+            "error": "Model not properly loaded",
+        }
+
+    # Standard YOLO/RTDETR inference
     results = model.predict(
         image,
         conf=confidence,
@@ -638,12 +917,14 @@ def handler(job: dict) -> dict:
         )
 
         # Handle different return types from load functions
-        if task in ["classification", "embedding"]:
-            model, processor = model_result[0]
-            load_time = model_result[1]
+        # All loaders now return (model, processor) or ((model, processor), load_time) tuple
+        load_time = model_result[1]
+        model_data = model_result[0]
+
+        if isinstance(model_data, tuple) and len(model_data) == 2:
+            model, processor = model_data
         else:
-            model = model_result[0]
-            load_time = model_result[1]
+            model = model_data
             processor = None
 
         # Run inference
@@ -651,7 +932,7 @@ def handler(job: dict) -> dict:
         start_time = time.time()
 
         if task == "detection":
-            result = run_detection(model, image, config, class_mapping)
+            result = run_detection(model, processor, image, config, class_mapping, model_type)
         elif task == "classification":
             result = run_classification(model, processor, image, config, class_mapping)
         elif task == "embedding":
