@@ -2095,6 +2095,9 @@ async def start_matching_extraction(
                 "filters": {
                     "has_embedding": False if request.collection_mode == "create" else None,
                     "product_source": request.product_source,
+                    "product_ids": request.product_ids,  # For "selected" source
+                    "product_dataset_id": request.product_dataset_id,  # For "dataset" source
+                    "product_filter": request.product_filter,  # For "filter" source
                     "cutout_filter_has_upc": request.cutout_filter_has_upc,
                 },
                 "frame_selection": request.frame_selection,

@@ -424,11 +424,14 @@ def handler_stateful(job_input: Dict[str, Any]) -> Dict[str, Any]:
                 batch_results = extractor.extract_batch_from_urls(urls, batch_size=batch_size)
                 url_to_embedding = {url: emb for url, emb in batch_results}
 
-                # Prepare Qdrant points
+                # Prepare Qdrant points - GROUP BY COLLECTION
                 from qdrant_client.models import PointStruct
                 import uuid
+                from collections import defaultdict
 
-                points = []
+                # Group points by collection (support multiple collections per batch)
+                collection_points = defaultdict(list)
+
                 for img in batch:
                     embedding = url_to_embedding.get(img["url"])
 
@@ -451,24 +454,29 @@ def handler_stateful(job_input: Dict[str, Any]) -> Dict[str, Any]:
                             **(img.get("metadata", {})),
                         }
 
-                        points.append(PointStruct(
+                        point = PointStruct(
                             id=point_id_parsed,
                             vector=embedding.tolist(),
                             payload=payload,
-                        ))
+                        )
+
+                        # Use per-image collection if specified, otherwise use default
+                        target_collection = img.get("collection") or collection_name
+                        collection_points[target_collection].append(point)
                     else:
                         failed_count += 1
                         print(f"  Failed: {img['id']}")
 
-                # Upsert to Qdrant
-                if points:
-                    qdrant.upsert(
-                        collection_name=collection_name,
-                        points=points,
-                        wait=True,
-                    )
-                    processed_count += len(points)
-                    print(f"  Upserted {len(points)} points to Qdrant")
+                # Upsert to Qdrant - one upsert per collection
+                for coll_name, points in collection_points.items():
+                    if points:
+                        qdrant.upsert(
+                            collection_name=coll_name,
+                            points=points,
+                            wait=True,
+                        )
+                        processed_count += len(points)
+                        print(f"  Upserted {len(points)} points to collection '{coll_name}'")
 
                 # Update cutout_images if applicable
                 if supabase:

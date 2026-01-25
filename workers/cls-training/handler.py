@@ -735,7 +735,12 @@ def train_model(
 
     # Create datasets with preload config
     cache_dir = os.path.join(save_dir, "image_cache")
-    preload_config = full_config.get("preload_config", {})
+
+    # Support both old and new config formats (backward compatibility)
+    # NEW FORMAT: data_loading.preload (from API)
+    # OLD FORMAT: preload_config (legacy)
+    data_loading = full_config.get("data_loading", {})
+    preload_config = data_loading.get("preload") if data_loading else full_config.get("preload_config", {})
 
     train_dataset = URLImageDataset(
         dataset["train_urls"],
@@ -756,21 +761,29 @@ def train_model(
         train_dataset.preload()
         val_dataset.preload()
 
-    # Create data loaders
+    # Create data loaders with configurable settings
+    # Support both old and new config formats (backward compatibility)
+    dataloader_config = data_loading.get("dataloader") if data_loading else {}
+    num_workers = dataloader_config.get("num_workers", full_config.get("num_workers", 4))
+    pin_memory = dataloader_config.get("pin_memory", True)
+    prefetch_factor = dataloader_config.get("prefetch_factor", 2)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=full_config["num_workers"],
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
         drop_last=True,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=full_config["num_workers"],
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
     )
 
     print(f"Train samples: {len(train_dataset)}")

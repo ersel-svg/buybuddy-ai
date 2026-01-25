@@ -142,6 +142,9 @@ def fetch_cutout_images(
 def fetch_product_images(
     client,
     source: str = "all",
+    product_ids: Optional[List[str]] = None,
+    product_dataset_id: Optional[str] = None,
+    product_filter: Optional[Dict[str, Any]] = None,
     frame_selection: str = "first",
     max_frames: int = 10,
     frame_interval: int = 5,
@@ -152,7 +155,10 @@ def fetch_product_images(
 
     Args:
         client: Supabase client
-        source: Product source filter - "all", "matched", "new"
+        source: Product source filter - "all", "selected", "dataset", "filter", "matched", "new"
+        product_ids: Specific product IDs to fetch (for "selected" source)
+        product_dataset_id: Dataset ID to filter by (for "dataset" source)
+        product_filter: Custom filters dict (for "filter" source)
         frame_selection: "first", "all", "key_frames", "interval"
         max_frames: Maximum frames per product
         frame_interval: Interval between frames (for "interval" selection)
@@ -164,26 +170,47 @@ def fetch_product_images(
     print(f"  Fetching product images (source={source}, frame_selection={frame_selection})...")
 
     # Build filters based on source
-    filters = {}
-    if source == "matched":
-        # Products with matched cutouts
-        filters["match_count_gt"] = 0  # Custom filter handling needed
+    filters = {"frame_count_gt": 0}  # Always require frames
+
+    if source == "selected" and product_ids:
+        # Specific product IDs
+        filters["id"] = product_ids
+        print(f"    Filtering by {len(product_ids)} specific product IDs")
+    elif source == "dataset" and product_dataset_id:
+        # Products from specific dataset
+        filters["dataset_id"] = product_dataset_id
+        print(f"    Filtering by dataset ID: {product_dataset_id}")
+    elif source == "filter" and product_filter:
+        # Custom filters
+        filters.update(product_filter)
+        print(f"    Applying custom filters: {product_filter}")
+    elif source == "matched":
+        # Products with matched cutouts - handled below
+        pass
+    elif source == "new":
+        # Products without embeddings - handled below
+        pass
 
     # Fetch products with frames
     products = fetch_with_pagination(
         client=client,
         table="products",
-        select="id, barcode, brand_name, product_name, frames_path, frame_count",
-        filters={"frame_count_gt": 0} if not filters else filters,
+        select="id, barcode, brand_name, product_name, frames_path, frame_count, dataset_id",
+        filters=filters,
         page_size=page_size,
     )
 
-    # For "matched" source, we need to filter differently
+    # For "matched" source, filter by products with matched cutouts
     if source == "matched":
-        # Fetch products that have matched cutouts
         matched_ids_result = client.table("cutout_images").select("matched_product_id").not_.is_("matched_product_id", "null").execute()
         matched_product_ids = set(c["matched_product_id"] for c in (matched_ids_result.data or []))
         products = [p for p in products if p["id"] in matched_product_ids]
+
+    # For "new" source, filter by products without embeddings
+    if source == "new":
+        # This would require checking product_images table
+        # For now, just return all products (can be enhanced later)
+        pass
 
     print(f"  Found {len(products)} products with frames")
 
@@ -256,7 +283,10 @@ def build_extraction_data(
                 "filters": {
                     "has_embedding": false,
                     "cutout_filter_has_upc": true,
-                    "product_source": "all" | "matched" | "new"
+                    "product_source": "all" | "selected" | "dataset" | "filter" | "matched" | "new",
+                    "product_ids": ["uuid1", "uuid2"],  # For "selected" source
+                    "product_dataset_id": "dataset_uuid",  # For "dataset" source
+                    "product_filter": {"brand": "Nike"}  # For "filter" source
                 },
                 "frame_selection": "first" | "all" | "key_frames" | "interval",
                 "max_frames": 10,
@@ -322,6 +352,9 @@ def build_extraction_data(
         product_images = fetch_product_images(
             client=client,
             source=product_source,
+            product_ids=filters.get("product_ids"),
+            product_dataset_id=filters.get("product_dataset_id"),
+            product_filter=filters.get("product_filter"),
             frame_selection=frame_selection,
             max_frames=max_frames,
             frame_interval=frame_interval,
