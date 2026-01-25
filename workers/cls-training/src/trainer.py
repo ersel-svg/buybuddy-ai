@@ -674,6 +674,9 @@ class ClassificationTrainer:
                 "epoch": epoch,
                 "metrics": metrics,
                 "config": self.config.to_dict(),
+                # CRITICAL: Save model_name for correct architecture loading during inference
+                "model_name": self.config.model_name,
+                "num_classes": self.config.num_classes,
                 "precision": "fp16",
                 "inference_only": True,
                 "used_ema": self.ema is not None,
@@ -691,6 +694,9 @@ class ClassificationTrainer:
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "metrics": metrics,
                 "config": self.config.to_dict(),
+                # CRITICAL: Save model_name for correct architecture loading
+                "model_name": self.config.model_name,
+                "num_classes": self.config.num_classes,
             }
 
             if self.ema is not None:

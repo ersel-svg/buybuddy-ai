@@ -12,13 +12,29 @@ Key features:
 - Downloads model checkpoints from Supabase Storage
 - Caches locally for faster subsequent runs
 - Uses HuggingFace transformers for inference
+- **CRITICAL: Reads model_size from checkpoint to use correct architecture**
 - Supports FP16 checkpoints (converted to FP32 for inference)
 - Outputs normalized bounding boxes [{bbox, label, confidence}, ...]
+
+Checkpoint Format (from OD Training Worker):
+{
+    "model_state_dict": {...},
+    "config": {
+        "training": {
+            "model_type": "rt-detr",
+            "model_size": "l",  # s/m/l -> r18vd/r50vd/r101vd
+            ...
+        },
+        "dataset": {...}
+    },
+    "precision": "fp16",
+    "inference_only": True
+}
 """
 
 import os
 import hashlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import torch
 from PIL import Image
@@ -34,7 +50,29 @@ class TrainedModel(BaseModel):
 
     Downloads model weights from Supabase Storage on first load,
     caches locally for subsequent runs.
+
+    IMPORTANT: This class reads model_size from checkpoint metadata
+    to ensure the correct HuggingFace model architecture is used.
     """
+
+    # Model name mapping - MUST match training worker
+    RTDETR_MODEL_NAMES = {
+        "s": "PekingU/rtdetr_r18vd",
+        "small": "PekingU/rtdetr_r18vd",
+        "m": "PekingU/rtdetr_r50vd",
+        "medium": "PekingU/rtdetr_r50vd",
+        "l": "PekingU/rtdetr_r101vd",
+        "large": "PekingU/rtdetr_r101vd",
+    }
+
+    DFINE_MODEL_NAMES = {
+        "s": "ustc-community/dfine-small-coco",
+        "small": "ustc-community/dfine-small-coco",
+        "m": "ustc-community/dfine-medium-coco",
+        "medium": "ustc-community/dfine-medium-coco",
+        "l": "ustc-community/dfine-large-coco",
+        "large": "ustc-community/dfine-large-coco",
+    }
 
     def __init__(
         self,
@@ -64,6 +102,7 @@ class TrainedModel(BaseModel):
         self.cache_dir = cache_dir
         self._model = None
         self._processor = None
+        self._checkpoint_metadata: Optional[Dict] = None
 
     def _get_cache_path(self) -> str:
         """Generate local cache path from checkpoint URL."""
@@ -111,33 +150,87 @@ class TrainedModel(BaseModel):
 
         return local_path
 
+    def _extract_checkpoint_metadata(self, checkpoint: Dict) -> Tuple[str, str]:
+        """
+        Extract model_size and actual architecture from checkpoint.
+
+        Returns:
+            Tuple of (model_size, actual_architecture)
+        """
+        # Try to get from checkpoint config
+        training_config = checkpoint.get("config", {}).get("training", {})
+
+        model_size = training_config.get("model_size", "m")  # Default to medium
+        actual_architecture = training_config.get("model_type", self.architecture)
+
+        # Store metadata for logging
+        self._checkpoint_metadata = {
+            "model_size": model_size,
+            "model_type": actual_architecture,
+            "precision": checkpoint.get("precision", "fp32"),
+            "inference_only": checkpoint.get("inference_only", False),
+            "best_map": checkpoint.get("best_map"),
+        }
+
+        logger.info(f"Checkpoint metadata: model_size={model_size}, model_type={actual_architecture}")
+
+        # Warn if architecture mismatch
+        if actual_architecture.lower().replace("-", "") != self.architecture.replace("-", ""):
+            logger.warning(
+                f"Architecture mismatch! Requested: {self.architecture}, "
+                f"Checkpoint was trained with: {actual_architecture}. "
+                f"Using checkpoint's actual architecture."
+            )
+
+        return model_size, actual_architecture.lower()
+
     def _load_model(self) -> Any:
-        """Load the appropriate model based on architecture."""
+        """Load the appropriate model based on checkpoint metadata."""
         weights_path = self._download_weights()
 
         logger.info(f"Loading {self.architecture} trained model from {weights_path}...")
 
-        if self.architecture in ["rt-detr", "rtdetr"]:
-            return self._load_rtdetr(weights_path)
-        elif self.architecture in ["d-fine", "dfine"]:
-            return self._load_dfine(weights_path)
-        else:
-            raise ValueError(f"Unsupported trained model architecture: {self.architecture}")
+        # Load checkpoint to extract metadata
+        checkpoint = torch.load(weights_path, map_location="cpu")  # Load to CPU first
 
-    def _load_rtdetr(self, weights_path: str) -> Any:
-        """Load RT-DETR model using HuggingFace transformers."""
+        # Get actual model size and architecture from checkpoint
+        model_size, actual_architecture = self._extract_checkpoint_metadata(checkpoint)
+
+        # Route to appropriate loader based on ACTUAL architecture
+        if actual_architecture in ["rt-detr", "rtdetr"]:
+            return self._load_rtdetr(checkpoint, model_size)
+        elif actual_architecture in ["d-fine", "dfine"]:
+            return self._load_dfine(checkpoint, model_size)
+        else:
+            raise ValueError(f"Unsupported trained model architecture: {actual_architecture}")
+
+    def _load_rtdetr(self, checkpoint: Dict, model_size: str) -> Any:
+        """
+        Load RT-DETR model using HuggingFace transformers.
+
+        CRITICAL: Uses model_size from checkpoint to load correct architecture.
+        """
         from transformers import RTDetrForObjectDetection, RTDetrImageProcessor, RTDetrConfig
 
-        # Load checkpoint
-        checkpoint = torch.load(weights_path, map_location=self.device)
+        # Get correct model name based on model_size
+        model_name = self.RTDETR_MODEL_NAMES.get(model_size.lower(), self.RTDETR_MODEL_NAMES["m"])
+        logger.info(f"Loading RT-DETR architecture: {model_name} (size: {model_size})")
 
-        # Create model config with correct num_labels
-        # Use a base model config as template
-        config = RTDetrConfig.from_pretrained("PekingU/rtdetr_r50vd")
-        config.num_labels = len(self.classes)
+        # Load config and adjust num_labels
+        model_config = RTDetrConfig.from_pretrained(model_name)
+        model_config.num_labels = len(self.classes)
 
-        # Initialize model architecture
-        model = RTDetrForObjectDetection(config)
+        # Ensure valid prior_prob
+        if not hasattr(model_config, 'prior_prob') or model_config.prior_prob <= 0 or model_config.prior_prob >= 1:
+            model_config.prior_prob = 0.01
+
+        # Initialize model FROM PRETRAINED (not random!)
+        # This ensures architecture weights are properly initialized
+        model = RTDetrForObjectDetection.from_pretrained(
+            model_name,
+            config=model_config,
+            ignore_mismatched_sizes=True,  # Allow num_labels mismatch
+        )
 
         # Load trained weights
         model_state = checkpoint.get("model_state_dict", checkpoint)
@@ -150,46 +243,76 @@ class TrainedModel(BaseModel):
                 for k, v in model_state.items()
             }
 
-        # Load state dict
-        model.load_state_dict(model_state, strict=False)
-        model.eval()
+        # Load state dict with validation
+        missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
 
-        # Move to device
+        if missing_keys:
+            logger.warning(f"Missing keys in checkpoint: {len(missing_keys)} keys")
+            logger.debug(f"Missing keys: {missing_keys[:10]}...")  # Log first 10
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
+            logger.debug(f"Unexpected keys: {unexpected_keys[:10]}...")
+
+        model.eval()
         model = model.to(self.device)
 
-        # Load processor for pre/post-processing
-        self._processor = RTDetrImageProcessor.from_pretrained("PekingU/rtdetr_r50vd")
+        # Load processor for pre/post-processing (same for all RT-DETR variants)
+        self._processor = RTDetrImageProcessor.from_pretrained(model_name)
 
-        logger.info(f"RT-DETR trained model loaded on {self.device}")
+        logger.info(f"RT-DETR trained model loaded on {self.device} (size: {model_size})")
 
         return model
 
-    def _load_dfine(self, weights_path: str) -> Any:
-        """Load D-FINE model using HuggingFace transformers."""
-        from transformers import AutoModelForObjectDetection, AutoConfig, RTDetrImageProcessor
+    def _load_dfine(self, checkpoint: Dict, model_size: str) -> Any:
+        """
+        Load D-FINE model using HuggingFace transformers.
 
-        # Load checkpoint
-        checkpoint = torch.load(weights_path, map_location=self.device)
+        CRITICAL: Uses model_size from checkpoint to load correct architecture.
+        Falls back to RT-DETR if D-FINE is not available.
+        """
+        from transformers import RTDetrImageProcessor
+
+        # Get correct model name based on model_size
+        model_name = self.DFINE_MODEL_NAMES.get(model_size.lower(), self.DFINE_MODEL_NAMES["l"])
+        logger.info(f"Loading D-FINE architecture: {model_name} (size: {model_size})")
 
         try:
-            # Try to load D-FINE config from HuggingFace
-            config = AutoConfig.from_pretrained("ustc-community/dfine-large-coco")
-            config.num_labels = len(self.classes)
+            from transformers import AutoModelForObjectDetection, AutoConfig
 
-            # Initialize model architecture
-            model = AutoModelForObjectDetection.from_config(config)
+            # Load D-FINE config
+            model_config = AutoConfig.from_pretrained(model_name)
+            model_config.num_labels = len(self.classes)
+
+            # Initialize model FROM PRETRAINED
+            model = AutoModelForObjectDetection.from_pretrained(
+                model_name,
+                config=model_config,
+                ignore_mismatched_sizes=True,
+            )
+
+            logger.info(f"D-FINE model loaded from {model_name}")
 
         except Exception as e:
             logger.warning(f"D-FINE not available from HuggingFace: {e}")
-            logger.info("Falling back to RT-DETR architecture for D-FINE checkpoint...")
+            logger.warning("This may indicate training used RT-DETR fallback. Loading RT-DETR instead.")
 
-            # Fallback to RT-DETR (D-FINE uses similar architecture)
+            # Fallback to RT-DETR with same size
             from transformers import RTDetrForObjectDetection, RTDetrConfig
 
-            config = RTDetrConfig.from_pretrained("PekingU/rtdetr_r50vd")
-            config.num_labels = len(self.classes)
+            fallback_model_name = self.RTDETR_MODEL_NAMES.get(model_size.lower(), self.RTDETR_MODEL_NAMES["l"])
+            logger.info(f"Falling back to RT-DETR: {fallback_model_name}")
 
-            model = RTDetrForObjectDetection(config)
+            model_config = RTDetrConfig.from_pretrained(fallback_model_name)
+            model_config.num_labels = len(self.classes)
+
+            if not hasattr(model_config, 'prior_prob') or model_config.prior_prob <= 0 or model_config.prior_prob >= 1:
+                model_config.prior_prob = 0.01
+
+            model = RTDetrForObjectDetection.from_pretrained(
+                fallback_model_name,
+                config=model_config,
+                ignore_mismatched_sizes=True,
+            )
 
         # Load trained weights
         model_state = checkpoint.get("model_state_dict", checkpoint)
@@ -202,17 +325,22 @@ class TrainedModel(BaseModel):
                 for k, v in model_state.items()
             }
 
-        # Load state dict (strict=False to allow architecture differences)
-        model.load_state_dict(model_state, strict=False)
-        model.eval()
+        # Load state dict with validation
+        missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
 
-        # Move to device
+        if missing_keys:
+            logger.warning(f"Missing keys in checkpoint: {len(missing_keys)} keys")
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
+
+        model.eval()
         model = model.to(self.device)
 
-        # Load processor for pre/post-processing
-        self._processor = RTDetrImageProcessor.from_pretrained("PekingU/rtdetr_r50vd")
+        # Load processor (RT-DETR processor works for both)
+        rtdetr_model_name = self.RTDETR_MODEL_NAMES.get(model_size.lower(), self.RTDETR_MODEL_NAMES["m"])
+        self._processor = RTDetrImageProcessor.from_pretrained(rtdetr_model_name)
 
-        logger.info(f"D-FINE trained model loaded on {self.device}")
+        logger.info(f"D-FINE trained model loaded on {self.device} (size: {model_size})")
 
         return model
 
@@ -249,7 +377,7 @@ class TrainedModel(BaseModel):
 
         # Run inference
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self._model(**inputs)
 
         # Post-process predictions
         target_sizes = torch.tensor([[img_height, img_width]]).to(self.device)
