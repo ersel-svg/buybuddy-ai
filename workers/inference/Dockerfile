@@ -1,25 +1,29 @@
 # Unified Inference Worker
-# Uses RunPod PyTorch base image for fast builds and GPU compatibility
-# Supports ALL GPUs: RTX 5090 (Blackwell), RTX 4090, L4, A100, H100, etc.
+# Uses same PyTorch base image as od-annotation for GPU compatibility
+# CUDA 12.4 works with RTX 4090, L4, A100, H100, etc.
 
-FROM runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
-# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV HF_HOME=/tmp/huggingface
 ENV TRANSFORMERS_CACHE=/tmp/huggingface
 ENV TORCH_HOME=/tmp/torch
 
-# Install system dependencies
+WORKDIR /app
+
+# Install system dependencies (same as od-annotation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    wget \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
-
-# Set working directory
-WORKDIR /app
 
 # Copy requirements first for caching
 COPY requirements.txt .
@@ -30,7 +34,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy handler
 COPY handler.py .
 
-# Create cache directory
+# Create cache directories
 RUN mkdir -p /tmp/checkpoints /tmp/huggingface /tmp/torch
 
 # Health check
