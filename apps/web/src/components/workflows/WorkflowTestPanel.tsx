@@ -733,6 +733,22 @@ export function WorkflowTestPanel({
                       </Card>
                     )}
 
+                    {/* Annotated Image (from draw_boxes block) */}
+                    {executionResult.output_data?.annotated_image && (
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm">Annotated Image</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <img
+                            src={executionResult.output_data.annotated_image}
+                            alt="Annotated"
+                            className="w-full h-auto rounded-lg"
+                          />
+                        </CardContent>
+                      </Card>
+                    )}
+
                     {/* Detection Results */}
                     {executionResult.output_data?.detections && (
                       <Card>
