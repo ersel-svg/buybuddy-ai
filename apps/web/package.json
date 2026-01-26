@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "lighthouse": "lhci autorun",
+    "lighthouse:quick": "lhci autorun --collect.url=http://localhost:3000/ --collect.url=http://localhost:3000/products --collect.url=http://localhost:3000/datasets --collect.numberOfRuns=1",
+    "lighthouse:view": "lhci open"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
