@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, memo, useRef } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import {
   Sheet,
@@ -98,7 +98,7 @@ interface CheckboxSectionProps {
   onSelectAll: (values: string[]) => void;
 }
 
-function CheckboxSection({
+const CheckboxSection = memo(function CheckboxSection({
   section,
   selectedValues,
   onToggle,
@@ -258,7 +258,7 @@ function CheckboxSection({
       </div>
     </Collapsible>
   );
-}
+});
 
 // ===========================================
 // Boolean Filter Section Component
@@ -270,7 +270,7 @@ interface BooleanSectionProps {
   onChange: (value: boolean | undefined) => void;
 }
 
-function BooleanSection({ section, value, onChange }: BooleanSectionProps) {
+const BooleanSection = memo(function BooleanSection({ section, value, onChange }: BooleanSectionProps) {
   const [isExpanded, setIsExpanded] = useState(section.defaultExpanded ?? true);
 
   return (
@@ -353,7 +353,7 @@ function BooleanSection({ section, value, onChange }: BooleanSectionProps) {
       </div>
     </Collapsible>
   );
-}
+});
 
 // ===========================================
 // Range Filter Section Component
@@ -366,7 +366,7 @@ interface RangeSectionProps {
   onClear: () => void;
 }
 
-function RangeSection({ section, value, onChange, onClear }: RangeSectionProps) {
+const RangeSection = memo(function RangeSection({ section, value, onChange, onClear }: RangeSectionProps) {
   const [isExpanded, setIsExpanded] = useState(section.defaultExpanded ?? true);
   const currentMin = value?.min ?? section.min;
   const currentMax = value?.max ?? section.max;
@@ -429,7 +429,7 @@ function RangeSection({ section, value, onChange, onClear }: RangeSectionProps) 
       </div>
     </Collapsible>
   );
-}
+});
 
 // ===========================================
 // Main Filter Drawer Component
@@ -446,6 +446,12 @@ export function FilterDrawer({
   title = "Filters",
   description,
 }: FilterDrawerProps) {
+  // Use ref to access filterState in callbacks without re-creating them
+  const filterStateRef = useRef(filterState);
+  useEffect(() => {
+    filterStateRef.current = filterState;
+  }, [filterState]);
+
   const totalActiveFilters = useMemo(() => {
     let count = 0;
     Object.entries(filterState).forEach(([, value]) => {
@@ -462,7 +468,7 @@ export function FilterDrawer({
 
   const handleCheckboxToggle = useCallback(
     (sectionId: string, value: string) => {
-      const currentSet = (filterState[sectionId] as Set<string>) || new Set();
+      const currentSet = (filterStateRef.current[sectionId] as Set<string>) || new Set();
       const newSet = new Set(currentSet);
       if (newSet.has(value)) {
         newSet.delete(value);
@@ -471,17 +477,17 @@ export function FilterDrawer({
       }
       onFilterChange(sectionId, newSet);
     },
-    [filterState, onFilterChange]
+    [onFilterChange]
   );
 
   const handleSelectAll = useCallback(
     (sectionId: string, values: string[]) => {
-      const currentSet = (filterState[sectionId] as Set<string>) || new Set();
+      const currentSet = (filterStateRef.current[sectionId] as Set<string>) || new Set();
       const newSet = new Set(currentSet);
       values.forEach(value => newSet.add(value));
       onFilterChange(sectionId, newSet);
     },
-    [filterState, onFilterChange]
+    [onFilterChange]
   );
 
   // Show all sections, even empty ones (with "No options" message)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, Suspense, useDeferredValue } from "react";
+import { useState, useMemo, useEffect, useCallback, Suspense, useDeferredValue, memo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -101,6 +101,177 @@ type SortColumn =
   | "updated_at";
 
 type SortDirection = "asc" | "desc";
+
+// Status badge colors - moved outside component for stability
+const STATUS_COLORS: Record<ProductStatus, string> = {
+  pending: "bg-yellow-100 text-yellow-800 hover:bg-yellow-100",
+  processing: "bg-blue-100 text-blue-800 hover:bg-blue-100",
+  needs_matching: "bg-purple-100 text-purple-800 hover:bg-purple-100",
+  ready: "bg-green-100 text-green-800 hover:bg-green-100",
+  rejected: "bg-red-100 text-red-800 hover:bg-red-100",
+};
+
+// ===========================================
+// Memoized Product Table Row Component
+// ===========================================
+interface ProductTableRowProps {
+  product: Product;
+  isSelected: boolean;
+  onToggleSelect: (id: string) => void;
+  onDownload: (product: Product) => void;
+  onReprocess: (id: string) => void;
+  onDelete: (id: string) => void;
+  isReprocessing: boolean;
+}
+
+const ProductTableRow = memo(function ProductTableRow({
+  product,
+  isSelected,
+  onToggleSelect,
+  onDownload,
+  onReprocess,
+  onDelete,
+  isReprocessing,
+}: ProductTableRowProps) {
+  return (
+    <TableRow className={isSelected ? "bg-blue-50" : ""}>
+      <TableCell>
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={() => onToggleSelect(product.id)}
+        />
+      </TableCell>
+      <TableCell>
+        {product.primary_image_url ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <img
+                src={product.primary_image_url}
+                alt=""
+                className="w-10 h-10 object-cover rounded cursor-pointer"
+              />
+            </TooltipTrigger>
+            <TooltipContent
+              side="right"
+              className="p-0 bg-transparent border-0"
+              sideOffset={8}
+            >
+              <img
+                src={product.primary_image_url}
+                alt={product.product_name || product.barcode}
+                className="w-48 h-48 object-contain rounded-lg shadow-lg bg-white"
+              />
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
+            <Package className="h-5 w-5 text-gray-400" />
+          </div>
+        )}
+      </TableCell>
+      <TableCell className="font-mono text-xs">{product.barcode}</TableCell>
+      <TableCell className="text-sm font-medium">
+        {product.brand_name || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.sub_brand || "-"}
+      </TableCell>
+      <TableCell className="max-w-[150px] truncate text-sm">
+        {product.product_name || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.variant_flavor || "-"}
+      </TableCell>
+      <TableCell className="text-sm">{product.category || "-"}</TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.container_type || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.net_quantity || "-"}
+      </TableCell>
+      <TableCell className="text-sm">
+        {product.pack_configuration?.type ? (
+          <Badge variant="outline" className="text-xs">
+            {product.pack_configuration.type === "multipack"
+              ? `${product.pack_configuration.item_count}x`
+              : "1x"}
+          </Badge>
+        ) : (
+          "-"
+        )}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.manufacturer_country || "-"}
+      </TableCell>
+      <TableCell>
+        <Badge className={STATUS_COLORS[product.status]}>
+          {product.status.replace("_", " ")}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-xs text-gray-500 whitespace-nowrap">
+        {product.updated_at
+          ? new Date(product.updated_at).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "-"}
+      </TableCell>
+      <TableCell className="text-center text-sm text-blue-600">
+        {product.frame_counts?.synthetic ?? product.frame_count ?? 0}
+      </TableCell>
+      <TableCell className="text-center text-sm text-green-600">
+        {product.frame_counts?.real ?? 0}
+      </TableCell>
+      <TableCell className="text-center text-sm text-purple-600">
+        {product.frame_counts?.augmented ?? 0}
+      </TableCell>
+      <TableCell>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem asChild>
+              <Link href={`/products/${product.id}`}>View Details</Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={`/products/${product.id}?edit=true`}>Edit</Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onDownload(product)}>
+              <Download className="h-4 w-4 mr-2" />
+              Download Frames
+            </DropdownMenuItem>
+            {product.video_url && (
+              <DropdownMenuItem
+                onClick={() => onReprocess(product.id)}
+                disabled={isReprocessing}
+              >
+                {isReprocessing ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                )}
+                Reprocess
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-red-600"
+              onClick={() => onDelete(product.id)}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </TableCell>
+    </TableRow>
+  );
+});
 
 function ProductsPageContent() {
   const queryClient = useQueryClient();
@@ -229,10 +400,14 @@ function ProductsPageContent() {
     return sortColumn ? serverSortableColumns[sortColumn] : undefined;
   }, [sortColumn]);
 
+  // Deferred apiFilters to batch rapid filter changes (like quick checkbox clicks)
+  const deferredApiFilters = useDeferredValue(apiFilters);
+  const deferredApiFiltersKey = useMemo(() => JSON.stringify(deferredApiFilters), [deferredApiFilters]);
+
   // Fetch products with server-side filtering and sorting
-  // Uses deferredSearch to avoid API calls on every keystroke
+  // Uses deferredSearch and deferredApiFilters to avoid API calls on every change
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ["products", { page, search: deferredSearch, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection, include_frame_counts: true }],
+    queryKey: ["products", page, deferredSearch, deferredApiFiltersKey, serverSortColumn, sortDirection],
     queryFn: () =>
       apiClient.getProducts({
         page,
@@ -241,24 +416,21 @@ function ProductsPageContent() {
         sort_by: serverSortColumn,
         sort_order: sortDirection,
         include_frame_counts: true,
-        ...apiFilters,
+        ...deferredApiFilters,
       }),
   });
-
-  // Stable key for apiFilters to prevent useEffect dependency array size changes
-  const apiFiltersKey = JSON.stringify(apiFilters);
 
   // Reset page and selection mode when filters, search, or sorting changes
   useEffect(() => {
     setPage(1);
     setSelectAllFilteredMode(false);
-  }, [apiFiltersKey, serverSortColumn, sortDirection, deferredSearch]);
+  }, [deferredApiFiltersKey, serverSortColumn, sortDirection, deferredSearch]);
 
   // Fetch filter options - cascading based on current filters
   // Performance optimized: longer stale time + no refetch on window focus
   const { data: filterOptions, isLoading: isLoadingFilters } = useQuery({
-    queryKey: ["filter-options", apiFilters],
-    queryFn: () => apiClient.getFilterOptions(apiFilters),
+    queryKey: ["filter-options", deferredApiFiltersKey],
+    queryFn: () => apiClient.getFilterOptions(deferredApiFilters),
     staleTime: 60000, // Cache for 60 seconds (increased from 30s)
     gcTime: 300000, // Keep in cache for 5 minutes
     refetchOnWindowFocus: false, // Don't refetch when window regains focus
@@ -475,13 +647,21 @@ function ProductsPageContent() {
     return sections;
   }, [filterOptions]);
 
-  // Handler to remove a single filter value (for chips)
+  // Use refs to access filterState and filterSections in callbacks without re-creating them
+  const filterStateRef = useRef(filterState);
+  const filterSectionsRef = useRef(filterSections);
+  useEffect(() => {
+    filterStateRef.current = filterState;
+    filterSectionsRef.current = filterSections;
+  }, [filterState, filterSections]);
+
+  // Handler to remove a single filter value (for chips) - stable callback using refs
   const handleRemoveFilter = useCallback((sectionId: string, value: string) => {
-    const currentValue = filterState[sectionId];
+    const currentValue = filterStateRef.current[sectionId];
 
     if (currentValue instanceof Set) {
       // For checkbox filters, find the actual value (not label) and remove it
-      const section = filterSections.find(s => s.id === sectionId);
+      const section = filterSectionsRef.current.find(s => s.id === sectionId);
       if (section && section.type === "checkbox") {
         const option = section.options.find(o => o.label === value || o.value === value);
         if (option) {
@@ -498,7 +678,7 @@ function ProductsPageContent() {
       // For boolean and range filters, clear the entire section
       clearSection(sectionId);
     }
-  }, [filterState, filterSections, setFilter, clearSection]);
+  }, [setFilter, clearSection]);
 
   // Convert FilterState to ExportFilters for API calls
   const buildExportFilters = (selectedProductIds?: string[]): ExportFilters => {
@@ -962,14 +1142,31 @@ function ProductsPageContent() {
     }
   };
 
-  // Status badge colors
-  const statusColors: Record<ProductStatus, string> = {
-    pending: "bg-yellow-100 text-yellow-800 hover:bg-yellow-100",
-    processing: "bg-blue-100 text-blue-800 hover:bg-blue-100",
-    needs_matching: "bg-purple-100 text-purple-800 hover:bg-purple-100",
-    ready: "bg-green-100 text-green-800 hover:bg-green-100",
-    rejected: "bg-red-100 text-red-800 hover:bg-red-100",
-  };
+  // Stable callbacks for ProductTableRow
+  const handleRowDownload = useCallback(async (product: Product) => {
+    try {
+      const blob = await apiClient.downloadProduct(product.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `product_${product.barcode}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Download started");
+    } catch {
+      toast.error("Download failed");
+    }
+  }, []);
+
+  const handleRowReprocess = useCallback((productId: string) => {
+    setReprocessingProductId(productId);
+    reprocessMutation.mutate(productId);
+  }, [reprocessMutation]);
+
+  const handleRowDelete = useCallback((productId: string) => {
+    setSelectedIds(new Set([productId]));
+    setDeleteDialogOpen(true);
+  }, []);
 
   const activeFilterCount = getTotalCount();
 
@@ -1261,176 +1458,16 @@ function ProductsPageContent() {
                 </TableRow>
               ) : (
                 sortedItems.map((product) => (
-                  <TableRow
+                  <ProductTableRow
                     key={product.id}
-                    className={selectedIds.has(product.id) ? "bg-blue-50" : ""}
-                  >
-                    <TableCell>
-                      <Checkbox
-                        checked={selectedIds.has(product.id)}
-                        onCheckedChange={() => toggleOne(product.id)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {product.primary_image_url ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <img
-                              src={product.primary_image_url}
-                              alt=""
-                              className="w-10 h-10 object-cover rounded cursor-pointer"
-                            />
-                          </TooltipTrigger>
-                          <TooltipContent
-                            side="right"
-                            className="p-0 bg-transparent border-0"
-                            sideOffset={8}
-                          >
-                            <img
-                              src={product.primary_image_url}
-                              alt={product.product_name || product.barcode}
-                              className="w-48 h-48 object-contain rounded-lg shadow-lg bg-white"
-                            />
-                          </TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
-                          <Package className="h-5 w-5 text-gray-400" />
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {product.barcode}
-                    </TableCell>
-                    <TableCell className="text-sm font-medium">
-                      {product.brand_name || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">
-                      {product.sub_brand || "-"}
-                    </TableCell>
-                    <TableCell className="max-w-[150px] truncate text-sm">
-                      {product.product_name || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">
-                      {product.variant_flavor || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {product.category || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">
-                      {product.container_type || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">
-                      {product.net_quantity || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {product.pack_configuration?.type ? (
-                        <Badge variant="outline" className="text-xs">
-                          {product.pack_configuration.type === "multipack"
-                            ? `${product.pack_configuration.item_count}x`
-                            : "1x"}
-                        </Badge>
-                      ) : (
-                        "-"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-gray-600">
-                      {product.manufacturer_country || "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={statusColors[product.status]}>
-                        {product.status.replace("_", " ")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-xs text-gray-500 whitespace-nowrap">
-                      {product.updated_at
-                        ? new Date(product.updated_at).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-"}
-                    </TableCell>
-                    <TableCell className="text-center text-sm text-blue-600">
-                      {product.frame_counts?.synthetic ?? product.frame_count ?? 0}
-                    </TableCell>
-                    <TableCell className="text-center text-sm text-green-600">
-                      {product.frame_counts?.real ?? 0}
-                    </TableCell>
-                    <TableCell className="text-center text-sm text-purple-600">
-                      {product.frame_counts?.augmented ?? 0}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={`/products/${product.id}`}>
-                              View Details
-                            </Link>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem asChild>
-                            <Link href={`/products/${product.id}?edit=true`}>
-                              Edit
-                            </Link>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={async () => {
-                              try {
-                                const blob = await apiClient.downloadProduct(
-                                  product.id
-                                );
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement("a");
-                                a.href = url;
-                                a.download = `product_${product.barcode}.zip`;
-                                a.click();
-                                URL.revokeObjectURL(url);
-                                toast.success("Download started");
-                              } catch {
-                                toast.error("Download failed");
-                              }
-                            }}
-                          >
-                            <Download className="h-4 w-4 mr-2" />
-                            Download Frames
-                          </DropdownMenuItem>
-                          {product.video_url && (
-                            <DropdownMenuItem
-                              onClick={() => {
-                                setReprocessingProductId(product.id);
-                                reprocessMutation.mutate(product.id);
-                              }}
-                              disabled={reprocessingProductId === product.id}
-                            >
-                              {reprocessingProductId === product.id ? (
-                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              ) : (
-                                <RotateCcw className="h-4 w-4 mr-2" />
-                              )}
-                              Reprocess
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-red-600"
-                            onClick={() => {
-                              setSelectedIds(new Set([product.id]));
-                              setDeleteDialogOpen(true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
+                    product={product}
+                    isSelected={selectedIds.has(product.id)}
+                    onToggleSelect={toggleOne}
+                    onDownload={handleRowDownload}
+                    onReprocess={handleRowReprocess}
+                    onDelete={handleRowDelete}
+                    isReprocessing={reprocessingProductId === product.id}
+                  />
                 ))
               )}
             </TableBody>
