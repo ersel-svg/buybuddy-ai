@@ -727,11 +727,36 @@ class WorkflowEngine:
         # Collect outputs
         outputs = {}
         if not error_info:
+            # First, collect explicit outputs from outputs_config
             for output_config in outputs_config:
                 output_name = output_config.get("name")
                 output_source = output_config.get("source")
                 if output_name and output_source:
                     outputs[output_name] = context.resolve_ref(output_source)
+
+            # If no explicit outputs configured, auto-collect common outputs from nodes
+            if not outputs_config:
+                # Auto-collect standard outputs from node results
+                standard_outputs = [
+                    "detections", "annotated_image", "predictions", "label", "labels",
+                    "count", "crops", "image", "results", "json", "embeddings",
+                    "class_counts", "confidence", "probabilities"
+                ]
+
+                for node_id, node_outputs in context.nodes.items():
+                    if not isinstance(node_outputs, dict):
+                        continue
+                    for key, value in node_outputs.items():
+                        # Skip internal keys
+                        if key.startswith("_"):
+                            continue
+                        # For standard outputs, use a flattened key (prefer last node's value)
+                        if key in standard_outputs:
+                            outputs[key] = value
+                        # For non-standard outputs, prefix with node_id to avoid collision
+                        # Only include if it's a significant value (not None, not empty)
+                        elif value is not None and value != "" and value != []:
+                            outputs[f"{node_id}.{key}"] = value
 
         total_duration = (time.time() - start_time) * 1000
 

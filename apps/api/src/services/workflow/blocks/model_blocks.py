@@ -521,6 +521,15 @@ class DetectionBlock(ModelBlock):
             # Run detection via InferenceService → RunPod GPU
             logger.info(f"Running detection: model={model_id}, source={model_source}, conf={confidence}")
 
+            # Try to get image_url from context inputs (for trained models, URL is more efficient)
+            image_url = None
+            if context and hasattr(context, 'inputs'):
+                image_url = context.inputs.get("image_url")
+                # Also check if image input has a URL
+                image_input = inputs.get("image")
+                if isinstance(image_input, dict) and "image_url" in image_input:
+                    image_url = image_input["image_url"]
+
             result = await self._inference_service.detect(
                 model_id=model_id,
                 image=image,
@@ -533,6 +542,8 @@ class DetectionBlock(ModelBlock):
                 # Open-vocabulary params
                 text_prompt=text_prompt,
                 text_queries=text_queries,
+                # Pass image_url for efficient remote inference
+                image_url=image_url,
             )
 
             # Get detections from result

@@ -51,6 +51,8 @@ class InferenceService:
         # Open-vocabulary detection params
         text_prompt: Optional[str] = None,  # For Grounding DINO: "person. car. dog."
         text_queries: Optional[List[str]] = None,  # For OWL-ViT: ["a cat", "a dog"]
+        # Image URL for direct passing to worker (avoids base64 conversion)
+        image_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run object detection inference.
@@ -101,68 +103,162 @@ class InferenceService:
             f"source={model_source}, confidence={confidence}"
         )
 
-        # Prepare job input
-        job_input = {
-            "task": "detection",
-            "model_id": model_id,
-            "model_source": model_source,
-            "model_type": model_info.model_type,
-            "checkpoint_url": model_info.checkpoint_url,
-            "class_mapping": model_info.class_mapping,
-            "image": self._image_to_base64(image),
-            "config": {
-                "confidence": confidence,
-                "iou_threshold": iou,
-                "max_detections": max_detections,
-                "agnostic_nms": agnostic_nms,
+        # Determine which endpoint and format to use
+        # For trained/roboflow models, use OD_ANNOTATION endpoint (proven to work)
+        # For open-vocab models (grounding_dino, etc), also use OD_ANNOTATION
+        use_od_annotation = model_source == "trained" or text_prompt or text_queries
+
+        if use_od_annotation:
+            # Use OD_ANNOTATION endpoint format (same as od/ai.py)
+            # Prefer image_url if provided, otherwise use base64
+            if image_url and image_url.startswith(("http://", "https://")):
+                final_image_url = image_url
+            else:
+                # Fallback to base64 data URL (may not work with all workers)
+                image_b64 = self._image_to_base64(image)
+                final_image_url = f"data:image/jpeg;base64,{image_b64}"
+                logger.warning("Using base64 data URL - may not work with OD_ANNOTATION worker")
+
+            if model_source == "trained":
+                # Roboflow/trained model format
+                # Get classes as list from class_mapping
+                classes = []
+                if model_info.class_mapping:
+                    # class_mapping is {idx: class_name}
+                    max_idx = max(model_info.class_mapping.keys()) if model_info.class_mapping else -1
+                    classes = [model_info.class_mapping.get(i, f"class_{i}") for i in range(max_idx + 1)]
+
+                job_input = {
+                    "task": "detect",
+                    "model": "roboflow",
+                    "model_config": {
+                        "checkpoint_url": model_info.checkpoint_url,
+                        "architecture": model_info.model_type,
+                        "classes": classes,
+                    },
+                    "image_url": final_image_url,
+                    "box_threshold": confidence,
+                }
+            else:
+                # Open-vocab model (grounding_dino, florence2, etc)
+                job_input = {
+                    "task": "detect",
+                    "model": model_id,  # grounding_dino, florence2, etc
+                    "image_url": final_image_url,
+                    "text_prompt": text_prompt,
+                    "box_threshold": confidence,
+                    "text_threshold": 0.25,
+                }
+
+            endpoint_type = EndpointType.OD_ANNOTATION
+        else:
+            # Use INFERENCE endpoint for pretrained YOLO models
+            job_input = {
+                "task": "detection",
+                "model_id": model_id,
+                "model_source": model_source,
+                "model_type": model_info.model_type,
+                "checkpoint_url": model_info.checkpoint_url,
+                "class_mapping": model_info.class_mapping,
+                "image": self._image_to_base64(image),
+                "config": {
+                    "confidence": confidence,
+                    "iou_threshold": iou,
+                    "max_detections": max_detections,
+                    "agnostic_nms": agnostic_nms,
+                }
             }
-        }
-
-        # Add optional params
-        if input_size:
-            job_input["config"]["input_size"] = input_size
-
-        # Open-vocabulary detection params
-        if text_prompt:
-            job_input["text_prompt"] = text_prompt
-            job_input["config"]["text_prompt"] = text_prompt
-        if text_queries:
-            job_input["text_queries"] = text_queries
-            job_input["config"]["text_queries"] = text_queries
+            if input_size:
+                job_input["config"]["input_size"] = input_size
+            endpoint_type = EndpointType.INFERENCE
 
         # Submit to RunPod
         try:
             result = await runpod_service.submit_job_sync(
-                endpoint_type=EndpointType.INFERENCE,
+                endpoint_type=endpoint_type,
                 input_data=job_input,
-                timeout=120,  # Increased for cold start (can take 30-60s)
+                timeout=120,
             )
 
-            # RunPod returns: {status, output: {success, result, metadata}}
-            output = result.get("output", {})
-            if not output.get("success"):
-                error_msg = output.get("error", result.get("error", "Unknown error"))
-                logger.error(f"Detection inference failed: {error_msg}")
+            # Check for job failure
+            if result.get("status") == "FAILED":
+                error_msg = result.get("error", "Unknown error")
+                logger.error(f"Detection job failed: {error_msg}")
                 raise RuntimeError(f"Detection inference failed: {error_msg}")
 
-            # Validate response structure
-            detection_result = output.get("result", {})
-            if "detections" not in detection_result:
-                raise RuntimeError("Invalid response: missing 'detections' field")
+            output = result.get("output", {})
 
-            logger.info(
-                f"Detection complete: {detection_result['count']} detections, "
-                f"took {output.get('metadata', {}).get('inference_time_ms', 0):.0f}ms"
-            )
+            # Handle OD_ANNOTATION response format
+            if use_od_annotation:
+                if output.get("status") == "error":
+                    error_msg = output.get("traceback", "Unknown error")
+                    logger.error(f"Detection inference failed: {error_msg[:200]}")
+                    raise RuntimeError(f"Detection inference failed")
 
-            return detection_result
+                # Convert OD_ANNOTATION predictions to workflow format
+                predictions = output.get("predictions", [])
+                img_width, img_height = image.size
+
+                detections = []
+                for i, pred in enumerate(predictions):
+                    bbox = pred.get("bbox", {})
+                    # OD_ANNOTATION returns absolute pixel coords
+                    x1 = bbox.get("x", 0)
+                    y1 = bbox.get("y", 0)
+                    w = bbox.get("width", 0)
+                    h = bbox.get("height", 0)
+
+                    # Convert to normalized coords
+                    detections.append({
+                        "id": i,
+                        "class_name": pred.get("label", "unknown"),
+                        "class_id": pred.get("class_id", i),
+                        "confidence": pred.get("confidence", 0),
+                        "bbox": {
+                            "x1": x1 / img_width,
+                            "y1": y1 / img_height,
+                            "x2": (x1 + w) / img_width,
+                            "y2": (y1 + h) / img_height,
+                        },
+                        "bbox_abs": {
+                            "x1": x1,
+                            "y1": y1,
+                            "x2": x1 + w,
+                            "y2": y1 + h,
+                        },
+                    })
+
+                logger.info(f"Detection complete: {len(detections)} detections")
+                return {
+                    "detections": detections,
+                    "count": len(detections),
+                    "image_size": {"width": img_width, "height": img_height},
+                }
+            else:
+                # Handle INFERENCE endpoint response
+                if not output.get("success"):
+                    error_msg = output.get("error", result.get("error", "Unknown error"))
+                    logger.error(f"Detection inference failed: {error_msg}")
+                    raise RuntimeError(f"Detection inference failed: {error_msg}")
+
+                detection_result = output.get("result", {})
+                if "detections" not in detection_result:
+                    raise RuntimeError("Invalid response: missing 'detections' field")
+
+                logger.info(
+                    f"Detection complete: {detection_result['count']} detections, "
+                    f"took {output.get('metadata', {}).get('inference_time_ms', 0):.0f}ms"
+                )
+                return detection_result
 
         except httpx.HTTPStatusError as e:
             logger.error(f"RunPod HTTP error: {e}")
             raise RuntimeError(f"RunPod request failed: {e}")
         except httpx.TimeoutException:
-            logger.error(f"RunPod timeout after 60s")
+            logger.error(f"RunPod timeout after 120s")
             raise RuntimeError("Inference timeout - GPU worker may be cold starting")
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.exception(f"Unexpected inference error")
             raise RuntimeError(f"Inference error: {e}")

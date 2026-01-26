@@ -1510,17 +1510,31 @@ class ResizeBlock(BaseBlock):
             target_h = config.get("height", orig_h)
 
         elif mode == "fit_within":
-            target_w = config.get("width", orig_w)
-            target_h = config.get("height", orig_h)
-            ratio = min(target_w / orig_w, target_h / orig_h)
+            target_w = config.get("width", orig_w) or orig_w
+            target_h = config.get("height", orig_h) or orig_h
+            # Handle 0 values: if one dimension is 0, use only the other for scaling
+            if target_w == 0 or target_w == orig_w and config.get("width") == 0:
+                # Width is 0, scale by height only
+                ratio = target_h / orig_h
+            elif target_h == 0 or target_h == orig_h and config.get("height") == 0:
+                # Height is 0, scale by width only
+                ratio = target_w / orig_w
+            else:
+                ratio = min(target_w / orig_w, target_h / orig_h)
             target_w = int(orig_w * ratio)
             target_h = int(orig_h * ratio)
 
         elif mode == "fit_outside":
-            target_w = config.get("width", orig_w)
-            target_h = config.get("height", orig_h)
+            target_w = config.get("width", orig_w) or orig_w
+            target_h = config.get("height", orig_h) or orig_h
             canvas_w, canvas_h = target_w, target_h
-            ratio = max(target_w / orig_w, target_h / orig_h)
+            # Handle 0 values: if one dimension is 0, use only the other for scaling
+            if config.get("width") == 0:
+                ratio = target_h / orig_h
+            elif config.get("height") == 0:
+                ratio = target_w / orig_w
+            else:
+                ratio = max(target_w / orig_w, target_h / orig_h)
             temp_w = int(orig_w * ratio)
             temp_h = int(orig_h * ratio)
 

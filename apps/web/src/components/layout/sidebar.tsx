@@ -19,15 +19,10 @@ import {
   ImageIcon,
   Triangle,
   ScanLine,
-  Tags,
   // Object Detection icons
   Image as ImageIconOD,
   PenTool,
   FolderOpen,
-  // Workflows icons
-  Workflow,
-  Play,
-  Boxes,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -165,26 +160,27 @@ const navigationGroups = [
       },
     ],
   },
-  {
-    title: "Workflows",
-    items: [
-      {
-        name: "Pipelines",
-        href: "/workflows",
-        icon: Workflow,
-      },
-      {
-        name: "Executions",
-        href: "/workflows/executions",
-        icon: Play,
-      },
-      {
-        name: "Models",
-        href: "/workflows/models",
-        icon: Boxes,
-      },
-    ],
-  },
+  // Workflows section hidden until feature is complete
+  // {
+  //   title: "Workflows",
+  //   items: [
+  //     {
+  //       name: "Pipelines",
+  //       href: "/workflows",
+  //       icon: Workflow,
+  //     },
+  //     {
+  //       name: "Executions",
+  //       href: "/workflows/executions",
+  //       icon: Play,
+  //     },
+  //     {
+  //       name: "Models",
+  //       href: "/workflows/models",
+  //       icon: Boxes,
+  //     },
+  //   ],
+  // },
 ];
 
 export function Sidebar() {
