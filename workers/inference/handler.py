@@ -728,10 +728,11 @@ def run_grounding_dino_detection(
         outputs = model(**inputs)
 
     # Post-process
+    # Note: parameter is 'threshold' not 'box_threshold'
     results = processor.post_process_grounded_object_detection(
         outputs,
         inputs["input_ids"],
-        box_threshold=box_threshold,
+        threshold=box_threshold,
         text_threshold=text_threshold,
         target_sizes=[(height, width)],
     )[0]
