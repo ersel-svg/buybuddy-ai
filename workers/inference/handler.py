@@ -523,6 +523,13 @@ def load_detection_model(
 
         local_path = download_checkpoint(checkpoint_url)
 
+        # DEBUG: Log model_type for debugging
+        print(f"[DEBUG] Loading trained detection model:")
+        print(f"[DEBUG]   model_type: {model_type}")
+        print(f"[DEBUG]   model_source: {model_source}")
+        print(f"[DEBUG]   checkpoint_url: {checkpoint_url}")
+        print(f"[DEBUG]   num_classes: {num_classes}")
+
         # Load based on model type
         if "d-fine" in model_type.lower() or "dfine" in model_type.lower():
             # D-FINE model using transformers
