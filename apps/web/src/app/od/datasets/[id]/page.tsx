@@ -163,6 +163,7 @@ interface DatasetImage {
   image_id: string;
   status: string;
   annotation_count: number;
+  last_annotated_at?: string;
   image: {
     id: string;
     filename: string;
