@@ -11,6 +11,8 @@ transformers>=4.45.0
 ultralytics>=8.1.0
 
 # Super-gradients (for YOLO-NAS)
+# Note: super-gradients requires onnxruntime==1.13.1 specifically
+onnxruntime==1.13.1
 super-gradients>=3.5.0
 
 # Image processing
