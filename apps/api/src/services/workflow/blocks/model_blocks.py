@@ -23,6 +23,7 @@ from PIL import Image
 
 from ..base import BaseBlock, BlockResult, ExecutionContext, ModelBlock
 from ..model_loader import get_model_loader, ModelInfo
+from ..inference_service import get_inference_service
 from services.qdrant import qdrant_service
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ class DetectionBlock(ModelBlock):
 
     def __init__(self):
         super().__init__()
-        self._model_loader = get_model_loader()
+        self._inference_service = get_inference_service()
 
     def _parse_class_mapping(self, mapping_str: str) -> dict[str, str]:
         """Parse class mapping string like 'person:müşteri, car:araç'."""
@@ -467,7 +468,11 @@ class DetectionBlock(ModelBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Run object detection on the input image."""
+        """
+        Run object detection via RunPod GPU worker.
+
+        All inference happens on remote GPU - no local ML dependencies needed.
+        """
         start_time = time.time()
 
         # Load image
@@ -482,43 +487,20 @@ class DetectionBlock(ModelBlock):
 
         # Get model config
         model_id = config.get("model_id")
+        if not model_id:
+            return BlockResult(
+                error="model_id is required",
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+            )
+
         model_source = config.get("model_source", "pretrained")
 
-        # Load model using centralized ModelLoader
-        try:
-            model, model_info = await self._model_loader.load_detection_model(
-                model_id, model_source
-            )
-        except ValueError as e:
-            return BlockResult(
-                error=str(e),
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-        except Exception as e:
-            return BlockResult(
-                error=f"Failed to load model: {e}",
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-
-        # Get config options
-        input_size = config.get("input_size", 640)
-        conf = config.get("confidence", 0.5)
+        # Get detection parameters
+        confidence = config.get("confidence", 0.5)
         iou = config.get("iou_threshold", 0.45)
-        max_det = config.get("max_detections", 300)
+        max_detections = config.get("max_detections", 300)
+        input_size = config.get("input_size", 640)
         agnostic_nms = config.get("agnostic_nms", False)
-        half = config.get("half_precision", True)
-        coord_format = config.get("coordinate_format", "xyxy")
-        normalize = config.get("normalize_coords", True)
-
-        # Open-vocabulary options
-        text_prompt = config.get("text_prompt")
-        box_threshold = config.get("box_threshold", 0.35)
-        text_threshold = config.get("text_threshold", 0.25)
-
-        # SAHI options
-        tiled_inference = config.get("tiled_inference", False)
-        tile_size = config.get("tile_size", 640)
-        tile_overlap = config.get("tile_overlap", 0.2)
 
         # Visualization options
         draw_boxes = config.get("draw_boxes", True)
@@ -529,160 +511,23 @@ class DetectionBlock(ModelBlock):
         # Class mapping/renaming
         class_rename_map = self._parse_class_mapping(config.get("class_mapping", ""))
 
-        # Get class mapping from ModelInfo
-        model_class_mapping = model_info.class_mapping or {}
-
-        # Resize image if input_size specified and different from original
-        inference_image = image
-        if input_size and max(image.size) != input_size:
-            # Maintain aspect ratio
-            ratio = input_size / max(image.size)
-            new_size = (int(image.width * ratio), int(image.height * ratio))
-            inference_image = image.resize(new_size, Image.Resampling.LANCZOS)
-
         try:
-            detections = []
+            # Run detection via InferenceService → RunPod GPU
+            logger.info(f"Running detection: model={model_id}, source={model_source}, conf={confidence}")
 
-            # Check if this is an open-vocabulary model (Grounding DINO, OWL-ViT)
-            is_open_vocab = model_info.model_type in ("grounding_dino", "grounding-dino", "owl_vit", "owl-vit")
+            result = await self._inference_service.detect(
+                model_id=model_id,
+                image=image,
+                confidence=confidence,
+                iou=iou,
+                max_detections=max_detections,
+                model_source=model_source,
+                input_size=input_size,
+                agnostic_nms=agnostic_nms,
+            )
 
-            if is_open_vocab and text_prompt:
-                # Open-vocabulary detection with text prompt
-                loop = asyncio.get_event_loop()
-
-                # Grounding DINO style inference
-                if hasattr(model, 'predict_with_caption') or hasattr(model, 'predict'):
-                    # Try different API patterns for open-vocab models
-                    try:
-                        # Ultralytics YOLO-World style
-                        if hasattr(model, 'set_classes'):
-                            classes = [c.strip() for c in text_prompt.replace(".", ",").split(",") if c.strip()]
-                            model.set_classes(classes)
-                            results = await loop.run_in_executor(
-                                None,
-                                lambda: model.predict(
-                                    inference_image,
-                                    conf=conf,
-                                    verbose=False,
-                                )
-                            )
-                        else:
-                            # Generic predict with prompt
-                            results = await loop.run_in_executor(
-                                None,
-                                lambda: model.predict(
-                                    inference_image,
-                                    text=text_prompt,
-                                    box_threshold=box_threshold,
-                                    text_threshold=text_threshold,
-                                    verbose=False,
-                                )
-                            )
-                    except Exception as e:
-                        logger.warning(f"Open-vocab inference failed, falling back to standard: {e}")
-                        results = await loop.run_in_executor(
-                            None,
-                            lambda: model.predict(
-                                inference_image,
-                                conf=conf,
-                                iou=iou,
-                                verbose=False,
-                            )
-                        )
-                else:
-                    # Fallback to standard inference
-                    results = await loop.run_in_executor(
-                        None,
-                        lambda: model.predict(
-                            inference_image,
-                            conf=conf,
-                            iou=iou,
-                            max_det=max_det,
-                            agnostic_nms=agnostic_nms,
-                            half=half,
-                            verbose=False,
-                        )
-                    )
-
-                result = results[0]
-                boxes = result.boxes
-
-                if boxes is not None and len(boxes) > 0:
-                    names = model_class_mapping if model_class_mapping else (model.names if hasattr(model, 'names') else {})
-
-                    for i, box in enumerate(boxes):
-                        bbox_raw = box.xyxy[0].cpu().numpy()
-                        conf_score = float(box.conf[0].cpu().numpy())
-                        cls_id = int(box.cls[0].cpu().numpy()) if hasattr(box, 'cls') else 0
-                        cls_name = names.get(cls_id, f"class_{cls_id}")
-
-                        detections.append({
-                            "id": i,
-                            "class_name": cls_name,
-                            "class_id": cls_id,
-                            "confidence": conf_score,
-                            "bbox_xyxy": [float(x) for x in bbox_raw],
-                        })
-
-            elif tiled_inference:
-                # SAHI tiled inference for small object detection
-                detections = await self._run_sahi_inference(
-                    model, inference_image, tile_size, tile_overlap,
-                    conf, iou, max_det, half
-                )
-
-            else:
-                # Standard inference
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(
-                    None,
-                    lambda: model.predict(
-                        inference_image,
-                        conf=conf,
-                        iou=iou,
-                        max_det=max_det,
-                        agnostic_nms=agnostic_nms,
-                        half=half,
-                        imgsz=input_size,
-                        verbose=False,
-                    )
-                )
-
-                result = results[0]
-                boxes = result.boxes
-
-                if boxes is not None and len(boxes) > 0:
-                    names = model_class_mapping if model_class_mapping else (model.names if hasattr(model, 'names') else {})
-
-                    for i, box in enumerate(boxes):
-                        bbox_raw = box.xyxy[0].cpu().numpy()
-                        conf_score = float(box.conf[0].cpu().numpy())
-                        cls_id = int(box.cls[0].cpu().numpy())
-                        cls_name = names.get(cls_id, f"class_{cls_id}")
-                        if isinstance(cls_name, int):
-                            cls_name = f"class_{cls_name}"
-
-                        detections.append({
-                            "id": i,
-                            "class_name": cls_name,
-                            "class_id": cls_id,
-                            "confidence": conf_score,
-                            "bbox_xyxy": [float(x) for x in bbox_raw],
-                        })
-
-            # Scale coordinates back to original image size if resized
-            scale_x = original_size[0] / inference_image.width
-            scale_y = original_size[1] / inference_image.height
-
-            if scale_x != 1.0 or scale_y != 1.0:
-                for det in detections:
-                    bbox = det["bbox_xyxy"]
-                    det["bbox_xyxy"] = [
-                        bbox[0] * scale_x,
-                        bbox[1] * scale_y,
-                        bbox[2] * scale_x,
-                        bbox[3] * scale_y,
-                    ]
+            # Get detections from result
+            detections = result.get("detections", [])
 
             # Apply class filtering
             class_filter = config.get("classes")
@@ -691,119 +536,59 @@ class DetectionBlock(ModelBlock):
             if class_filter or class_id_filter:
                 filtered = []
                 for det in detections:
-                    if class_filter and det["class_name"] not in class_filter:
+                    if class_filter and det.get("class_name") not in class_filter:
                         continue
-                    if class_id_filter and det["class_id"] not in class_id_filter:
+                    if class_id_filter and det.get("class_id") not in class_id_filter:
                         continue
                     filtered.append(det)
                 detections = filtered
 
             # Apply class renaming
             for det in detections:
-                original_name = det["class_name"]
+                original_name = det.get("class_name", "")
                 if original_name in class_rename_map:
                     det["class_name"] = class_rename_map[original_name]
                     det["original_class_name"] = original_name
 
-            # Format output detections
-            formatted_detections = []
-            for i, det in enumerate(detections):
-                bbox_raw = det["bbox_xyxy"]
-                width_img, height_img = original_size
-
-                # Normalize if requested
-                if normalize:
-                    bbox_norm = [
-                        bbox_raw[0] / width_img,
-                        bbox_raw[1] / height_img,
-                        bbox_raw[2] / width_img,
-                        bbox_raw[3] / height_img,
-                    ]
-                else:
-                    bbox_norm = bbox_raw
-
-                # Convert coords based on format
-                if coord_format == "xyxy":
-                    bbox = {
-                        "x1": float(bbox_norm[0]),
-                        "y1": float(bbox_norm[1]),
-                        "x2": float(bbox_norm[2]),
-                        "y2": float(bbox_norm[3]),
-                    }
-                elif coord_format == "xywh":
-                    w = bbox_norm[2] - bbox_norm[0]
-                    h = bbox_norm[3] - bbox_norm[1]
-                    bbox = {
-                        "x": float(bbox_norm[0]),
-                        "y": float(bbox_norm[1]),
-                        "width": float(w),
-                        "height": float(h),
-                    }
-                else:  # cxcywh
-                    w = bbox_norm[2] - bbox_norm[0]
-                    h = bbox_norm[3] - bbox_norm[1]
-                    cx = bbox_norm[0] + w / 2
-                    cy = bbox_norm[1] + h / 2
-                    bbox = {
-                        "cx": float(cx),
-                        "cy": float(cy),
-                        "width": float(w),
-                        "height": float(h),
-                    }
-
-                area = float((bbox_norm[2] - bbox_norm[0]) * (bbox_norm[3] - bbox_norm[1]))
-
-                formatted_det = {
-                    "id": i,
-                    "class_name": det["class_name"],
-                    "class_id": det["class_id"],
-                    "confidence": round(det["confidence"], 4),
-                    "bbox": bbox,
-                    "area": area,
-                }
-
-                if det.get("original_class_name"):
-                    formatted_det["original_class_name"] = det["original_class_name"]
-
-                formatted_detections.append(formatted_det)
-
-            # Generate annotated image
-            if draw_boxes and formatted_detections:
+            # Generate annotated image if requested
+            if draw_boxes and detections:
                 annotated_pil = self._draw_custom_boxes(
                     image,
-                    formatted_detections,
+                    detections,
                     draw_labels=draw_labels,
                     draw_confidence=draw_confidence,
                     box_thickness=box_thickness,
                 )
+                annotated_base64 = image_to_base64(annotated_pil)
             else:
-                annotated_pil = image
-
-            annotated_base64 = image_to_base64(annotated_pil)
+                annotated_base64 = image_to_base64(image)
 
             duration = (time.time() - start_time) * 1000
 
             return BlockResult(
                 outputs={
-                    "detections": formatted_detections,
-                    "first_detection": formatted_detections[0] if formatted_detections else None,
+                    "detections": detections,
+                    "first_detection": detections[0] if detections else None,
                     "annotated_image": f"data:image/jpeg;base64,{annotated_base64}",
-                    "count": len(formatted_detections),
+                    "count": len(detections),
                 },
                 duration_ms=round(duration, 2),
                 metrics={
                     "model_id": model_id,
                     "model_source": model_source,
-                    "model_type": model_info.model_type,
-                    "detection_count": len(formatted_detections),
-                    "confidence_threshold": conf,
+                    "detection_count": len(detections),
+                    "confidence_threshold": confidence,
                     "image_size": f"{original_size[0]}x{original_size[1]}",
-                    "inference_size": f"{inference_image.width}x{inference_image.height}",
-                    "tiled_inference": tiled_inference,
-                    "open_vocabulary": bool(text_prompt),
+                    "gpu_inference": True,
                 },
             )
 
+        except ValueError as e:
+            # Model not found
+            return BlockResult(
+                error=str(e),
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+            )
         except Exception as e:
             logger.exception("Detection failed")
             return BlockResult(
@@ -990,7 +775,7 @@ class ClassificationBlock(ModelBlock):
 
     def __init__(self):
         super().__init__()
-        self._model_loader = get_model_loader()
+        self._inference_service = get_inference_service()
 
     def _parse_class_mapping(self, mapping_str: str) -> dict[str, str]:
         """Parse class mapping string like '0:empty, 1:full'."""
@@ -1019,7 +804,11 @@ class ClassificationBlock(ModelBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Classify input images."""
+        """
+        Classify input images via RunPod GPU worker.
+
+        All inference happens on remote GPU - no local ML dependencies needed.
+        """
         start_time = time.time()
 
         # Get images
@@ -1048,204 +837,77 @@ class ClassificationBlock(ModelBlock):
 
         # Get config options
         model_id = config.get("model_id")
+        if not model_id:
+            return BlockResult(
+                error="model_id is required",
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+            )
+
         model_source = config.get("model_source", "trained")
-        input_size = config.get("input_size", 224)
         top_k = config.get("top_k", 5)
         threshold = config.get("threshold", 0.0)
-        temperature = config.get("temperature", 1.0)
 
-        # Classification mode
-        mode = config.get("mode", "single_label")
-
-        # Decision mode
+        # Decision mode options
         decision_mode = config.get("decision_mode", "label_only")
         target_class = config.get("target_class")
         decision_threshold = config.get("decision_threshold", 0.5)
         uncertainty_threshold = config.get("uncertainty_threshold", 0.7)
         reject_threshold = config.get("reject_threshold", 0.3)
 
-        # TTA options
-        tta_enabled = config.get("tta_enabled", False)
-        tta_hflip = config.get("tta_hflip", True)
-        tta_five_crop = config.get("tta_five_crop", False)
-        tta_merge = config.get("tta_merge", "mean")
-
-        # Multi-crop
-        multi_crop = config.get("multi_crop", {})
-        multi_crop_enabled = multi_crop.get("enabled", False) if isinstance(multi_crop, dict) else False
-
-        # Output options
-        output_format = config.get("output_format", "standard")
-        include_probs = config.get("include_probs", False)
-        include_entropy = config.get("include_entropy", False)
-        include_second_best = config.get("include_second_best", False)
-
         # Class renaming
         class_rename_map = self._parse_class_mapping(config.get("class_mapping", ""))
 
-        # Load model using centralized ModelLoader
         try:
-            model, processor, model_info = await self._model_loader.load_classification_model(
-                model_id, model_source
-            )
-        except ValueError as e:
-            return BlockResult(
-                error=str(e),
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-        except Exception as e:
-            return BlockResult(
-                error=f"Failed to load model: {e}",
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-
-        # Get class mapping from ModelInfo
-        model_class_mapping = model_info.class_mapping or {}
-
-        # Run inference
-        try:
-            import torch
-            from PIL import ImageOps
-
             predictions = []
             decisions = []
 
+            # Run classification for each image via InferenceService → RunPod GPU
             for pil_image in pil_images:
-                # Resize if needed
-                if input_size and max(pil_image.size) != input_size:
-                    pil_image = pil_image.resize((input_size, input_size), Image.Resampling.LANCZOS)
+                logger.info(f"Running classification: model={model_id}, source={model_source}")
 
-                # Prepare augmented images for TTA
-                aug_images = [pil_image]
+                result = await self._inference_service.classify(
+                    model_id=model_id,
+                    image=pil_image,
+                    top_k=top_k,
+                    model_source=model_source,
+                    threshold=threshold,
+                )
 
-                if tta_enabled:
-                    if tta_hflip:
-                        aug_images.append(ImageOps.mirror(pil_image))
+                # Get predictions from result
+                top_predictions = result.get("predictions", [])
 
-                    if tta_five_crop:
-                        # 5-crop: center + 4 corners
-                        w, h = pil_image.size
-                        crop_size = min(w, h) * 0.875
-                        cs = int(crop_size)
-
-                        # Center crop
-                        left = (w - cs) // 2
-                        top = (h - cs) // 2
-                        aug_images.append(pil_image.crop((left, top, left + cs, top + cs)).resize((input_size, input_size)))
-
-                        # 4 corners
-                        aug_images.append(pil_image.crop((0, 0, cs, cs)).resize((input_size, input_size)))
-                        aug_images.append(pil_image.crop((w - cs, 0, w, cs)).resize((input_size, input_size)))
-                        aug_images.append(pil_image.crop((0, h - cs, cs, h)).resize((input_size, input_size)))
-                        aug_images.append(pil_image.crop((w - cs, h - cs, w, h)).resize((input_size, input_size)))
-
-                # Run inference on all augmented images
-                all_probs = []
-
-                loop = asyncio.get_event_loop()
-
-                for aug_img in aug_images:
-                    inputs_tensor = processor(images=aug_img, return_tensors="pt")
-                    if torch.cuda.is_available():
-                        inputs_tensor = {k: v.cuda() for k, v in inputs_tensor.items()}
-                        model.cuda()
-
-                    def run_inference(inputs_t=inputs_tensor):
-                        with torch.no_grad():
-                            outputs = model(**inputs_t)
-                            logits = outputs.logits / temperature
-
-                            if mode == "multi_label":
-                                probs = torch.sigmoid(logits)
-                            else:
-                                probs = torch.softmax(logits, dim=-1)
-
-                            return probs[0].cpu().numpy()
-
-                    probs = await loop.run_in_executor(None, run_inference)
-                    all_probs.append(probs)
-
-                # Merge TTA predictions
-                if len(all_probs) > 1:
-                    if tta_merge == "mean":
-                        final_probs = np.mean(all_probs, axis=0)
-                    elif tta_merge == "max":
-                        final_probs = np.max(all_probs, axis=0)
-                    else:  # vote
-                        # Get top prediction from each
-                        votes = [np.argmax(p) for p in all_probs]
-                        # Count votes
-                        from collections import Counter
-                        vote_counts = Counter(votes)
-                        winner = vote_counts.most_common(1)[0][0]
-                        final_probs = all_probs[0]  # Use first probs but override top
-                        final_probs = np.zeros_like(final_probs)
-                        final_probs[winner] = 1.0
-                else:
-                    final_probs = all_probs[0]
-
-                # Get top-k predictions
-                top_indices = np.argsort(final_probs)[::-1][:top_k]
-                top_probs = final_probs[top_indices]
-
-                # Build predictions list
-                top_predictions = []
-                for prob, idx in zip(top_probs, top_indices):
-                    conf = round(float(prob), 4)
-                    if conf < threshold:
-                        continue
-
-                    # Get label
-                    idx_str = str(int(idx))
-                    if model_class_mapping and idx_str in model_class_mapping:
-                        label = model_class_mapping[idx_str]
-                    elif model_class_mapping and int(idx) in model_class_mapping:
-                        label = model_class_mapping[int(idx)]
-                    elif hasattr(model.config, 'id2label') and int(idx) in model.config.id2label:
-                        label = model.config.id2label[int(idx)]
-                    else:
-                        label = f"class_{idx}"
-
-                    # Apply class renaming
-                    original_label = label
-                    if label in class_rename_map:
-                        label = class_rename_map[label]
-                    elif idx_str in class_rename_map:
-                        label = class_rename_map[idx_str]
-
-                    pred = {
-                        "class_name": label,
-                        "class_id": int(idx),
-                        "confidence": conf,
-                    }
-
-                    if label != original_label:
-                        pred["original_class_name"] = original_label
-
-                    top_predictions.append(pred)
+                # Apply class renaming
+                for pred in top_predictions:
+                    original_name = pred.get("class_name", "")
+                    if original_name in class_rename_map:
+                        pred["class_name"] = class_rename_map[original_name]
+                        pred["original_class_name"] = original_name
+                    # Also check by class_id
+                    cls_id_str = str(pred.get("class_id", ""))
+                    if cls_id_str in class_rename_map:
+                        pred["class_name"] = class_rename_map[cls_id_str]
+                        pred["original_class_name"] = original_name
 
                 # Get top prediction
                 top_pred = top_predictions[0] if top_predictions else {"class_name": "unknown", "confidence": 0, "class_id": -1}
-                top_conf = top_pred["confidence"]
+                top_conf = top_pred.get("confidence", 0)
 
                 # Handle decision mode
                 decision = None
                 decision_reason = None
 
                 if decision_mode == "binary_decision" and target_class:
-                    # Find target class confidence
                     target_conf = 0
                     for pred in top_predictions:
-                        if pred["class_name"] == target_class or str(pred["class_id"]) == target_class:
-                            target_conf = pred["confidence"]
+                        if pred.get("class_name") == target_class or str(pred.get("class_id")) == target_class:
+                            target_conf = pred.get("confidence", 0)
                             break
-
                     decision = target_conf >= decision_threshold
                     decision_reason = f"target '{target_class}' confidence {target_conf:.2f} {'≥' if decision else '<'} threshold {decision_threshold}"
 
                 elif decision_mode == "uncertain_aware":
                     if top_conf >= uncertainty_threshold:
-                        decision = top_pred["class_name"]
+                        decision = top_pred.get("class_name")
                         decision_reason = f"confident ({top_conf:.2f} ≥ {uncertainty_threshold})"
                     elif top_conf >= reject_threshold:
                         decision = "uncertain"
@@ -1254,58 +916,16 @@ class ClassificationBlock(ModelBlock):
                         decision = "rejected"
                         decision_reason = f"rejected ({top_conf:.2f} < {reject_threshold})"
 
-                # Build output based on format
-                prediction = {}
+                # Build prediction output
+                prediction = {
+                    "class_name": top_pred.get("class_name"),
+                    "confidence": top_pred.get("confidence"),
+                    "top_k": top_predictions,
+                }
 
-                if output_format == "minimal":
-                    prediction = {
-                        "class_name": top_pred["class_name"],
-                    }
-                elif output_format == "decision":
-                    prediction = {
-                        "class_name": top_pred["class_name"],
-                        "confidence": top_pred["confidence"],
-                        "decision": decision,
-                        "reason": decision_reason,
-                    }
-                elif output_format == "detailed":
-                    prediction = {
-                        "class_name": top_pred["class_name"],
-                        "class_id": top_pred["class_id"],
-                        "confidence": top_pred["confidence"],
-                        "top_k": top_predictions,
-                        "decision": decision,
-                        "reason": decision_reason,
-                    }
-                else:  # standard
-                    prediction = {
-                        "class_name": top_pred["class_name"],
-                        "confidence": top_pred["confidence"],
-                        "top_k": top_predictions,
-                    }
-
-                # Add optional fields
-                if include_second_best and len(top_predictions) > 1:
-                    prediction["second_best"] = top_predictions[1]
-
-                if include_entropy:
-                    prediction["entropy"] = self._compute_entropy(final_probs)
-
-                if include_probs:
-                    # Build full probability dict
-                    all_class_probs = {}
-                    for i, prob in enumerate(final_probs):
-                        idx_str = str(i)
-                        if model_class_mapping and idx_str in model_class_mapping:
-                            label = model_class_mapping[idx_str]
-                        elif model_class_mapping and i in model_class_mapping:
-                            label = model_class_mapping[i]
-                        elif hasattr(model.config, 'id2label') and i in model.config.id2label:
-                            label = model.config.id2label[i]
-                        else:
-                            label = f"class_{i}"
-                        all_class_probs[label] = round(float(prob), 4)
-                    prediction["probabilities"] = all_class_probs
+                if decision is not None:
+                    prediction["decision"] = decision
+                    prediction["reason"] = decision_reason
 
                 predictions.append(prediction)
                 decisions.append(decision)
@@ -1322,15 +942,18 @@ class ClassificationBlock(ModelBlock):
                 metrics={
                     "model_id": model_id,
                     "model_source": model_source,
-                    "model_type": model_info.model_type,
                     "image_count": len(pil_images),
                     "top_k": top_k,
-                    "mode": mode,
                     "decision_mode": decision_mode,
-                    "tta_enabled": tta_enabled,
+                    "gpu_inference": True,
                 },
             )
 
+        except ValueError as e:
+            return BlockResult(
+                error=str(e),
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+            )
         except Exception as e:
             logger.exception("Classification failed")
             return BlockResult(
@@ -1468,8 +1091,7 @@ class EmbeddingBlock(ModelBlock):
 
     def __init__(self):
         super().__init__()
-        self._model_loader = get_model_loader()
-        self._pca_models = {}  # Cache PCA models per dimension
+        self._inference_service = get_inference_service()
 
     def _parse_scale_factors(self, factors_str: str) -> list[float]:
         """Parse comma-separated scale factors."""
@@ -1484,7 +1106,12 @@ class EmbeddingBlock(ModelBlock):
         config: dict[str, Any],
         context: ExecutionContext,
     ) -> BlockResult:
-        """Extract embeddings from images with SOTA features."""
+        """
+        Extract embeddings from images via RunPod GPU worker.
+
+        All inference happens on remote GPU - no local ML dependencies needed.
+        The worker handles model loading, caching, and GPU inference.
+        """
         start_time = time.time()
 
         # Get images
@@ -1513,174 +1140,72 @@ class EmbeddingBlock(ModelBlock):
 
         # Get config options
         model_id = config.get("model_id")
+        if not model_id:
+            return BlockResult(
+                error="model_id is required for embedding extraction",
+                duration_ms=round((time.time() - start_time) * 1000, 2),
+            )
+
         model_source = config.get("model_source", "pretrained")
         input_size = config.get("input_size", 224)
         normalize = config.get("normalize", True)
         pooling = config.get("pooling", "cls")
         gem_p = config.get("gem_p", 3.0)
 
-        # Multi-scale options
+        # Multi-scale options (passed to worker)
         multi_scale = config.get("multi_scale", False)
         multi_scale_factors = self._parse_scale_factors(config.get("multi_scale_factors", "1.0,0.75,0.5"))
         multi_scale_agg = config.get("multi_scale_agg", "concat")
 
-        # PCA options
+        # PCA options (passed to worker)
         pca_enabled = config.get("pca_enabled", False)
         pca_dim = config.get("pca_dim", 256)
-        pca_whiten = config.get("pca_whiten", False)
 
         # Output options
         output_format = config.get("output_format", "vector")
         include_model_info = config.get("include_model_info", True)
         include_timing = config.get("include_timing", False)
 
-        # Load model using centralized ModelLoader
+        # Run embedding extraction via RunPod GPU worker
         try:
-            model, processor, model_info = await self._model_loader.load_embedding_model(
-                model_id, model_source
-            )
-        except ValueError as e:
-            return BlockResult(
-                error=str(e),
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-        except Exception as e:
-            return BlockResult(
-                error=f"Failed to load model: {e}",
-                duration_ms=round((time.time() - start_time) * 1000, 2),
-            )
-
-        # Get embedding dimension from ModelInfo
-        embedding_dim = model_info.embedding_dim or 768
-
-        # Run inference
-        try:
-            import torch
-            import base64
-
             embeddings = []
             inference_times = []
 
             for pil_image in pil_images:
                 img_start = time.time()
 
-                if multi_scale:
-                    # Multi-scale extraction
-                    scale_embeddings = []
+                # Call InferenceService - delegates to RunPod worker
+                result = await self._inference_service.embed(
+                    model_id=model_id,
+                    image=pil_image,
+                    model_source=model_source,
+                    input_size=input_size,
+                    normalize=normalize,
+                    pooling=pooling,
+                    gem_p=gem_p,
+                    multi_scale=multi_scale,
+                    multi_scale_factors=multi_scale_factors,
+                    multi_scale_agg=multi_scale_agg,
+                    pca_enabled=pca_enabled,
+                    pca_dim=pca_dim,
+                    output_format=output_format,
+                )
 
-                    for scale in multi_scale_factors:
-                        # Resize to scaled size
-                        scaled_size = int(input_size * scale)
-                        scaled_image = pil_image.resize((scaled_size, scaled_size), Image.Resampling.LANCZOS)
+                # Extract embedding from worker result
+                embedding = result.get("embedding")
+                if embedding is None:
+                    raise ValueError(f"Worker returned no embedding: {result}")
 
-                        # Process image
-                        inputs_tensor = processor(images=scaled_image, return_tensors="pt")
-                        if torch.cuda.is_available():
-                            inputs_tensor = {k: v.cuda() for k, v in inputs_tensor.items()}
-
-                        with torch.no_grad():
-                            outputs = model(**inputs_tensor)
-
-                            # Get embedding based on model type
-                            if hasattr(outputs, "image_embeds"):
-                                emb = outputs.image_embeds
-                            elif hasattr(outputs, "last_hidden_state"):
-                                hidden = outputs.last_hidden_state
-                                if pooling == "cls":
-                                    emb = hidden[:, 0]
-                                elif pooling == "mean":
-                                    emb = hidden.mean(dim=1)
-                                elif pooling == "gem":
-                                    emb = (hidden.clamp(min=1e-6).pow(gem_p).mean(dim=1)).pow(1.0 / gem_p)
-                                else:
-                                    emb = hidden[:, 0]
-                            elif hasattr(outputs, "pooler_output"):
-                                emb = outputs.pooler_output
-                            else:
-                                emb = outputs[0][:, 0]
-
-                            scale_embeddings.append(emb.cpu().numpy()[0])
-
-                    # Aggregate multi-scale embeddings
-                    if multi_scale_agg == "concat":
-                        embedding = np.concatenate(scale_embeddings)
-                    elif multi_scale_agg == "mean":
-                        embedding = np.mean(scale_embeddings, axis=0)
-                    elif multi_scale_agg == "max":
-                        embedding = np.max(scale_embeddings, axis=0)
-                    else:
-                        embedding = scale_embeddings[0]
-
-                else:
-                    # Single-scale extraction
-                    resized_image = pil_image.resize((input_size, input_size), Image.Resampling.LANCZOS)
-
-                    inputs_tensor = processor(images=resized_image, return_tensors="pt")
-                    if torch.cuda.is_available():
-                        inputs_tensor = {k: v.cuda() for k, v in inputs_tensor.items()}
-                        model.cuda()
-
-                    loop = asyncio.get_event_loop()
-
-                    def run_inference(inputs_t=inputs_tensor):
-                        with torch.no_grad():
-                            outputs = model(**inputs_t)
-
-                            if hasattr(outputs, "image_embeds"):
-                                emb = outputs.image_embeds
-                            elif hasattr(outputs, "last_hidden_state"):
-                                hidden = outputs.last_hidden_state
-                                if pooling == "cls":
-                                    emb = hidden[:, 0]
-                                elif pooling == "mean":
-                                    emb = hidden.mean(dim=1)
-                                elif pooling == "gem":
-                                    emb = (hidden.clamp(min=1e-6).pow(gem_p).mean(dim=1)).pow(1.0 / gem_p)
-                                else:
-                                    emb = hidden[:, 0]
-                            elif hasattr(outputs, "pooler_output"):
-                                emb = outputs.pooler_output
-                            else:
-                                emb = outputs[0][:, 0]
-
-                            return emb.cpu().numpy()[0]
-
-                    embedding = await loop.run_in_executor(None, run_inference)
-
-                # Apply PCA if enabled
-                if pca_enabled:
-                    try:
-                        from sklearn.decomposition import PCA
-
-                        # Note: In production, PCA should be pre-fitted on reference data
-                        # Here we just truncate for demonstration
-                        if len(embedding) > pca_dim:
-                            embedding = embedding[:pca_dim]
-                    except ImportError:
-                        # sklearn not available, skip PCA
-                        pass
-
-                # Normalize if requested
-                if normalize:
-                    norm = np.linalg.norm(embedding)
-                    if norm > 0:
-                        embedding = embedding / norm
-
-                # Format output
-                if output_format == "base64":
-                    emb_bytes = embedding.astype(np.float32).tobytes()
-                    embeddings.append(base64.b64encode(emb_bytes).decode("utf-8"))
-                else:
-                    embeddings.append(embedding.tolist())
-
+                embeddings.append(embedding)
                 inference_times.append((time.time() - img_start) * 1000)
 
             duration = (time.time() - start_time) * 1000
 
             # Build output
-            final_embedding_dim = len(embeddings[0]) if embeddings else embedding_dim
-            if output_format != "base64" and embeddings:
-                final_embedding_dim = len(embeddings[0])
+            final_embedding_dim = len(embeddings[0]) if embeddings and isinstance(embeddings[0], list) else 0
+            if output_format == "base64":
+                # For base64, we can't easily get dimension, use config or worker metadata
+                final_embedding_dim = result.get("embedding_dim", 768)
 
             # Add singular 'embedding' output for convenience (first/single embedding)
             # This makes it easy to connect directly to SimilaritySearch in ForEach loops
@@ -1730,6 +1255,7 @@ class EmbeddingBlock(ModelBlock):
                     "pooling": pooling,
                     "multi_scale": multi_scale,
                     "pca_enabled": pca_enabled,
+                    "gpu_inference": True,
                 },
             )
 

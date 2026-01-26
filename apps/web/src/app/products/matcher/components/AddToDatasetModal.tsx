@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import type { Dataset } from "@/types";
@@ -38,6 +39,7 @@ export function AddToDatasetModal({
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   const loadDatasets = useCallback(async () => {
     setIsLoading(true);
@@ -65,9 +67,18 @@ export function AddToDatasetModal({
 
     setIsSubmitting(true);
     try {
-      await apiClient.addProductsToDataset(selectedDatasetId, productIds);
-      toast.success(`Added ${productIds.length} products to dataset`);
-      onOpenChange(false);
+      const result = await apiClient.addProductsToDataset(selectedDatasetId, productIds);
+
+      // If backend returns job_id, track it with modal
+      if (result.job_id) {
+        setActiveJobId(result.job_id);
+        toast.success("Background job started for adding products");
+        onOpenChange(false);
+      } else {
+        // Small batch completed synchronously
+        toast.success(`Added ${result.added_count || productIds.length} products to dataset`);
+        onOpenChange(false);
+      }
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to add products"
@@ -140,6 +151,18 @@ export function AddToDatasetModal({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* Job Progress Modal - appears after main dialog closes */}
+      <JobProgressModal
+        jobId={activeJobId}
+        title="Adding Products to Dataset"
+        onClose={() => setActiveJobId(null)}
+        onComplete={(result) => {
+          toast.success(
+            `Added ${result?.added || 0} products (${result?.skipped || 0} skipped)`
+          );
+        }}
+      />
     </Dialog>
   );
 }

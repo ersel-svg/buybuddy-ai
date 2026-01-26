@@ -50,12 +50,14 @@ async def get_dataset_images(
     split: Optional[str] = None,
     merchant_ids: Optional[str] = None,
     store_ids: Optional[str] = None,
+    sort_by: Optional[str] = None,  # "recently_annotated" or None (default: added_at)
 ):
     """Get images in a dataset with their annotation counts.
 
     Args:
         merchant_ids: Comma-separated merchant IDs to filter by
         store_ids: Comma-separated store IDs to filter by
+        sort_by: Sort order - "recently_annotated" to sort by last annotation time
     """
     offset = (page - 1) * limit
 
@@ -132,7 +134,15 @@ async def get_dataset_images(
                 "limit": limit,
             }
 
-    query = query.order("added_at", desc=True).range(offset, offset + limit - 1)
+    # Apply sort order
+    if sort_by == "recently_annotated":
+        # Sort by last_annotated_at descending, with nulls last
+        query = query.order("last_annotated_at", desc=True, nullsfirst=False)
+    else:
+        # Default: sort by added_at descending
+        query = query.order("added_at", desc=True)
+
+    query = query.range(offset, offset + limit - 1)
     result = query.execute()
 
     return {

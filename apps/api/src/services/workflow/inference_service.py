@@ -122,19 +122,21 @@ class InferenceService:
                 timeout=120,  # Increased for cold start (can take 30-60s)
             )
 
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error")
+            # RunPod returns: {status, output: {success, result, metadata}}
+            output = result.get("output", {})
+            if not output.get("success"):
+                error_msg = output.get("error", result.get("error", "Unknown error"))
                 logger.error(f"Detection inference failed: {error_msg}")
                 raise RuntimeError(f"Detection inference failed: {error_msg}")
 
             # Validate response structure
-            detection_result = result.get("result", {})
+            detection_result = output.get("result", {})
             if "detections" not in detection_result:
                 raise RuntimeError("Invalid response: missing 'detections' field")
 
             logger.info(
                 f"Detection complete: {detection_result['count']} detections, "
-                f"took {result.get('metadata', {}).get('inference_time_ms', 0):.0f}ms"
+                f"took {output.get('metadata', {}).get('inference_time_ms', 0):.0f}ms"
             )
 
             return detection_result
@@ -219,13 +221,15 @@ class InferenceService:
                 timeout=120,  # Increased for cold start
             )
 
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error")
+            # RunPod returns: {status, output: {success, result, metadata}}
+            output = result.get("output", {})
+            if not output.get("success"):
+                error_msg = output.get("error", result.get("error", "Unknown error"))
                 logger.error(f"Classification inference failed: {error_msg}")
                 raise RuntimeError(f"Classification inference failed: {error_msg}")
 
             # Validate response structure
-            classification_result = result.get("result", {})
+            classification_result = output.get("result", {})
             if "predictions" not in classification_result:
                 raise RuntimeError("Invalid response: missing 'predictions' field")
 
@@ -253,9 +257,17 @@ class InferenceService:
         model_source: str = "pretrained",
         normalize: bool = True,
         pooling: str = "cls",
+        input_size: int = 224,
+        gem_p: float = 3.0,
+        multi_scale: bool = False,
+        multi_scale_factors: list = None,
+        multi_scale_agg: str = "concat",
+        pca_enabled: bool = False,
+        pca_dim: int = 256,
+        output_format: str = "vector",
     ) -> Dict[str, Any]:
         """
-        Extract image embedding.
+        Extract image embedding via RunPod GPU worker.
 
         Args:
             model_id: Model ID from wf_pretrained_models or trained_models
@@ -263,10 +275,18 @@ class InferenceService:
             model_source: "pretrained" or "trained"
             normalize: Normalize embedding to unit length
             pooling: Pooling strategy ("cls", "mean", "gem")
+            input_size: Input image size for model
+            gem_p: Power parameter for GeM pooling
+            multi_scale: Enable multi-scale extraction
+            multi_scale_factors: Scale factors for multi-scale (e.g., [1.0, 0.75, 0.5])
+            multi_scale_agg: Aggregation method ("concat", "mean", "max")
+            pca_enabled: Enable PCA dimensionality reduction
+            pca_dim: Target dimension for PCA
+            output_format: Output format ("vector", "base64", "vector_with_meta")
 
         Returns:
             {
-                "embedding": [0.1, 0.2, ...],  # Vector of floats
+                "embedding": [0.1, 0.2, ...],  # Vector of floats or base64 string
                 "embedding_dim": 768,
                 "normalized": True,
             }
@@ -285,7 +305,7 @@ class InferenceService:
             f"source={model_source}, dim={model_info.embedding_dim}"
         )
 
-        # Prepare job input
+        # Prepare job input with all SOTA options
         job_input = {
             "task": "embedding",
             "model_id": model_id,
@@ -297,6 +317,14 @@ class InferenceService:
             "config": {
                 "normalize": normalize,
                 "pooling": pooling,
+                "input_size": input_size,
+                "gem_p": gem_p,
+                "multi_scale": multi_scale,
+                "multi_scale_factors": multi_scale_factors or [1.0],
+                "multi_scale_agg": multi_scale_agg,
+                "pca_enabled": pca_enabled,
+                "pca_dim": pca_dim,
+                "output_format": output_format,
             }
         }
 
@@ -308,13 +336,15 @@ class InferenceService:
                 timeout=120,  # Increased for cold start
             )
 
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error")
+            # RunPod returns: {status, output: {success, result, metadata}}
+            output = result.get("output", {})
+            if not output.get("success"):
+                error_msg = output.get("error", result.get("error", "Unknown error"))
                 logger.error(f"Embedding extraction failed: {error_msg}")
                 raise RuntimeError(f"Embedding extraction failed: {error_msg}")
 
             # Validate response structure
-            embedding_result = result.get("result", {})
+            embedding_result = output.get("result", {})
             if "embedding" not in embedding_result:
                 raise RuntimeError("Invalid response: missing 'embedding' field")
 

@@ -97,10 +97,12 @@ class ModelLoader:
                 if not result.data:
                     return None
 
+                # Use model_id as model_type for worker (yolo11n, yolov8n, etc.)
+                # Worker expects model_type to be the actual model identifier
                 return ModelInfo(
                     id=result.data["id"],
                     name=result.data["name"],
-                    model_type="detection",
+                    model_type=result.data["id"],  # Use model ID for worker compatibility
                     source="pretrained",
                     checkpoint_url=result.data.get("model_path"),
                     class_mapping={i: c for i, c in enumerate(result.data.get("classes", []))},
@@ -205,13 +207,15 @@ class ModelLoader:
                 if not result.data:
                     return None
 
+                # Use model_id as model_type for worker (vit-base, convnext-base, etc.)
+                classes = result.data.get("classes") or []
                 return ModelInfo(
                     id=result.data["id"],
                     name=result.data["name"],
-                    model_type=result.data.get("source", "vit"),
+                    model_type=result.data["id"],  # Use model ID for worker compatibility
                     source="pretrained",
                     checkpoint_url=result.data.get("model_path"),
-                    class_mapping={i: c for i, c in enumerate(result.data.get("classes", []))},
+                    class_mapping={i: c for i, c in enumerate(classes)},
                     config=result.data.get("default_config", {}),
                 )
             else:
@@ -348,10 +352,11 @@ class ModelLoader:
                 if not result.data:
                     return None
 
+                # Use model_id as model_type for worker (dinov2-base, clip-vit-b-32, etc.)
                 return ModelInfo(
                     id=result.data["id"],
                     name=result.data["name"],
-                    model_type=result.data.get("source", "dinov2"),
+                    model_type=result.data["id"],  # Use model ID for worker compatibility
                     source="pretrained",
                     checkpoint_url=result.data.get("model_path"),
                     embedding_dim=result.data.get("embedding_dim", 768),

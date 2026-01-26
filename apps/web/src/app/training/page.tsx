@@ -259,8 +259,9 @@ export default function TrainingPage() {
     queryFn: () => apiClient.getProductsForTraining({
       data_source: formData.data_source,
       dataset_id: formData.dataset_id || undefined,
+      limit: 10000,
     }),
-    enabled: isCreateDialogOpen,
+    enabled: isCreateDialogOpen && !(formData.data_source === "dataset" && !formData.dataset_id),
   });
 
   // Fetch label field statistics
@@ -270,7 +271,7 @@ export default function TrainingPage() {
       data_source: formData.data_source,
       dataset_id: formData.dataset_id || undefined,
     }),
-    enabled: isCreateDialogOpen,
+    enabled: isCreateDialogOpen && !(formData.data_source === "dataset" && !formData.dataset_id),
   });
 
   // Debug: log label stats errors

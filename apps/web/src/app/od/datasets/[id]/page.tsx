@@ -189,6 +189,7 @@ export default function ODDatasetDetailPage({
   const [searchInput, setSearchInput] = useState("");
   const debouncedSearch = useDebounce(searchInput, 300);
   const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<string>("added_at");  // "added_at" or "recently_annotated"
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
 
   // Add images sheet state
@@ -269,12 +270,13 @@ export default function ODDatasetDetailPage({
     isLoading: imagesLoading,
     isFetching,
   } = useQuery({
-    queryKey: ["od-dataset-images", datasetId, page, filterStatus],
+    queryKey: ["od-dataset-images", datasetId, page, filterStatus, sortBy],
     queryFn: () =>
       apiClient.getODDatasetImages(datasetId, {
         page,
         limit: PAGE_SIZE,
         status: filterStatus !== "all" ? filterStatus : undefined,
+        sort_by: sortBy === "recently_annotated" ? "recently_annotated" : undefined,
       }),
     staleTime: 30000,
     gcTime: 5 * 60 * 1000,
@@ -1076,12 +1078,19 @@ export default function ODDatasetDetailPage({
                 toast.error("Add images to the dataset first");
                 return;
               }
-              router.push(`/od/annotate?dataset=${datasetId}`);
+              // If images are selected, go directly to the first selected image
+              if (selectedImages.size > 0) {
+                const firstSelectedImageId = Array.from(selectedImages)[0];
+                router.push(`/od/annotate/${datasetId}/${firstSelectedImageId}`);
+              } else {
+                // No selection, go to annotation page which will pick first image
+                router.push(`/od/annotate?dataset=${datasetId}`);
+              }
             }}
             disabled={dataset.image_count === 0}
           >
             <PenTool className="h-4 w-4 mr-2" />
-            Start Annotating
+            {selectedImages.size > 0 ? `Annotate Selected (${selectedImages.size})` : "Start Annotating"}
           </Button>
         </div>
       </div>
@@ -1226,6 +1235,21 @@ export default function ODDatasetDetailPage({
                 <SelectItem value="skipped">Skipped</SelectItem>
               </SelectContent>
             </Select>
+            <Select
+              value={sortBy}
+              onValueChange={(v) => {
+                setSortBy(v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Sort by" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="added_at">Recently Added</SelectItem>
+                <SelectItem value="recently_annotated">Recently Annotated</SelectItem>
+              </SelectContent>
+            </Select>
             {imagesData?.images && imagesData.images.length > 0 && (
               <div className="flex items-center gap-2">
                 <Checkbox
@@ -1293,6 +1317,7 @@ export default function ODDatasetDetailPage({
                     selectedImages.has(item.image_id) ? "border-primary" : "border-transparent hover:border-muted-foreground/30"
                   }`}
                   onClick={() => toggleImageSelection(item.image_id)}
+                  onDoubleClick={() => router.push(`/od/annotate/${datasetId}/${item.image_id}`)}
                 >
                   <Image
                     src={item.image.image_url}
@@ -1315,15 +1340,26 @@ export default function ODDatasetDetailPage({
                   <div className="absolute top-2 right-2">
                     {getStatusBadge(item.status)}
                   </div>
-                  {/* Annotation count badge */}
-                  {item.annotation_count > 0 && (
-                    <div className="absolute bottom-2 left-2">
-                      <Badge variant="secondary" className="bg-black/60 text-white">
+                  {/* Annotation count and timestamp badges */}
+                  <div className="absolute bottom-2 left-2 flex flex-col gap-1">
+                    {item.annotation_count > 0 && (
+                      <Badge variant="secondary" className="bg-black/60 text-white text-xs">
                         <Layers className="h-3 w-3 mr-1" />
                         {item.annotation_count}
                       </Badge>
-                    </div>
-                  )}
+                    )}
+                    {item.last_annotated_at && (
+                      <Badge variant="secondary" className="bg-black/60 text-white text-xs">
+                        <Clock className="h-3 w-3 mr-1" />
+                        {new Date(item.last_annotated_at).toLocaleDateString("tr-TR", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </Badge>
+                    )}
+                  </div>
                   {/* Action menu */}
                   <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                     <DropdownMenu>

@@ -20,7 +20,8 @@ class BulkAddToDatasetHandler(BaseJobHandler):
 
     Config:
         dataset_id: str - Target dataset ID
-        filters: dict - Filter criteria for images
+        product_ids: list[str] - Optional, specific product IDs to add
+        filters: dict - Optional, filter criteria for images
             - statuses: str (comma-separated)
             - sources: str (comma-separated)
             - folders: str (comma-separated)
@@ -51,6 +52,7 @@ class BulkAddToDatasetHandler(BaseJobHandler):
         update_progress: Callable[[JobProgress], None],
     ) -> dict:
         dataset_id = config["dataset_id"]
+        product_ids = config.get("product_ids")
         filters = config.get("filters", {})
 
         # Update initial progress
@@ -65,10 +67,9 @@ class BulkAddToDatasetHandler(BaseJobHandler):
         dataset = supabase_service.client.table("od_datasets")\
             .select("id")\
             .eq("id", dataset_id)\
-            .single()\
             .execute()
 
-        if not dataset.data:
+        if not dataset.data or len(dataset.data) == 0:
             raise ValueError(f"Dataset not found: {dataset_id}")
 
         # Get all matching image IDs (with pagination)
@@ -79,7 +80,12 @@ class BulkAddToDatasetHandler(BaseJobHandler):
             total=0,
         ))
 
-        image_ids = self._get_all_image_ids(filters)
+        # Get image IDs either from product_ids or filters
+        if product_ids:
+            image_ids = product_ids
+        else:
+            image_ids = self._get_all_image_ids(filters)
+
         total = len(image_ids)
 
         if total == 0:

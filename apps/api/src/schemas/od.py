@@ -146,6 +146,7 @@ class ODDatasetImageResponse(BaseModel):
     annotation_count: int = 0
     split: Optional[str] = None
     added_at: datetime
+    last_annotated_at: Optional[datetime] = None  # When this image was last annotated
     image: ODImageResponse
 
     class Config:
@@ -362,6 +363,7 @@ class ODTrainingRunResponse(BaseModel):
     total_epochs: int
     best_map: Optional[float] = None
     best_epoch: Optional[int] = None
+    config: Optional[dict] = None  # Training configuration (JSONB)
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

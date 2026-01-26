@@ -16,6 +16,7 @@ from qdrant_client.http.models import (
     MatchAny,
     ScrollRequest,
     SearchRequest,
+    PayloadSchemaType,
 )
 
 from config import settings
@@ -90,7 +91,132 @@ class QdrantService:
         )
 
         print(f"[Qdrant] Created collection '{collection_name}' (dim={vector_size})")
+
+        # Create default payload indexes for filtering
+        await self._create_default_indexes(collection_name)
+
         return True
+
+    async def _create_default_indexes(self, collection_name: str) -> None:
+        """Create default payload indexes required for filtering operations."""
+        default_indexes = [
+            ("source", PayloadSchemaType.KEYWORD),
+            ("is_primary", PayloadSchemaType.BOOL),
+            ("product_id", PayloadSchemaType.KEYWORD),
+            ("barcode", PayloadSchemaType.KEYWORD),
+        ]
+
+        for field_name, field_type in default_indexes:
+            try:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=field_type,
+                )
+                print(f"[Qdrant] Created index '{field_name}' on '{collection_name}'")
+            except Exception as e:
+                # Index might already exist
+                print(f"[Qdrant] Index '{field_name}' may already exist: {e}")
+
+    async def create_payload_index(
+        self,
+        collection_name: str,
+        field_name: str,
+        field_type: str = "keyword",
+    ) -> bool:
+        """
+        Create a payload index for efficient filtering.
+
+        Args:
+            collection_name: Target collection
+            field_name: Field to index
+            field_type: Type of index (keyword, integer, float, bool, geo, text)
+
+        Returns:
+            True if created successfully
+        """
+        type_map = {
+            "keyword": PayloadSchemaType.KEYWORD,
+            "integer": PayloadSchemaType.INTEGER,
+            "float": PayloadSchemaType.FLOAT,
+            "bool": PayloadSchemaType.BOOL,
+            "geo": PayloadSchemaType.GEO,
+            "text": PayloadSchemaType.TEXT,
+        }
+
+        schema_type = type_map.get(field_type.lower(), PayloadSchemaType.KEYWORD)
+
+        try:
+            self.client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=schema_type,
+            )
+            print(f"[Qdrant] Created {field_type} index for '{field_name}' on '{collection_name}'")
+            return True
+        except Exception as e:
+            print(f"[Qdrant] Error creating index: {e}")
+            raise
+
+    async def ensure_indexes(self, collection_name: str) -> dict[str, Any]:
+        """
+        Ensure all required indexes exist on a collection.
+        Creates missing indexes without affecting existing ones.
+
+        Args:
+            collection_name: Target collection
+
+        Returns:
+            Dict with created and existing indexes
+        """
+        required_indexes = [
+            ("source", "keyword"),
+            ("is_primary", "bool"),
+            ("product_id", "keyword"),
+            ("barcode", "keyword"),
+        ]
+
+        results = {"created": [], "existing": [], "failed": []}
+
+        for field_name, field_type in required_indexes:
+            try:
+                await self.create_payload_index(collection_name, field_name, field_type)
+                results["created"].append(field_name)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "already exists" in error_msg or "conflict" in error_msg:
+                    results["existing"].append(field_name)
+                else:
+                    results["failed"].append({"field": field_name, "error": str(e)})
+
+        return results
+
+    async def get_collection_indexes(self, collection_name: str) -> list[dict[str, Any]]:
+        """
+        Get list of payload indexes on a collection.
+
+        Args:
+            collection_name: Target collection
+
+        Returns:
+            List of index info dicts
+        """
+        try:
+            info = self.client.get_collection(collection_name=collection_name)
+            indexes = []
+
+            if info.payload_schema:
+                for field_name, field_info in info.payload_schema.items():
+                    indexes.append({
+                        "field_name": field_name,
+                        "data_type": str(field_info.data_type) if field_info.data_type else "unknown",
+                        "points": field_info.points if hasattr(field_info, 'points') else 0,
+                    })
+
+            return indexes
+        except Exception as e:
+            print(f"[Qdrant] Error getting indexes: {e}")
+            return []
 
     async def delete_collection(self, collection_name: str) -> bool:
         """Delete a collection."""

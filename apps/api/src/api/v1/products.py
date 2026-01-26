@@ -259,147 +259,109 @@ def get_webhook_url(request: Request) -> str:
 # ===========================================
 
 
-async def get_all_filtered_products(
-    db: SupabaseService,
-    request: ExportRequest,
-) -> list[dict]:
-    """Get all products matching filters, handling pagination."""
-    if request.product_ids:
-        # Fetch specific products by ID
-        products = []
-        for pid in request.product_ids:
-            product = await db.get_product(pid)
-            if product:
-                products.append(product)
-        return products
+def matches_export_filter(product: dict, request: ExportRequest) -> bool:
+    """Check if a product matches the export filter criteria."""
+    # Status filter
+    if request.status and product.get("status") not in request.status:
+        return False
 
-    # Fetch all products with server-side filters, then apply client-side filters
-    all_products = []
-    page = 1
-    page_size = 1000  # Max per page
+    # Category filter
+    if request.category and product.get("category") not in request.category:
+        return False
 
-    while True:
-        result = await db.get_products(
-            page=page,
-            limit=page_size,
-            search=request.search,
-        )
-        items = result.get("items", [])
-        if not items:
-            break
+    # Brand filter
+    if request.brand and product.get("brand_name") not in request.brand:
+        return False
 
-        all_products.extend(items)
+    # Sub Brand filter
+    if request.sub_brand and product.get("sub_brand") not in request.sub_brand:
+        return False
 
-        # Check if we got all items
-        total = result.get("total", 0)
-        if len(all_products) >= total:
-            break
+    # Product Name filter
+    if request.product_name and product.get("product_name") not in request.product_name:
+        return False
 
-        page += 1
+    # Variant/Flavor filter
+    if request.variant_flavor and product.get("variant_flavor") not in request.variant_flavor:
+        return False
 
-    # Apply client-side filters
-    def matches_filter(product: dict) -> bool:
-        # Status filter
-        if request.status and product.get("status") not in request.status:
+    # Container Type filter
+    if request.container_type and product.get("container_type") not in request.container_type:
+        return False
+
+    # Net Quantity filter
+    if request.net_quantity and product.get("net_quantity") not in request.net_quantity:
+        return False
+
+    # Pack Type filter
+    if request.pack_type:
+        pack_config = product.get("pack_configuration") or {}
+        if pack_config.get("type") not in request.pack_type:
             return False
 
-        # Category filter
-        if request.category and product.get("category") not in request.category:
+    # Manufacturer Country filter
+    if request.manufacturer_country and product.get("manufacturer_country") not in request.manufacturer_country:
+        return False
+
+    # Claims filter (product must have at least one of the selected claims)
+    if request.claims:
+        product_claims = product.get("claims") or []
+        if not any(c in request.claims for c in product_claims):
             return False
 
-        # Brand filter
-        if request.brand and product.get("brand_name") not in request.brand:
+    # Boolean filters
+    if request.has_video is not None:
+        has_video = bool(product.get("video_url"))
+        if request.has_video != has_video:
             return False
 
-        # Sub Brand filter
-        if request.sub_brand and product.get("sub_brand") not in request.sub_brand:
+    if request.has_image is not None:
+        has_image = bool(product.get("primary_image_url"))
+        if request.has_image != has_image:
             return False
 
-        # Product Name filter
-        if request.product_name and product.get("product_name") not in request.product_name:
+    if request.has_nutrition is not None:
+        nutrition = product.get("nutrition_facts") or {}
+        has_nutrition = len(nutrition) > 0
+        if request.has_nutrition != has_nutrition:
             return False
 
-        # Variant/Flavor filter
-        if request.variant_flavor and product.get("variant_flavor") not in request.variant_flavor:
+    if request.has_description is not None:
+        has_desc = bool(product.get("marketing_description"))
+        if request.has_description != has_desc:
             return False
 
-        # Container Type filter
-        if request.container_type and product.get("container_type") not in request.container_type:
+    if request.has_prompt is not None:
+        has_prompt = bool(product.get("grounding_prompt"))
+        if request.has_prompt != has_prompt:
             return False
 
-        # Net Quantity filter
-        if request.net_quantity and product.get("net_quantity") not in request.net_quantity:
+    if request.has_issues is not None:
+        issues = product.get("issues_detected") or []
+        has_issues = len(issues) > 0
+        if request.has_issues != has_issues:
             return False
 
-        # Pack Type filter
-        if request.pack_type:
-            pack_config = product.get("pack_configuration") or {}
-            if pack_config.get("type") not in request.pack_type:
-                return False
-
-        # Manufacturer Country filter
-        if request.manufacturer_country and product.get("manufacturer_country") not in request.manufacturer_country:
+    # Range filters
+    if request.frame_count_min is not None:
+        if product.get("frame_count", 0) < request.frame_count_min:
             return False
 
-        # Claims filter (product must have at least one of the selected claims)
-        if request.claims:
-            product_claims = product.get("claims") or []
-            if not any(c in request.claims for c in product_claims):
-                return False
+    if request.frame_count_max is not None:
+        if product.get("frame_count", 0) > request.frame_count_max:
+            return False
 
-        # Boolean filters
-        if request.has_video is not None:
-            has_video = bool(product.get("video_url"))
-            if request.has_video != has_video:
-                return False
+    if request.visibility_score_min is not None:
+        score = product.get("visibility_score")
+        if score is None or score < request.visibility_score_min:
+            return False
 
-        if request.has_image is not None:
-            has_image = bool(product.get("primary_image_url"))
-            if request.has_image != has_image:
-                return False
+    if request.visibility_score_max is not None:
+        score = product.get("visibility_score")
+        if score is None or score > request.visibility_score_max:
+            return False
 
-        if request.has_nutrition is not None:
-            nutrition = product.get("nutrition_facts") or {}
-            has_nutrition = len(nutrition) > 0
-            if request.has_nutrition != has_nutrition:
-                return False
-
-        if request.has_description is not None:
-            has_desc = bool(product.get("marketing_description"))
-            if request.has_description != has_desc:
-                return False
-
-        if request.has_prompt is not None:
-            has_prompt = bool(product.get("grounding_prompt"))
-            if request.has_prompt != has_prompt:
-                return False
-
-        if request.has_issues is not None:
-            issues = product.get("issues_detected") or []
-            has_issues = len(issues) > 0
-            if request.has_issues != has_issues:
-                return False
-
-        # Range filters
-        if request.frame_count_min is not None:
-            if product.get("frame_count", 0) < request.frame_count_min:
-                return False
-
-        if request.frame_count_max is not None:
-            if product.get("frame_count", 0) > request.frame_count_max:
-                return False
-
-        if request.visibility_score_min is not None:
-            score = product.get("visibility_score")
-            if score is None or score < request.visibility_score_min:
-                return False
-
-        if request.visibility_score_max is not None:
-            score = product.get("visibility_score")
-            if score is None or score > request.visibility_score_max:
-                return False
-
-        return True
+    return True
 
     return [p for p in all_products if matches_filter(p)]
 
@@ -1389,36 +1351,66 @@ async def export_products_csv(
     request: ExportRequest,
     db: SupabaseService = Depends(get_supabase),
 ) -> StreamingResponse:
-    """Export products as CSV file with ALL fields. Supports all filters."""
-    products = await get_all_filtered_products(db, request)
+    """
+    Export products as CSV file with ALL fields. Supports all filters.
 
-    if not products:
-        raise HTTPException(status_code=404, detail="No products found matching filters")
+    Uses streaming to handle large datasets efficiently without loading
+    all products into memory at once.
+    """
+    async def generate_csv_stream():
+        """Generate CSV data in chunks for streaming."""
+        import io
 
-    output = BytesIO()
-    # Write UTF-8 BOM for Excel compatibility
-    output.write(b"\xef\xbb\xbf")
+        # Write UTF-8 BOM for Excel compatibility
+        yield b"\xef\xbb\xbf"
 
-    # Use TextIOWrapper for CSV writer
-    import io
+        # Write header
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=ALL_FIELD_NAMES, extrasaction="ignore")
+        writer.writeheader()
+        yield buffer.getvalue().encode("utf-8")
 
-    text_output = io.TextIOWrapper(output, encoding="utf-8", newline="", write_through=True)
+        # Stream products in batches
+        product_count = 0
+        page = 1
+        page_size = 1000
 
-    writer = csv.DictWriter(text_output, fieldnames=ALL_FIELD_NAMES, extrasaction="ignore")
-    writer.writeheader()
+        while True:
+            result = await db.get_products(
+                page=page,
+                limit=page_size,
+                search=request.search,
+            )
+            items = result.get("items", [])
+            if not items:
+                break
 
-    for product in products:
-        row = product_to_full_dict(product)
-        writer.writerow(row)
+            # Filter and write products
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=ALL_FIELD_NAMES, extrasaction="ignore")
 
-    text_output.detach()  # Detach to prevent closing BytesIO
-    output.seek(0)
+            for product in items:
+                # Apply client-side filters
+                if matches_export_filter(product, request):
+                    row = product_to_full_dict(product)
+                    writer.writerow(row)
+                    product_count += 1
+
+            if buffer.tell() > 0:  # Only yield if we have data
+                yield buffer.getvalue().encode("utf-8")
+
+            # Check if we got all items
+            total = result.get("total", 0)
+            if len(items) < page_size or (page * page_size) >= total:
+                break
+
+            page += 1
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return StreamingResponse(
-        output,
+        generate_csv_stream(),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=products_{len(products)}_{timestamp}.csv"},
+        headers={"Content-Disposition": f"attachment; filename=products_{timestamp}.csv"},
     )
 
 
@@ -1486,6 +1478,9 @@ async def bulk_delete_products(
     """
     Delete multiple products and ALL related data at once.
 
+    For large batches (50+ products), returns job_id for background processing.
+    For small batches (<50), processes synchronously.
+
     This includes for each product:
     - All frames (product_images table)
     - All storage files (Supabase Storage)
@@ -1495,6 +1490,23 @@ async def bulk_delete_products(
     if not request.product_ids:
         raise HTTPException(status_code=400, detail="No product IDs provided")
 
+    # Threshold for async processing
+    ASYNC_DELETE_THRESHOLD = 50
+
+    # For large batches, use background job
+    if len(request.product_ids) >= ASYNC_DELETE_THRESHOLD:
+        job = await db.create_job({
+            "type": "local_bulk_delete_products",
+            "config": {
+                "product_ids": request.product_ids,
+            }
+        })
+        return {
+            "job_id": job["id"],
+            "message": f"Background job started for deleting {len(request.product_ids)} products"
+        }
+
+    # For small batches, process synchronously
     try:
         result = await db.delete_products_cascade(request.product_ids)
         return {

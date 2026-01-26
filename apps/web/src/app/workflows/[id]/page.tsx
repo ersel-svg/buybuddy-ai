@@ -30,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   NodeConfigDrawer,
   WorkflowParameters,
+  WorkflowTestPanel,
   type NodeData,
   type WorkflowParameter,
   type NodeInfo,
@@ -475,6 +476,7 @@ function WorkflowEditorContent() {
   const [parameters, setParameters] = useState<WorkflowParameter[]>([]);
   const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
   const [parametersOpen, setParametersOpen] = useState(false);
+  const [testPanelOpen, setTestPanelOpen] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -718,18 +720,6 @@ function WorkflowEditorContent() {
     },
     onError: (error: Error) => {
       toast.error(`Failed to save: ${error.message}`);
-    },
-  });
-
-  // Execute workflow mutation
-  const executeMutation = useMutation({
-    mutationFn: () => apiClient.executeWorkflow(workflowId, {}),
-    onSuccess: (data) => {
-      toast.success("Workflow execution started");
-      router.push(`/workflows/executions?execution_id=${data.id}`);
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to execute: ${error.message}`);
     },
   });
 
@@ -1124,15 +1114,11 @@ function WorkflowEditorContent() {
               <TooltipContent>Save (⌘S)</TooltipContent>
             </Tooltip>
             <Button
-              onClick={() => executeMutation.mutate()}
-              disabled={executeMutation.isPending || nodes.length === 0}
+              onClick={() => setTestPanelOpen(true)}
+              disabled={nodes.length === 0}
             >
-              {executeMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4 mr-2" />
-              )}
-              Execute
+              <Play className="h-4 w-4 mr-2" />
+              Test
             </Button>
           </div>
         </div>
@@ -1319,6 +1305,15 @@ function WorkflowEditorContent() {
             setParameters(newParams);
             setHasChanges(true);
           }}
+        />
+
+        {/* Workflow Test Panel */}
+        <WorkflowTestPanel
+          open={testPanelOpen}
+          onClose={() => setTestPanelOpen(false)}
+          workflowId={workflowId}
+          workflowName={workflow?.name || "Workflow"}
+          parameters={parameters}
         />
       </div>
     </div>

@@ -16,6 +16,7 @@ import {
   useFilterState,
   FilterSection,
 } from "@/components/filters/filter-drawer";
+import { JobProgressModal } from "@/components/common/job-progress-modal";
 import {
   ArrowLeft,
   Plus,
@@ -41,6 +42,7 @@ export default function AddProductsPage() {
   );
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [page, setPage] = useState(1);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const limit = 100;
 
   // Filter state hook
@@ -176,9 +178,16 @@ export default function AddProductsPage() {
     mutationFn: (productIds: string[]) =>
       apiClient.addProductsToDataset(id, productIds),
     onSuccess: (result) => {
-      toast.success(`Added ${result.added_count} products to dataset`);
-      queryClient.invalidateQueries({ queryKey: ["dataset", id] });
-      router.push(`/datasets/${id}`);
+      // If backend returns job_id, track it with modal
+      if (result.job_id) {
+        setActiveJobId(result.job_id);
+        toast.success("Background job started for adding products");
+      } else {
+        // Small batch completed synchronously
+        toast.success(`Added ${result.added_count} products to dataset`);
+        queryClient.invalidateQueries({ queryKey: ["dataset", id] });
+        router.push(`/datasets/${id}`);
+      }
     },
     onError: () => {
       toast.error("Failed to add products");
@@ -661,6 +670,23 @@ export default function AddProductsPage() {
         onClearSection={clearSection}
         title="Filter Products"
         description="Filter products to add to dataset"
+      />
+
+      {/* Job Progress Modal */}
+      <JobProgressModal
+        jobId={activeJobId}
+        title="Adding Products to Dataset"
+        onClose={() => {
+          setActiveJobId(null);
+          queryClient.invalidateQueries({ queryKey: ["dataset", id] });
+          router.push(`/datasets/${id}`);
+        }}
+        onComplete={(result) => {
+          toast.success(
+            `Added ${result?.added || 0} products (${result?.skipped || 0} skipped)`
+          );
+        }}
+        invalidateOnComplete={[["dataset", id]]}
       />
     </div>
   );

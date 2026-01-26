@@ -355,6 +355,9 @@ async def create_training_run(
     else:
         raise HTTPException(status_code=400, detail=f"Unknown data source: {request.data_source}")
 
+    print(f"[DEBUG] After get_products_for_training: {len(products)} products")
+    print(f"[DEBUG] First 3 product IDs: {[p['id'] for p in products[:3]]}")
+
     if len(products) < 10:
         raise HTTPException(
             status_code=400,
@@ -425,6 +428,9 @@ async def create_training_run(
     all_labels = list(valid_labels.keys())
     rng.shuffle(all_labels)
 
+    print(f"[DEBUG] After label filtering: {len(all_labels)} valid labels/classes")
+    print(f"[DEBUG] First 3 labels: {all_labels[:3]}")
+
     n = len(all_labels)
     train_end = int(n * request.split_config.train_ratio)
     val_end = train_end + int(n * request.split_config.val_ratio)
@@ -438,6 +444,9 @@ async def create_training_run(
     val_product_ids = [pid for label in val_labels for pid in valid_labels[label]]
     test_product_ids = [pid for label in test_labels for pid in valid_labels[label]]
 
+    print(f"[DEBUG] After split: train={len(train_product_ids)}, val={len(val_product_ids)}, test={len(test_product_ids)}")
+    print(f"[DEBUG] First 3 train product IDs: {train_product_ids[:3]}")
+
     # Build label mapping (for worker)
     label_mapping = {label: idx for idx, label in enumerate(sorted(valid_labels.keys()))}
     num_classes = len(label_mapping)
@@ -446,6 +455,11 @@ async def create_training_run(
     # This is used after training to map predictions back to product info
     all_product_ids = set(train_product_ids + val_product_ids + test_product_ids)
     products_by_id = {p["id"]: p for p in products if p["id"] in all_product_ids}
+
+    print(f"[DEBUG] all_product_ids: {len(all_product_ids)} total products")
+    print(f"[DEBUG] products_by_id: {len(products_by_id)} products found in original products list")
+    print(f"[DEBUG] Missing from products: {len(all_product_ids) - len(products_by_id)}")
+    print(f"[DEBUG] First 3 from all_product_ids: {list(all_product_ids)[:3]}")
 
     identifier_mapping = {}
     for product_id in all_product_ids:
@@ -568,6 +582,9 @@ async def create_training_run(
             "image_config": image_cfg.model_dump(),
             "label_config": request.label_config.model_dump(),
         }
+
+        print(f"[DEBUG] source_config product_ids: {len(source_config['product_ids'])}")
+        print(f"[DEBUG] source_config first 3: {source_config['product_ids'][:3]}")
 
         runpod_job = await runpod_service.start_training_job(
             training_run_id=run["id"],

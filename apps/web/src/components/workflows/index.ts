@@ -15,3 +15,5 @@ export type {
 
 export { WorkflowParameters } from "./WorkflowParameters";
 export type { WorkflowParameter, WorkflowParametersProps } from "./WorkflowParameters";
+
+export { WorkflowTestPanel } from "./WorkflowTestPanel";

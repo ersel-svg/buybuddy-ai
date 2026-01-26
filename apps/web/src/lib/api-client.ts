@@ -759,8 +759,8 @@ class ApiClient {
   async addProductsToDataset(
     datasetId: string,
     productIds: string[]
-  ): Promise<{ added_count: number }> {
-    return this.request<{ added_count: number }>(
+  ): Promise<{ added_count?: number; job_id?: string; message?: string }> {
+    return this.request<{ added_count?: number; job_id?: string; message?: string }>(
       `/api/v1/datasets/${datasetId}/products`,
       {
         method: "POST",
@@ -772,15 +772,19 @@ class ApiClient {
   async addFilteredProductsToDataset(
     datasetId: string,
     filters: ExportFilters
-  ): Promise<{ 
-    added_count: number; 
-    skipped_count?: number; 
+  ): Promise<{
+    added_count?: number;
+    job_id?: string;
+    message?: string;
+    skipped_count?: number;
     total_matching?: number;
     duration_ms?: number;
   }> {
-    return this.request<{ 
-      added_count: number; 
-      skipped_count?: number; 
+    return this.request<{
+      added_count?: number;
+      job_id?: string;
+      message?: string;
+      skipped_count?: number;
       total_matching?: number;
       duration_ms?: number;
     }>(
@@ -1282,6 +1286,30 @@ class ApiClient {
       page?: number;
       limit?: number;
       search?: string;
+      // Product filters
+      status?: string;
+      category?: string;
+      brand?: string;
+      sub_brand?: string;
+      product_name?: string;
+      variant_flavor?: string;
+      container_type?: string;
+      net_quantity?: string;
+      pack_type?: string;
+      manufacturer_country?: string;
+      claims?: string;
+      // Boolean filters
+      has_video?: boolean;
+      has_image?: boolean;
+      has_nutrition?: boolean;
+      has_description?: boolean;
+      has_prompt?: boolean;
+      has_issues?: boolean;
+      // Range filters
+      frame_count_min?: number;
+      frame_count_max?: number;
+      visibility_score_min?: number;
+      visibility_score_max?: number;
     }
   ): Promise<CollectionProductsResponse> {
     return this.request<CollectionProductsResponse>(
@@ -2032,12 +2060,14 @@ class ApiClient {
     page?: number;
     limit?: number;
     status?: string;
+    sort_by?: string;  // "recently_annotated" or undefined
   }): Promise<{
     images: Array<{
       id: string;
       image_id: string;
       status: string;
       annotation_count: number;
+      last_annotated_at: string | null;
       image: { id: string; filename: string; image_url: string; width: number; height: number };
     }>;
     total: number;
@@ -4387,7 +4417,40 @@ class ApiClient {
     }>;
     total: number;
   }> {
-    return this.request("/api/v1/workflows/executions", { params });
+    const response = await this.request<{
+      executions: Array<{
+        id: string;
+        workflow_id: string;
+        workflow_name?: string;
+        status: string;
+        input_data?: Record<string, unknown>;
+        output_data?: Record<string, unknown>;
+        error_message?: string;
+        started_at?: string;
+        completed_at?: string;
+        created_at: string;
+        duration_ms?: number;
+      }>;
+      total: number;
+    }>("/api/v1/workflows/executions", { params });
+
+    // Map API response to expected format
+    return {
+      items: response.executions.map((e) => ({
+        id: e.id,
+        workflow_id: e.workflow_id,
+        workflow_name: e.workflow_name,
+        status: e.status,
+        inputs: e.input_data || {},
+        outputs: e.output_data,
+        error_message: e.error_message,
+        started_at: e.started_at,
+        completed_at: e.completed_at,
+        created_at: e.created_at,
+        total_duration_ms: e.duration_ms,
+      })),
+      total: response.total,
+    };
   }
 
   async getWorkflowExecution(executionId: string): Promise<{

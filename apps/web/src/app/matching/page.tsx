@@ -215,12 +215,13 @@ export default function MatchingPage() {
 
   // Fetch products from selected collection (NEW: collection-based)
   const { data: collectionProductsData, isLoading: isLoadingCollectionProducts } = useQuery({
-    queryKey: ["collection-products", productCollection, { page: productsPage, search: debouncedSearch }],
+    queryKey: ["collection-products", productCollection, { page: productsPage, search: debouncedSearch, ...apiFilters }],
     queryFn: () =>
       apiClient.getCollectionProducts(productCollection, {
         page: productsPage,
         limit: PRODUCTS_PAGE_SIZE,
         search: debouncedSearch || undefined,
+        ...apiFilters,
       }),
     enabled: !!productCollection,
   });
@@ -246,7 +247,7 @@ export default function MatchingPage() {
       const result = await apiClient.getProductCandidates(selectedProductId, {
         min_similarity: debouncedMinSimilarity,
         include_matched: false,
-        limit: 200,
+        limit: 500,
         match_type_filter: matchTypeFilter || undefined,
         product_collection: productCollection || undefined,
         cutout_collection: cutoutCollection || undefined,
@@ -696,6 +697,19 @@ export default function MatchingPage() {
                       <p className="font-mono text-[10px] text-muted-foreground">{product.barcode}</p>
                       <p className="text-xs font-medium truncate">{product.brand_name}</p>
                       <p className="text-[10px] text-muted-foreground truncate">{product.product_name}</p>
+                      {product.frame_counts && (
+                        <div className="flex gap-1.5 mt-0.5">
+                          <span className="text-[9px] text-blue-600" title="Synthetic">
+                            S:{product.frame_counts.synthetic || 0}
+                          </span>
+                          <span className="text-[9px] text-green-600" title="Real">
+                            R:{product.frame_counts.real || 0}
+                          </span>
+                          <span className="text-[9px] text-purple-600" title="Augmented">
+                            A:{product.frame_counts.augmented || 0}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

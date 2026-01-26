@@ -951,7 +951,8 @@ async def _save_predictions_as_annotations(
     """
     Save AI predictions as annotations in the database.
     Auto-creates classes for labels that don't exist.
-    
+    Uses batch insert for performance.
+
     Args:
         dataset_id: Target dataset ID
         predictions_by_image: Dict of image_id -> list of predictions
@@ -962,10 +963,13 @@ async def _save_predictions_as_annotations(
     Returns number of annotations created.
     """
     import random
-    annotations_created = 0
 
     # Cache for class IDs to avoid repeated lookups
     class_cache: dict[str, str] = {}
+
+    # Collect all annotations for batch insert
+    annotations_batch: list[dict] = []
+    now = datetime.utcnow().isoformat()
 
     for image_id, predictions in predictions_by_image.items():
         for pred in predictions:
@@ -975,7 +979,7 @@ async def _save_predictions_as_annotations(
 
             if not label:
                 continue
-            
+
             # Apply class filter if specified (for Roboflow models)
             if filter_classes and label not in filter_classes:
                 continue
@@ -1018,7 +1022,7 @@ async def _save_predictions_as_annotations(
                             "name": label,
                             "display_name": label.replace("_", " ").title(),
                             "color": random.choice(colors),
-                            "created_at": datetime.utcnow().isoformat(),
+                            "created_at": now,
                         }).execute()
                         class_id = new_class_id
                         print(f"[AI Annotation] Created new class: {label} ({new_class_id})")
@@ -1029,9 +1033,8 @@ async def _save_predictions_as_annotations(
                 # Cache the class_id
                 class_cache[label] = class_id
 
-            # Create annotation with separate bbox columns
-            # Worker returns bbox as {x, y, width, height} normalized 0-1
-            annotation_data = {
+            # Add to batch instead of inserting one by one
+            annotations_batch.append({
                 "id": str(uuid.uuid4()),
                 "dataset_id": dataset_id,
                 "image_id": image_id,
@@ -1044,19 +1047,31 @@ async def _save_predictions_as_annotations(
                 "confidence": confidence,
                 "ai_model": model,
                 "is_reviewed": False,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-            }
+                "created_at": now,
+                "updated_at": now,
+            })
 
-            try:
-                supabase_service.client.table("od_annotations").insert(
-                    annotation_data
-                ).execute()
-                annotations_created += 1
-            except Exception as e:
-                print(f"[AI Annotation] Failed to save annotation for {image_id}: {e}")
+    # Batch insert all annotations (in chunks of 500 to avoid payload limits)
+    annotations_created = 0
+    BATCH_SIZE = 500
 
-    # Update annotation counts on dataset and images
+    for i in range(0, len(annotations_batch), BATCH_SIZE):
+        chunk = annotations_batch[i:i + BATCH_SIZE]
+        try:
+            supabase_service.client.table("od_annotations").insert(chunk).execute()
+            annotations_created += len(chunk)
+            print(f"[AI Annotation] Inserted batch {i // BATCH_SIZE + 1}: {len(chunk)} annotations")
+        except Exception as e:
+            print(f"[AI Annotation] Failed to insert batch: {e}")
+            # Fallback to one-by-one for this chunk
+            for annotation in chunk:
+                try:
+                    supabase_service.client.table("od_annotations").insert(annotation).execute()
+                    annotations_created += 1
+                except Exception as inner_e:
+                    print(f"[AI Annotation] Failed single insert: {inner_e}")
+
+    # Update annotation counts on dataset, classes, and images
     if annotations_created > 0:
         try:
             # Recalculate dataset annotation count
@@ -1068,15 +1083,37 @@ async def _save_predictions_as_annotations(
                 "annotation_count": total_count
             }).eq("id", dataset_id).execute()
 
-            # Update image annotation counts
-            for image_id in predictions_by_image.keys():
+            # Update class annotation counts (for all classes that were used)
+            for class_id in set(class_cache.values()):
+                class_count_result = supabase_service.client.table("od_annotations").select(
+                    "id", count="exact"
+                ).eq("dataset_id", dataset_id).eq("class_id", class_id).execute()
+                class_count = class_count_result.count or 0
+                supabase_service.client.table("od_classes").update({
+                    "annotation_count": class_count
+                }).eq("id", class_id).execute()
+
+            # Update image annotation counts and last_annotated_at (batch for efficiency)
+            image_ids = list(predictions_by_image.keys())
+            for image_id in image_ids:
                 img_count_result = supabase_service.client.table("od_annotations").select(
                     "id", count="exact"
                 ).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
                 img_count = img_count_result.count or 0
                 supabase_service.client.table("od_dataset_images").update({
-                    "annotation_count": img_count
+                    "annotation_count": img_count,
+                    "last_annotated_at": now,  # Track when this image was last annotated
                 }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+
+            # Update annotated_image_count on dataset (count images with annotation_count > 0)
+            annotated_images_result = supabase_service.client.table("od_dataset_images").select(
+                "id", count="exact"
+            ).eq("dataset_id", dataset_id).gt("annotation_count", 0).execute()
+            annotated_image_count = annotated_images_result.count or 0
+            supabase_service.client.table("od_datasets").update({
+                "annotated_image_count": annotated_image_count
+            }).eq("id", dataset_id).execute()
+            print(f"[AI Annotation] Updated annotated_image_count: {annotated_image_count}")
 
         except Exception as e:
             print(f"[AI Annotation] Failed to update counts: {e}")

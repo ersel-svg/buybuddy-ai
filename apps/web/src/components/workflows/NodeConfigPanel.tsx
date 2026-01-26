@@ -6278,36 +6278,36 @@ function ConditionConfig({ config, onConfigChange, advancedOpen, setAdvancedOpen
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="" disabled className="text-xs font-medium text-muted-foreground">
-                    — Comparison —
-                  </SelectItem>
-                  {operatorGroups.comparison.map(op => (
-                    <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
-                  ))}
-                  <SelectItem value="" disabled className="text-xs font-medium text-muted-foreground">
-                    — Range —
-                  </SelectItem>
-                  {operatorGroups.range.map(op => (
-                    <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
-                  ))}
-                  <SelectItem value="" disabled className="text-xs font-medium text-muted-foreground">
-                    — String —
-                  </SelectItem>
-                  {operatorGroups.string.map(op => (
-                    <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
-                  ))}
-                  <SelectItem value="" disabled className="text-xs font-medium text-muted-foreground">
-                    — Array —
-                  </SelectItem>
-                  {operatorGroups.array.map(op => (
-                    <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
-                  ))}
-                  <SelectItem value="" disabled className="text-xs font-medium text-muted-foreground">
-                    — Type Check —
-                  </SelectItem>
-                  {operatorGroups.type.map(op => (
-                    <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel className="text-xs font-medium text-muted-foreground">Comparison</SelectLabel>
+                    {operatorGroups.comparison.map(op => (
+                      <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                  <SelectGroup>
+                    <SelectLabel className="text-xs font-medium text-muted-foreground">Range</SelectLabel>
+                    {operatorGroups.range.map(op => (
+                      <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                  <SelectGroup>
+                    <SelectLabel className="text-xs font-medium text-muted-foreground">String</SelectLabel>
+                    {operatorGroups.string.map(op => (
+                      <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                  <SelectGroup>
+                    <SelectLabel className="text-xs font-medium text-muted-foreground">Array</SelectLabel>
+                    {operatorGroups.array.map(op => (
+                      <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                  <SelectGroup>
+                    <SelectLabel className="text-xs font-medium text-muted-foreground">Type Check</SelectLabel>
+                    {operatorGroups.type.map(op => (
+                      <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>

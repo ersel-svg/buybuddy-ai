@@ -422,12 +422,24 @@ async def match_products(request: MatchRequest) -> MatchResponse:
     """
     Match uploaded rows against system products using the provided mapping.
     Uses priority-based matching: first match wins.
+
+    For large datasets (1000+ rows), use /match/async endpoint instead.
     """
     if not request.rows:
         raise HTTPException(status_code=400, detail="No rows to match")
 
     if not request.mapping_config.match_rules:
         raise HTTPException(status_code=400, detail="No match rules provided")
+
+    # Threshold for async processing
+    ASYNC_MATCH_THRESHOLD = 1000
+
+    # For large batches, recommend async
+    if len(request.rows) >= ASYNC_MATCH_THRESHOLD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many rows ({len(request.rows)}). Use /match/async endpoint for {ASYNC_MATCH_THRESHOLD}+ rows"
+        )
 
     # Sort rules by priority
     sorted_rules = sorted(request.mapping_config.match_rules, key=lambda r: r.priority)
@@ -517,6 +529,46 @@ async def match_products(request: MatchRequest) -> MatchResponse:
             match_rate=round(match_rate, 1)
         )
     )
+
+
+@router.post("/match/async")
+async def match_products_async(request: MatchRequest):
+    """
+    Async version: Match products as a background job.
+
+    Use this for large datasets (1000+ rows) to avoid memory issues and timeouts.
+    Returns job_id for progress tracking.
+    """
+    if not request.rows:
+        raise HTTPException(status_code=400, detail="No rows to match")
+
+    if not request.mapping_config.match_rules:
+        raise HTTPException(status_code=400, detail="No match rules provided")
+
+    # Convert match rules to serializable format
+    match_rules = [
+        {
+            "source_column": r.source_column,
+            "target_field": r.target_field,
+            "priority": r.priority
+        }
+        for r in request.mapping_config.match_rules
+    ]
+
+    # Create job record
+    job = await supabase_service.create_job({
+        "type": "local_bulk_product_matcher",
+        "config": {
+            "rows": request.rows,
+            "match_rules": match_rules,
+        }
+    })
+
+    return {
+        "job_id": job["id"],
+        "status": "pending",
+        "message": f"Matching job queued for {len(request.rows)} rows",
+    }
 
 
 @router.post("/create-scan-requests", response_model=BulkScanRequestResponse)

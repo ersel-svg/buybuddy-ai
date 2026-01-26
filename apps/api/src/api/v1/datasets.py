@@ -331,11 +331,11 @@ async def add_products_to_dataset(
     """Add products to dataset.
 
     Supports two modes:
-    1. product_ids: Add specific products by their IDs
-    2. filters: Add all products matching filter criteria (for "Select All Filtered")
-    
-    Filter mode uses a server-side RPC function for efficient bulk insert
-    that handles 10K+ products without timeout.
+    1. product_ids: Add specific products by their IDs (sync <50, async 50+)
+    2. filters: Add all products matching filter criteria (always async)
+
+    For large batches (50+ products), returns job_id for progress tracking.
+    For small batches (<50), returns added_count immediately.
     """
     existing = await db.get_dataset(dataset_id)
     if not existing:
@@ -348,21 +348,34 @@ async def add_products_to_dataset(
             detail="Either product_ids or filters must be provided"
         )
 
-    # Mode 1: Add specific products by ID
+    # Mode 1: Add specific products by ID (sync for small batches)
     if request.product_ids:
-        added_count = await db.add_products_to_dataset(dataset_id, request.product_ids)
-        return {"added_count": added_count}
+        # For small batches (<50), process synchronously
+        if len(request.product_ids) < 50:
+            added_count = await db.add_products_to_dataset(dataset_id, request.product_ids)
+            return {"added_count": added_count}
 
-    # Mode 2: Add all products matching filters (uses RPC for performance)
+        # For large batches (50+), use background job
+        job = await db.create_job({
+            "type": "local_bulk_add_to_dataset",
+            "config": {
+                "dataset_id": dataset_id,
+                "product_ids": request.product_ids,
+            }
+        })
+        return {"job_id": job["id"], "message": "Background job started"}
+
+    # Mode 2: Add all products matching filters (always async)
     if request.filters:
-        result = await db.add_filtered_products_to_dataset(dataset_id, request.filters)
-        # Return full result with additional stats
-        return {
-            "added_count": result.get("added_count", 0),
-            "skipped_count": result.get("skipped_count", 0),
-            "total_matching": result.get("total_matching", 0),
-            "duration_ms": result.get("duration_ms"),
-        }
+        # Create background job for filtered products
+        job = await db.create_job({
+            "type": "local_bulk_add_to_dataset",
+            "config": {
+                "dataset_id": dataset_id,
+                "filters": request.filters,
+            }
+        })
+        return {"job_id": job["id"], "message": "Background job started"}
 
     return {"added_count": 0}
 

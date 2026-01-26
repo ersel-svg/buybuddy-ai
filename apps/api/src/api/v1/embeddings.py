@@ -1359,6 +1359,141 @@ async def delete_qdrant_collection(
 
 
 # ===========================================
+# Collection Index Management
+# ===========================================
+
+
+class CreateIndexRequest(BaseModel):
+    """Request to create a payload index."""
+    field_name: str
+    field_type: str = "keyword"  # keyword, integer, float, bool, geo, text
+
+
+class IndexInfo(BaseModel):
+    """Info about a payload index."""
+    field_name: str
+    data_type: str
+    points: int = 0
+
+
+class EnsureIndexesResponse(BaseModel):
+    """Response from ensure_indexes operation."""
+    collection_name: str
+    created: list[str]
+    existing: list[str]
+    failed: list[dict]
+
+
+@router.get("/collections/{collection_name}/indexes")
+async def get_collection_indexes(collection_name: str):
+    """
+    Get all payload indexes on a collection.
+    """
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    try:
+        indexes = await qdrant_service.get_collection_indexes(collection_name)
+        return {"collection_name": collection_name, "indexes": indexes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get indexes: {str(e)}")
+
+
+@router.post("/collections/{collection_name}/indexes")
+async def create_collection_index(
+    collection_name: str,
+    request: CreateIndexRequest,
+):
+    """
+    Create a payload index on a collection for efficient filtering.
+
+    Field types:
+    - keyword: For string fields (source, product_id, barcode)
+    - bool: For boolean fields (is_primary)
+    - integer: For integer fields
+    - float: For float fields
+    - text: For full-text search
+    """
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    try:
+        await qdrant_service.create_payload_index(
+            collection_name=collection_name,
+            field_name=request.field_name,
+            field_type=request.field_type,
+        )
+        return {
+            "status": "created",
+            "collection_name": collection_name,
+            "field_name": request.field_name,
+            "field_type": request.field_type,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create index: {str(e)}")
+
+
+@router.post("/collections/{collection_name}/indexes/ensure")
+async def ensure_collection_indexes(collection_name: str):
+    """
+    Ensure all required indexes exist on a collection.
+    Creates missing indexes without affecting existing ones.
+
+    Required indexes:
+    - source (keyword): Filter by source type (product/cutout)
+    - is_primary (bool): Filter primary frames
+    - product_id (keyword): Filter by product
+    - barcode (keyword): Filter by barcode
+    """
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    try:
+        results = await qdrant_service.ensure_indexes(collection_name)
+        return EnsureIndexesResponse(
+            collection_name=collection_name,
+            created=results["created"],
+            existing=results["existing"],
+            failed=results["failed"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to ensure indexes: {str(e)}")
+
+
+@router.post("/collections/ensure-all-indexes")
+async def ensure_all_collections_indexes():
+    """
+    Ensure required indexes exist on ALL collections.
+    Useful for migrating existing collections.
+    """
+    if not qdrant_service.is_configured():
+        raise HTTPException(status_code=500, detail="Qdrant not configured")
+
+    try:
+        collections = await qdrant_service.list_collections()
+        results = {}
+
+        for collection_name in collections:
+            try:
+                result = await qdrant_service.ensure_indexes(collection_name)
+                results[collection_name] = {
+                    "status": "success",
+                    "created": result["created"],
+                    "existing": result["existing"],
+                    "failed": result["failed"],
+                }
+            except Exception as e:
+                results[collection_name] = {
+                    "status": "error",
+                    "error": str(e),
+                }
+
+        return {"collections": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to ensure indexes: {str(e)}")
+
+
+# ===========================================
 # Collection Products Endpoint
 # ===========================================
 
@@ -1379,28 +1514,62 @@ async def get_collection_products(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(None, description="Search by product name or barcode"),
+    # Product filters (comma-separated for multi-select)
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None),
+    sub_brand: Optional[str] = Query(None),
+    product_name: Optional[str] = Query(None),
+    variant_flavor: Optional[str] = Query(None),
+    container_type: Optional[str] = Query(None),
+    net_quantity: Optional[str] = Query(None),
+    pack_type: Optional[str] = Query(None),
+    manufacturer_country: Optional[str] = Query(None),
+    claims: Optional[str] = Query(None),
+    # Boolean filters
+    has_video: Optional[bool] = Query(None),
+    has_image: Optional[bool] = Query(None),
+    has_nutrition: Optional[bool] = Query(None),
+    has_description: Optional[bool] = Query(None),
+    has_prompt: Optional[bool] = Query(None),
+    has_issues: Optional[bool] = Query(None),
+    # Range filters
+    frame_count_min: Optional[int] = Query(None),
+    frame_count_max: Optional[int] = Query(None),
+    visibility_score_min: Optional[float] = Query(None),
+    visibility_score_max: Optional[float] = Query(None),
     db: SupabaseService = Depends(get_supabase),
 ):
     """
     Get products that have embeddings in a specific Qdrant collection.
 
-    OPTIMIZED: Uses is_primary=True filter to get only one point per product,
-    and uses Qdrant payload data directly to avoid DB queries.
+    Strategy:
+    1. Get product_ids from Qdrant collection
+    2. Apply filters via DB query
+    3. Return paginated results with primary_image_url
     """
     if not qdrant_service.is_configured():
         raise HTTPException(status_code=500, detail="Qdrant not configured")
 
     try:
-        # Filter: only primary frames (one per product) + source=product
+        # Try optimized path first: is_primary=True filter
         filter_conditions = {"source": "product", "is_primary": True}
-
-        # Get primary points only (one per product)
         all_points, _ = await qdrant_service.scroll(
             collection_name=collection_name,
             filter_conditions=filter_conditions,
-            limit=10000,
+            limit=50000,
             with_vectors=False,
         )
+
+        # Fallback: if no is_primary points, get all and deduplicate
+        if not all_points:
+            filter_conditions = {"source": "product"}
+            all_points, _ = await qdrant_service.scroll(
+                collection_name=collection_name,
+                filter_conditions=filter_conditions,
+                limit=50000,
+                with_vectors=False,
+            )
 
         if not all_points:
             return CollectionProductsResponse(
@@ -1411,54 +1580,147 @@ async def get_collection_products(
                 collection_name=collection_name,
             )
 
-        # Build products from payload (avoid DB query)
-        products = []
+        # Extract unique product_ids from Qdrant
+        product_ids_in_collection = set()
         for point in all_points:
             payload = point.get("payload", {})
             product_id = payload.get("product_id")
-            if not product_id:
-                continue
+            if product_id:
+                product_ids_in_collection.add(product_id)
 
-            products.append({
-                "id": product_id,
-                "barcode": payload.get("barcode"),
-                "brand_name": payload.get("brand_name"),
-                "product_name": payload.get("product_name"),
-                # Build image URL from product_id (frames path pattern)
-                "primary_image_url": None,  # Will fetch if needed
-                "frames_path": None,
-                "frame_count": 1,
-            })
+        # Check if any filters are applied
+        has_filters = any([
+            search, status, category, brand, sub_brand, product_name,
+            variant_flavor, container_type, net_quantity, pack_type,
+            manufacturer_country, claims, has_video is not None,
+            has_image is not None, has_nutrition is not None,
+            has_description is not None, has_issues is not None,
+            frame_count_min is not None, frame_count_max is not None,
+            visibility_score_min is not None, visibility_score_max is not None
+        ])
 
-        # Apply search filter in memory
-        if search:
-            search_lower = search.lower()
-            products = [
-                p for p in products
-                if (p.get("product_name") and search_lower in p["product_name"].lower()) or
-                   (p.get("barcode") and search_lower in p["barcode"].lower()) or
-                   (p.get("brand_name") and search_lower in p["brand_name"].lower())
-            ]
+        if has_filters:
+            # Strategy: Query DB with filters first, then intersect with Qdrant IDs
+            query = db.client.table("products").select(
+                "id, barcode, brand_name, product_name, primary_image_url, frames_path, frame_count",
+                count="exact"
+            )
 
-        total_count = len(products)
+            # Apply text search
+            if search:
+                query = query.or_(f"product_name.ilike.%{search}%,barcode.ilike.%{search}%,brand_name.ilike.%{search}%")
 
-        # Paginate
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        paginated = products[start_idx:end_idx]
+            # Apply comma-separated filters (multi-select)
+            if status:
+                query = query.in_("status", status.split(","))
+            if category:
+                query = query.in_("category", category.split(","))
+            if brand:
+                query = query.in_("brand_name", brand.split(","))
+            if sub_brand:
+                query = query.in_("sub_brand", sub_brand.split(","))
+            if product_name:
+                query = query.in_("product_name", product_name.split(","))
+            if variant_flavor:
+                query = query.in_("variant_flavor", variant_flavor.split(","))
+            if container_type:
+                query = query.in_("container_type", container_type.split(","))
+            if net_quantity:
+                query = query.in_("net_quantity", net_quantity.split(","))
+            if pack_type:
+                query = query.in_("pack_type", pack_type.split(","))
+            if manufacturer_country:
+                query = query.in_("manufacturer_country", manufacturer_country.split(","))
+            if claims:
+                for claim in claims.split(","):
+                    query = query.ilike("claims", f"%{claim}%")
 
-        # Fetch full product details for paginated results only
+            # Apply boolean filters
+            if has_video is not None:
+                if has_video:
+                    query = query.not_.is_("video_url", "null")
+                else:
+                    query = query.is_("video_url", "null")
+            if has_image is not None:
+                if has_image:
+                    query = query.not_.is_("primary_image_url", "null")
+                else:
+                    query = query.is_("primary_image_url", "null")
+            if has_nutrition is not None:
+                if has_nutrition:
+                    query = query.not_.is_("nutrition_info", "null")
+                else:
+                    query = query.is_("nutrition_info", "null")
+            if has_description is not None:
+                if has_description:
+                    query = query.not_.is_("description", "null")
+                else:
+                    query = query.is_("description", "null")
+            if has_issues is not None:
+                if has_issues:
+                    query = query.not_.is_("issues", "null").neq("issues", "[]")
+                else:
+                    query = query.or_("issues.is.null,issues.eq.[]")
+
+            # Apply range filters
+            if frame_count_min is not None:
+                query = query.gte("frame_count", frame_count_min)
+            if frame_count_max is not None:
+                query = query.lte("frame_count", frame_count_max)
+            if visibility_score_min is not None:
+                query = query.gte("visibility_score", visibility_score_min)
+            if visibility_score_max is not None:
+                query = query.lte("visibility_score", visibility_score_max)
+
+            # Get all filtered products (limit high enough)
+            result = query.limit(50000).execute()
+            filtered_products = result.data or []
+
+            # Intersect with Qdrant collection
+            products = [p for p in filtered_products if p["id"] in product_ids_in_collection]
+            total_count = len(products)
+
+            # Paginate in memory
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            paginated = products[start_idx:end_idx]
+
+        else:
+            # No filters: paginate directly from Qdrant IDs, fetch from DB
+            product_ids_list = list(product_ids_in_collection)
+            total_count = len(product_ids_list)
+
+            # Paginate IDs
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            paginated_ids = product_ids_list[start_idx:end_idx]
+
+            # Fetch only paginated products from DB
+            if paginated_ids:
+                result = db.client.table("products").select(
+                    "id, barcode, brand_name, product_name, primary_image_url, frames_path, frame_count"
+                ).in_("id", paginated_ids).execute()
+
+                # Maintain order
+                details_map = {p["id"]: p for p in (result.data or [])}
+                paginated = [details_map.get(pid, {"id": pid}) for pid in paginated_ids if pid in details_map]
+            else:
+                paginated = []
+
+        # Add frame_counts for paginated products
         if paginated:
-            product_ids = [p["id"] for p in paginated]
-            products_result = db.client.table("products").select(
-                "id, barcode, brand_name, product_name, primary_image_url, frames_path, frame_count"
-            ).in_("id", product_ids).execute()
-
-            # Create lookup map
-            details_map = {p["id"]: p for p in (products_result.data or [])}
-
-            # Merge with full details
-            paginated = [details_map.get(p["id"], p) for p in paginated]
+            paginated_product_ids = [p["id"] for p in paginated]
+            legacy_counts = {p["id"]: p.get("frame_count", 0) for p in paginated}
+            frame_counts_map = await db.get_batch_frame_counts(
+                paginated_product_ids,
+                check_storage=False,
+                legacy_frame_counts=legacy_counts
+            )
+            for product in paginated:
+                product["frame_counts"] = frame_counts_map.get(
+                    product["id"],
+                    {"synthetic": 0, "real": 0, "augmented": 0}
+                )
 
         return CollectionProductsResponse(
             products=paginated,

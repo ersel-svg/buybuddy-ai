@@ -2992,6 +2992,85 @@ class SupabaseService:
 
         return await self.update_cutout(cutout_id, data)
 
+    async def bulk_match_cutouts_to_product(
+        self,
+        cutout_ids: list[str],
+        product_id: str,
+        similarity_scores: Optional[list[float]] = None,
+        matched_by: Optional[str] = None,
+    ) -> tuple[int, list[str]]:
+        """
+        Bulk match multiple cutouts to a product in a single operation.
+
+        Returns:
+            Tuple of (matched_count, list of image_urls)
+        """
+        if not cutout_ids:
+            return 0, []
+
+        # First, get all cutouts in one query
+        response = (
+            self.client.table("cutout_images")
+            .select("id, image_url")
+            .in_("id", cutout_ids)
+            .execute()
+        )
+        cutouts = response.data or []
+
+        if not cutouts:
+            return 0, []
+
+        # Build update data
+        matched_at = datetime.utcnow().isoformat()
+        base_data = {
+            "matched_product_id": product_id,
+            "matched_at": matched_at,
+        }
+        if matched_by:
+            base_data["matched_by"] = matched_by
+
+        # If we have similarity scores, we need individual updates
+        # Otherwise, we can do a bulk update
+        if similarity_scores and len(similarity_scores) == len(cutout_ids):
+            # Create a mapping of cutout_id to similarity
+            similarity_map = dict(zip(cutout_ids, similarity_scores))
+
+            # Update each cutout (but batch the queries where possible)
+            # Group by same similarity to reduce queries
+            from collections import defaultdict
+            by_similarity = defaultdict(list)
+            for cid in cutout_ids:
+                sim = similarity_map.get(cid)
+                by_similarity[sim].append(cid)
+
+            matched_count = 0
+            for sim, ids in by_similarity.items():
+                update_data = {**base_data}
+                if sim is not None:
+                    update_data["match_similarity"] = sim
+
+                result = (
+                    self.client.table("cutout_images")
+                    .update(update_data)
+                    .in_("id", ids)
+                    .execute()
+                )
+                matched_count += len(result.data) if result.data else 0
+        else:
+            # Bulk update all at once (no individual similarities)
+            result = (
+                self.client.table("cutout_images")
+                .update(base_data)
+                .in_("id", cutout_ids)
+                .execute()
+            )
+            matched_count = len(result.data) if result.data else 0
+
+        # Extract image URLs
+        image_urls = [c["image_url"] for c in cutouts if c.get("image_url")]
+
+        return matched_count, image_urls
+
     async def get_cutout_stats(self) -> dict[str, int]:
         """Get cutout statistics."""
         # Total count

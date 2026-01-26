@@ -505,10 +505,10 @@ async def match_cutouts_to_product(
     db: SupabaseService = Depends(get_supabase),
 ):
     """
-    Match multiple cutouts to a product.
+    Match multiple cutouts to a product (bulk operation).
 
     This will:
-    1. Update each cutout's matched_product_id
+    1. Update all cutouts' matched_product_id in bulk
     2. Add cutout images as real images to the product
     """
     # Verify product exists
@@ -516,41 +516,24 @@ async def match_cutouts_to_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    matched_count = 0
-    image_urls = []
+    # Bulk match all cutouts at once
+    matched_count, image_urls = await db.bulk_match_cutouts_to_product(
+        cutout_ids=request.cutout_ids,
+        product_id=product_id,
+        similarity_scores=request.similarity_scores,
+        matched_by=current_user.username if current_user else None,
+    )
 
-    for i, cutout_id in enumerate(request.cutout_ids):
-        # Get cutout
-        cutout = await db.get_cutout(cutout_id)
-        if not cutout:
-            continue
-
-        # Get similarity score if provided
-        similarity = None
-        if request.similarity_scores and i < len(request.similarity_scores):
-            similarity = request.similarity_scores[i]
-
-        # Update cutout with match
-        updated = await db.match_cutout_to_product(
-            cutout_id=cutout_id,
-            product_id=product_id,
-            similarity=similarity,
-            matched_by=current_user.username if current_user else None,
-        )
-
-        if updated:
-            matched_count += 1
-            image_urls.append(cutout["image_url"])
-
-    # Add cutout images as real images to product
+    # Add cutout images as real images to product (already bulk)
+    images_added = 0
     if image_urls:
-        await db.add_real_images(product_id, image_urls)
+        images_added = await db.add_real_images(product_id, image_urls)
 
     return {
         "status": "success",
         "matched_count": matched_count,
         "total_requested": len(request.cutout_ids),
-        "images_added": len(image_urls),
+        "images_added": images_added,
     }
 
 
