@@ -100,27 +100,12 @@ class AuthService:
                 )
 
                 if resp.status_code == 401:
-                    # In debug mode, accept any token
-                    if settings.debug:
-                        user_info = UserInfo(username="dev_user", token=token)
-                        self._token_cache[token] = user_info
-                        return user_info
                     raise InvalidTokenError()
 
                 if resp.status_code != 200:
-                    # Non-401 errors might be temporary - accept token in dev mode
-                    if settings.debug:
-                        user_info = UserInfo(username="dev_user", token=token)
-                        self._token_cache[token] = user_info
-                        return user_info
                     raise InvalidTokenError(f"Token validation failed: {resp.status_code}")
 
             except httpx.RequestError:
-                # Network error - in dev mode, accept the token anyway
-                if settings.debug:
-                    user_info = UserInfo(username="dev_user", token=token)
-                    self._token_cache[token] = user_info
-                    return user_info
                 raise InvalidTokenError("Unable to validate token")
 
         # Token is valid - cache it with unknown username

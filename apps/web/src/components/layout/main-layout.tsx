@@ -1,9 +1,11 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
 import { type ReactNode } from "react";
+import { getToken } from "@/lib/auth";
 
 interface MainLayoutProps {
   children: ReactNode;
@@ -17,6 +19,8 @@ const FULLSCREEN_ROUTES = ["/od/annotate"];
 
 export function MainLayout({ children }: MainLayoutProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const [isChecking, setIsChecking] = useState(true);
 
   // Check if current path is an auth route (no sidebar/header)
   const isAuthRoute = AUTH_ROUTES.some((route) => pathname.startsWith(route));
@@ -24,9 +28,33 @@ export function MainLayout({ children }: MainLayoutProps) {
   // Check if current path needs fullscreen layout
   const isFullscreenRoute = FULLSCREEN_ROUTES.some((route) => pathname.startsWith(route));
 
+  useEffect(() => {
+    // Skip auth check for auth routes
+    if (isAuthRoute) {
+      setIsChecking(false);
+      return;
+    }
+
+    const token = getToken();
+    if (!token) {
+      router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+    } else {
+      setIsChecking(false);
+    }
+  }, [pathname, isAuthRoute, router]);
+
   // Auth routes render without layout chrome
   if (isAuthRoute) {
     return <>{children}</>;
+  }
+
+  // Show nothing while checking auth (prevents flash of content)
+  if (isChecking) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
   }
 
   return (

@@ -47,12 +47,16 @@ export function getUser(): AuthUser | null {
 
 /**
  * Store auth credentials after login.
+ * Saves to both localStorage (for client) and cookie (for middleware).
  */
 export function setAuth(token: string, username: string): void {
   if (typeof window === "undefined") return;
 
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, username);
+
+  // Set cookie for middleware (httpOnly not possible from client, but still useful for SSR)
+  document.cookie = `buybuddy_auth_token=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
 }
 
 /**
@@ -63,6 +67,9 @@ export function clearAuth(): void {
 
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+
+  // Clear cookie
+  document.cookie = "buybuddy_auth_token=; path=/; max-age=0";
 }
 
 /**
