@@ -917,6 +917,15 @@ def handler(job: dict) -> dict:
                 model_type,
             )
 
+        # Build class_mapping in inference format: {index: class_name}
+        # Training format from supabase_fetcher: {class_uuid: index}
+        # Inference format needed: {0: "class_name", 1: "other_class"}
+        inference_class_mapping = None
+        if url_dataset_data:
+            class_names = url_dataset_data.get("class_names", [])
+            if class_names:
+                inference_class_mapping = {i: name for i, name in enumerate(class_names)}
+
         # Update status to completed
         update_training_run(
             training_run_id=training_run_id,
@@ -926,7 +935,7 @@ def handler(job: dict) -> dict:
             total_epochs=result.get("total_epochs", 0),
             metrics=result.get("best_metrics", {}),
             model_url=model_url,
-            class_mapping=url_dataset_data.get("class_mapping") if url_dataset_data else None,
+            class_mapping=inference_class_mapping,
         )
 
         # Clear current training run

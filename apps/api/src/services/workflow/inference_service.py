@@ -48,9 +48,15 @@ class InferenceService:
         model_source: str = "pretrained",
         input_size: Optional[int] = None,
         agnostic_nms: bool = False,
+        # Open-vocabulary detection params
+        text_prompt: Optional[str] = None,  # For Grounding DINO: "person. car. dog."
+        text_queries: Optional[List[str]] = None,  # For OWL-ViT: ["a cat", "a dog"]
     ) -> Dict[str, Any]:
         """
         Run object detection inference.
+
+        Supports both fixed-vocabulary (YOLO, RT-DETR, D-FINE) and
+        open-vocabulary detection (Grounding DINO, OWL-ViT).
 
         Args:
             model_id: Model ID from wf_pretrained_models or od_trained_models
@@ -61,6 +67,8 @@ class InferenceService:
             model_source: "pretrained" or "trained"
             input_size: Input resolution (e.g., 640)
             agnostic_nms: Use class-agnostic NMS
+            text_prompt: Text prompt for Grounding DINO (e.g., "person. car. dog.")
+            text_queries: Text queries for OWL-ViT (e.g., ["a photo of a cat"])
 
         Returns:
             {
@@ -113,6 +121,14 @@ class InferenceService:
         # Add optional params
         if input_size:
             job_input["config"]["input_size"] = input_size
+
+        # Open-vocabulary detection params
+        if text_prompt:
+            job_input["text_prompt"] = text_prompt
+            job_input["config"]["text_prompt"] = text_prompt
+        if text_queries:
+            job_input["text_queries"] = text_queries
+            job_input["config"]["text_queries"] = text_queries
 
         # Submit to RunPod
         try:
@@ -400,6 +416,109 @@ class InferenceService:
             )
             results.append(result)
         return results
+
+    async def segment(
+        self,
+        model_id: str,
+        image: Image.Image,
+        model_source: str = "pretrained",
+        input_boxes: Optional[List[List[float]]] = None,
+        input_points: Optional[List[List[float]]] = None,
+        input_labels: Optional[List[int]] = None,
+        multimask_output: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Run SAM segmentation inference.
+
+        Args:
+            model_id: Model ID from wf_pretrained_models (sam2-base, sam2-large, etc.)
+            image: PIL Image to segment
+            model_source: "pretrained" or "trained"
+            input_boxes: List of bounding boxes [[x1,y1,x2,y2], ...] in pixel coordinates
+            input_points: List of point coordinates [[x, y], ...]
+            input_labels: List of point labels (1=foreground, 0=background)
+            multimask_output: Return multiple mask candidates per prompt
+
+        Returns:
+            {
+                "masks": [
+                    {
+                        "id": 0,
+                        "score": 0.98,
+                        "area": 12345,
+                        "area_ratio": 0.05,
+                        "rle": {"counts": [...], "size": [H, W]},
+                        "bbox": {"x1": 0.1, "y1": 0.2, "x2": 0.5, "y2": 0.8},
+                    },
+                    ...
+                ],
+                "count": 5,
+                "image_size": {"width": 1920, "height": 1080},
+            }
+
+        Raises:
+            ValueError: If model not found
+            RuntimeError: If inference fails
+        """
+        # Get model info from database
+        model_info = await self.model_loader.get_segmentation_model_info(model_id, model_source)
+        if not model_info:
+            raise ValueError(f"Segmentation model not found: {model_id} (source: {model_source})")
+
+        logger.info(
+            f"Running segmentation inference: model={model_info.name} ({model_info.model_type}), "
+            f"source={model_source}"
+        )
+
+        # Prepare job input
+        job_input = {
+            "task": "segmentation",
+            "model_id": model_id,
+            "model_source": model_source,
+            "model_type": model_info.model_type,
+            "checkpoint_url": model_info.checkpoint_url,
+            "image": self._image_to_base64(image),
+            "input_boxes": input_boxes,
+            "input_points": input_points,
+            "input_labels": input_labels,
+            "config": {
+                "multimask_output": multimask_output,
+            }
+        }
+
+        # Submit to RunPod
+        try:
+            result = await runpod_service.submit_job_sync(
+                endpoint_type=EndpointType.INFERENCE,
+                input_data=job_input,
+                timeout=120,
+            )
+
+            output = result.get("output", {})
+            if not output.get("success"):
+                error_msg = output.get("error", result.get("error", "Unknown error"))
+                logger.error(f"Segmentation inference failed: {error_msg}")
+                raise RuntimeError(f"Segmentation inference failed: {error_msg}")
+
+            segmentation_result = output.get("result", {})
+            if "masks" not in segmentation_result:
+                raise RuntimeError("Invalid response: missing 'masks' field")
+
+            logger.info(
+                f"Segmentation complete: {segmentation_result['count']} masks"
+            )
+
+            return segmentation_result
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"RunPod HTTP error: {e}")
+            raise RuntimeError(f"RunPod request failed: {e}")
+        except httpx.TimeoutException:
+            logger.error(f"RunPod timeout after 120s")
+            raise RuntimeError("Inference timeout - GPU worker may be cold starting")
+        except Exception as e:
+            logger.exception(f"Unexpected inference error")
+            raise RuntimeError(f"Inference error: {e}")
 
     def _image_to_base64(self, image: Image.Image) -> str:
         """

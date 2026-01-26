@@ -99,13 +99,17 @@ class ModelLoader:
 
                 # Use model_id as model_type for worker (yolo11n, yolov8n, etc.)
                 # Worker expects model_type to be the actual model identifier
+                # Handle None classes gracefully (e.g., Grounding DINO has dynamic classes)
+                classes = result.data.get("classes")
+                class_mapping = {i: c for i, c in enumerate(classes)} if classes else None
+
                 return ModelInfo(
                     id=result.data["id"],
                     name=result.data["name"],
                     model_type=result.data["id"],  # Use model ID for worker compatibility
                     source="pretrained",
                     checkpoint_url=result.data.get("model_path"),
-                    class_mapping={i: c for i, c in enumerate(result.data.get("classes", []))},
+                    class_mapping=class_mapping,
                     config=result.data.get("default_config", {}),
                 )
             else:
@@ -363,21 +367,23 @@ class ModelLoader:
                     config=result.data.get("default_config", {}),
                 )
             else:
+                # trained_models table links to training_checkpoints for checkpoint_url
                 result = supabase_service.client.table("trained_models").select(
-                    "*, embedding_model:embedding_models(*)"
+                    "*, embedding_model:embedding_models(*), checkpoint:training_checkpoints(checkpoint_url)"
                 ).eq("id", model_id).single().execute()
 
                 if not result.data:
                     return None
 
                 embedding_model = result.data.get("embedding_model", {}) or {}
+                checkpoint = result.data.get("checkpoint", {}) or {}
 
                 return ModelInfo(
                     id=result.data["id"],
                     name=result.data["name"],
                     model_type=embedding_model.get("model_family", "dinov2"),
                     source="trained",
-                    checkpoint_url=None,  # Embedding models stored differently
+                    checkpoint_url=checkpoint.get("checkpoint_url"),  # From training_checkpoints
                     embedding_dim=embedding_model.get("embedding_dim", 768),
                     config={
                         "model_family": embedding_model.get("model_family"),
@@ -446,6 +452,40 @@ class ModelLoader:
 
         except ImportError:
             raise RuntimeError("transformers package not installed")
+
+    # =========================================================================
+    # Segmentation Models (SAM, SAM2)
+    # =========================================================================
+
+    async def get_segmentation_model_info(
+        self,
+        model_id: str,
+        model_source: str = "pretrained"
+    ) -> Optional[ModelInfo]:
+        """Get segmentation model info from database."""
+        try:
+            if model_source == "pretrained":
+                result = supabase_service.client.table("wf_pretrained_models").select(
+                    "*"
+                ).eq("id", model_id).single().execute()
+
+                if not result.data:
+                    return None
+
+                return ModelInfo(
+                    id=result.data["id"],
+                    name=result.data["name"],
+                    model_type=result.data["id"],  # Use model ID (sam2-base, sam2-large, etc.)
+                    source="pretrained",
+                    checkpoint_url=result.data.get("model_path"),
+                    config=result.data.get("default_config", {}),
+                )
+            else:
+                # No trained segmentation models for now
+                return None
+        except Exception as e:
+            logger.error(f"Failed to get segmentation model info: {e}")
+            return None
 
     # =========================================================================
     # Utility Methods

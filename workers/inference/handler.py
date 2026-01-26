@@ -196,6 +196,8 @@ def get_or_load_model(
         model = load_classification_model(model_type, model_source, checkpoint_url, num_classes)
     elif task == "embedding":
         model = load_embedding_model(model_type, model_source, checkpoint_url)
+    elif task == "segmentation":
+        model = load_sam_model(model_type, model_source, checkpoint_url)
     else:
         raise ValueError(f"Unknown task: {task}")
 
@@ -349,11 +351,144 @@ def load_rtdetr_model(checkpoint_path: str, model_variant: str = "rtdetr-l", num
     return model, processor
 
 
+def load_grounding_dino_model(model_variant: str = "base") -> Tuple[Any, Any]:
+    """
+    Load Grounding DINO model for open-vocabulary detection.
+
+    Args:
+        model_variant: "tiny", "base", or "large"
+
+    Returns:
+        (model, processor) tuple
+    """
+    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+
+    MODEL_NAMES = {
+        "tiny": "IDEA-Research/grounding-dino-tiny",
+        "base": "IDEA-Research/grounding-dino-base",
+        "large": "IDEA-Research/grounding-dino-base",  # large not available yet
+        "grounding-dino-tiny": "IDEA-Research/grounding-dino-tiny",
+        "grounding-dino-base": "IDEA-Research/grounding-dino-base",
+    }
+
+    model_name = MODEL_NAMES.get(model_variant.lower(), "IDEA-Research/grounding-dino-base")
+    print(f"Loading Grounding DINO: {model_name}")
+
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = AutoModelForZeroShotObjectDetection.from_pretrained(model_name)
+
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    return model, processor
+
+
+def load_owlvit_model(model_variant: str = "base") -> Tuple[Any, Any]:
+    """
+    Load OWL-ViT/OWL-v2 model for open-vocabulary detection.
+
+    Args:
+        model_variant: "base-patch32", "base-patch16", "large-patch14", or owl-v2 variants
+
+    Returns:
+        (model, processor) tuple
+    """
+    from transformers import OwlViTProcessor, OwlViTForObjectDetection
+
+    MODEL_NAMES = {
+        "base-patch32": "google/owlvit-base-patch32",
+        "base-patch16": "google/owlvit-base-patch16",
+        "large-patch14": "google/owlvit-large-patch14",
+        "owlvit-base-patch32": "google/owlvit-base-patch32",
+        "owlvit-base-patch16": "google/owlvit-base-patch16",
+        "owlvit-large-patch14": "google/owlvit-large-patch14",
+        "owl-vit-base": "google/owlvit-base-patch32",
+        "owl-vit-large": "google/owlvit-large-patch14",
+    }
+
+    # Try OWL-v2 first if available
+    try:
+        from transformers import Owlv2Processor, Owlv2ForObjectDetection
+        OWL_V2_NAMES = {
+            "owlv2-base": "google/owlv2-base-patch16-ensemble",
+            "owlv2-large": "google/owlv2-large-patch14-ensemble",
+            "owl-v2-base": "google/owlv2-base-patch16-ensemble",
+            "owl-v2-large": "google/owlv2-large-patch14-ensemble",
+        }
+        if model_variant.lower() in OWL_V2_NAMES:
+            model_name = OWL_V2_NAMES[model_variant.lower()]
+            print(f"Loading OWL-v2: {model_name}")
+            processor = Owlv2Processor.from_pretrained(model_name)
+            model = Owlv2ForObjectDetection.from_pretrained(model_name)
+            model.eval()
+            if torch.cuda.is_available():
+                model = model.cuda()
+            return model, processor
+    except ImportError:
+        pass
+
+    model_name = MODEL_NAMES.get(model_variant.lower(), "google/owlvit-base-patch32")
+    print(f"Loading OWL-ViT: {model_name}")
+
+    processor = OwlViTProcessor.from_pretrained(model_name)
+    model = OwlViTForObjectDetection.from_pretrained(model_name)
+
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    return model, processor
+
+
+def load_yolonas_model(model_variant: str = "l") -> Any:
+    """
+    Load YOLO-NAS model.
+
+    Args:
+        model_variant: "s", "m", or "l"
+
+    Returns:
+        YOLO-NAS model
+    """
+    try:
+        from super_gradients.training import models
+        from super_gradients.common.object_names import Models
+
+        MODEL_NAMES = {
+            "s": Models.YOLO_NAS_S,
+            "small": Models.YOLO_NAS_S,
+            "m": Models.YOLO_NAS_M,
+            "medium": Models.YOLO_NAS_M,
+            "l": Models.YOLO_NAS_L,
+            "large": Models.YOLO_NAS_L,
+            "yolo-nas-s": Models.YOLO_NAS_S,
+            "yolo-nas-m": Models.YOLO_NAS_M,
+            "yolo-nas-l": Models.YOLO_NAS_L,
+            "yolonas-s": Models.YOLO_NAS_S,
+            "yolonas-m": Models.YOLO_NAS_M,
+            "yolonas-l": Models.YOLO_NAS_L,
+        }
+
+        model_name = MODEL_NAMES.get(model_variant.lower(), Models.YOLO_NAS_L)
+        print(f"Loading YOLO-NAS: {model_name}")
+
+        model = models.get(model_name, pretrained_weights="coco")
+
+        if torch.cuda.is_available():
+            model = model.cuda()
+
+        return model
+    except ImportError as e:
+        raise ImportError(f"YOLO-NAS requires super-gradients library: {e}")
+
+
 def load_detection_model(
     model_type: str,
     model_source: str,
     checkpoint_url: Optional[str] = None,
     num_classes: Optional[int] = None,
+    text_prompt: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     """
     Load detection model.
@@ -366,7 +501,7 @@ def load_detection_model(
 
     if model_source == "pretrained":
         # Pretrained YOLO models
-        if model_type.startswith("yolo"):
+        if model_type.startswith("yolo") and "nas" not in model_type.lower():
             model_path = f"{model_type}.pt"
             print(f"Loading pretrained YOLO: {model_path}")
             model = YOLO(model_path)
@@ -390,6 +525,24 @@ def load_detection_model(
             processor = AutoImageProcessor.from_pretrained(model_name)
             if torch.cuda.is_available():
                 model = model.cuda()
+        # Grounding DINO - open vocabulary detection
+        elif "grounding" in model_type.lower() or "gdino" in model_type.lower():
+            variant = model_type.replace("grounding-dino-", "").replace("grounding_dino_", "").replace("gdino-", "")
+            if not variant or variant == model_type:
+                variant = "base"
+            model, processor = load_grounding_dino_model(variant)
+        # OWL-ViT / OWL-v2 - open vocabulary detection
+        elif "owl" in model_type.lower():
+            variant = model_type.replace("owl-vit-", "").replace("owlvit-", "").replace("owl-v2-", "").replace("owlv2-", "")
+            if not variant or variant == model_type:
+                variant = "base-patch32"
+            model, processor = load_owlvit_model(model_type)  # Pass full type for v2 detection
+        # YOLO-NAS
+        elif "nas" in model_type.lower():
+            variant = model_type.replace("yolo-nas-", "").replace("yolonas-", "").replace("yolo_nas_", "")
+            if not variant or variant == model_type:
+                variant = "l"
+            model = load_yolonas_model(variant)
         else:
             raise ValueError(f"Unsupported pretrained detection model: {model_type}")
     else:
@@ -567,6 +720,278 @@ def load_embedding_model(
     return model, processor
 
 
+def run_grounding_dino_detection(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    config: Dict[str, Any],
+    text_prompt: str,
+) -> Dict[str, Any]:
+    """
+    Run Grounding DINO open-vocabulary detection.
+
+    Args:
+        model: Grounding DINO model
+        processor: Grounding DINO processor
+        image: PIL Image
+        config: Detection config
+        text_prompt: Text prompt describing objects to detect (e.g., "person. car. dog.")
+
+    Returns:
+        Detection results
+    """
+    confidence = config.get("confidence", 0.3)  # Lower default for open-vocab
+    max_detections = config.get("max_detections", 300)
+    box_threshold = config.get("box_threshold", confidence)
+    text_threshold = config.get("text_threshold", 0.25)
+
+    width, height = image.size
+
+    # Preprocess
+    inputs = processor(images=image, text=text_prompt, return_tensors="pt")
+    if torch.cuda.is_available():
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+
+    # Run inference
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Post-process
+    results = processor.post_process_grounded_object_detection(
+        outputs,
+        inputs["input_ids"],
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
+        target_sizes=[(height, width)],
+    )[0]
+
+    detections = []
+    boxes = results["boxes"].cpu().numpy()
+    scores = results["scores"].cpu().numpy()
+    labels = results["labels"]  # Text labels
+
+    for i, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+        if i >= max_detections:
+            break
+
+        x1, y1, x2, y2 = box
+
+        # Normalize coordinates
+        x1_norm = float(x1) / width
+        y1_norm = float(y1) / height
+        x2_norm = float(x2) / width
+        y2_norm = float(y2) / height
+
+        detections.append({
+            "id": i,
+            "class_name": label,
+            "class_id": i,  # No fixed class IDs for open-vocab
+            "confidence": round(float(score), 4),
+            "bbox": {
+                "x1": round(x1_norm, 4),
+                "y1": round(y1_norm, 4),
+                "x2": round(x2_norm, 4),
+                "y2": round(y2_norm, 4),
+            },
+            "area": round((x2_norm - x1_norm) * (y2_norm - y1_norm), 6),
+        })
+
+    return {
+        "detections": detections,
+        "count": len(detections),
+        "image_size": {"width": width, "height": height},
+        "text_prompt": text_prompt,
+    }
+
+
+def run_owlvit_detection(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    config: Dict[str, Any],
+    text_queries: List[str],
+) -> Dict[str, Any]:
+    """
+    Run OWL-ViT/OWL-v2 open-vocabulary detection.
+
+    Args:
+        model: OWL-ViT model
+        processor: OWL-ViT processor
+        image: PIL Image
+        config: Detection config
+        text_queries: List of text queries (e.g., ["a photo of a cat", "a photo of a dog"])
+
+    Returns:
+        Detection results
+    """
+    confidence = config.get("confidence", 0.1)  # OWL-ViT needs lower threshold
+    max_detections = config.get("max_detections", 300)
+
+    width, height = image.size
+
+    # Preprocess
+    inputs = processor(text=text_queries, images=image, return_tensors="pt")
+    if torch.cuda.is_available():
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+
+    # Run inference
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Post-process
+    target_sizes = torch.tensor([[height, width]])
+    if torch.cuda.is_available():
+        target_sizes = target_sizes.cuda()
+
+    results = processor.post_process_object_detection(
+        outputs,
+        threshold=confidence,
+        target_sizes=target_sizes,
+    )[0]
+
+    detections = []
+    boxes = results["boxes"].cpu().numpy()
+    scores = results["scores"].cpu().numpy()
+    labels = results["labels"].cpu().numpy()
+
+    for i, (box, score, label_idx) in enumerate(zip(boxes, scores, labels)):
+        if i >= max_detections:
+            break
+
+        x1, y1, x2, y2 = box
+
+        # Normalize coordinates
+        x1_norm = float(x1) / width
+        y1_norm = float(y1) / height
+        x2_norm = float(x2) / width
+        y2_norm = float(y2) / height
+
+        # Get class name from queries
+        label_idx = int(label_idx)
+        class_name = text_queries[label_idx] if label_idx < len(text_queries) else f"class_{label_idx}"
+
+        detections.append({
+            "id": i,
+            "class_name": class_name,
+            "class_id": label_idx,
+            "confidence": round(float(score), 4),
+            "bbox": {
+                "x1": round(x1_norm, 4),
+                "y1": round(y1_norm, 4),
+                "x2": round(x2_norm, 4),
+                "y2": round(y2_norm, 4),
+            },
+            "area": round((x2_norm - x1_norm) * (y2_norm - y1_norm), 6),
+        })
+
+    return {
+        "detections": detections,
+        "count": len(detections),
+        "image_size": {"width": width, "height": height},
+        "text_queries": text_queries,
+    }
+
+
+def run_yolonas_detection(
+    model: Any,
+    image: Image.Image,
+    config: Dict[str, Any],
+    class_mapping: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """
+    Run YOLO-NAS detection.
+
+    Args:
+        model: YOLO-NAS model
+        image: PIL Image
+        config: Detection config
+        class_mapping: Optional class mapping
+
+    Returns:
+        Detection results
+    """
+    confidence = config.get("confidence", 0.5)
+    iou_threshold = config.get("iou_threshold", 0.45)
+    max_detections = config.get("max_detections", 300)
+
+    width, height = image.size
+
+    # Convert PIL to numpy for YOLO-NAS
+    image_np = np.array(image)
+
+    # Run prediction
+    predictions = model.predict(
+        image_np,
+        conf=confidence,
+        iou=iou_threshold,
+    )
+
+    detections = []
+
+    # Get prediction results
+    pred = predictions[0]  # First image result
+
+    if hasattr(pred, 'prediction'):
+        # New API
+        bboxes = pred.prediction.bboxes_xyxy
+        confidences = pred.prediction.confidence
+        labels = pred.prediction.labels
+    else:
+        # Legacy API
+        bboxes = pred.bboxes_xyxy
+        confidences = pred.confidence
+        labels = pred.labels
+
+    # Get class names
+    if class_mapping:
+        names = class_mapping
+    elif hasattr(pred, 'class_names'):
+        names = {i: name for i, name in enumerate(pred.class_names)}
+    else:
+        names = {}
+
+    for i, (bbox, conf, label) in enumerate(zip(bboxes, confidences, labels)):
+        if i >= max_detections:
+            break
+
+        x1, y1, x2, y2 = bbox
+
+        # Normalize coordinates
+        x1_norm = float(x1) / width
+        y1_norm = float(y1) / height
+        x2_norm = float(x2) / width
+        y2_norm = float(y2) / height
+
+        cls_id = int(label)
+        mapping_value = names.get(cls_id) or names.get(str(cls_id))
+        if mapping_value is None:
+            cls_name = f"class_{cls_id}"
+        elif isinstance(mapping_value, dict):
+            cls_name = mapping_value.get("name", f"class_{cls_id}")
+        else:
+            cls_name = str(mapping_value)
+
+        detections.append({
+            "id": i,
+            "class_name": cls_name,
+            "class_id": cls_id,
+            "confidence": round(float(conf), 4),
+            "bbox": {
+                "x1": round(x1_norm, 4),
+                "y1": round(y1_norm, 4),
+                "x2": round(x2_norm, 4),
+                "y2": round(y2_norm, 4),
+            },
+            "area": round((x2_norm - x1_norm) * (y2_norm - y1_norm), 6),
+        })
+
+    return {
+        "detections": detections,
+        "count": len(detections),
+        "image_size": {"width": width, "height": height},
+    }
+
+
 def run_transformers_detection(
     model: Any,
     processor: Any,
@@ -619,7 +1044,13 @@ def run_transformers_detection(
 
         cls_id = int(label)
         if class_mapping:
-            cls_name = class_mapping.get(cls_id) or class_mapping.get(str(cls_id)) or f"class_{cls_id}"
+            mapping_value = class_mapping.get(cls_id) or class_mapping.get(str(cls_id))
+            if mapping_value is None:
+                cls_name = f"class_{cls_id}"
+            elif isinstance(mapping_value, dict):
+                cls_name = mapping_value.get("name", f"class_{cls_id}")
+            else:
+                cls_name = str(mapping_value)
         else:
             cls_name = f"class_{cls_id}"
 
@@ -651,6 +1082,8 @@ def run_detection(
     config: Dict[str, Any],
     class_mapping: Optional[Dict] = None,
     model_type: str = "yolo",
+    text_prompt: Optional[str] = None,
+    text_queries: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Run detection inference."""
     confidence = config.get("confidence", 0.5)
@@ -658,6 +1091,24 @@ def run_detection(
     max_detections = config.get("max_detections", 300)
     input_size = config.get("input_size", 640)
     agnostic_nms = config.get("agnostic_nms", False)
+
+    # Handle Grounding DINO (open-vocabulary with text prompt)
+    if "grounding" in model_type.lower() or "gdino" in model_type.lower():
+        # Grounding DINO requires a text prompt
+        prompt = text_prompt or config.get("text_prompt") or config.get("prompt") or "object"
+        return run_grounding_dino_detection(model, processor, image, config, prompt)
+
+    # Handle OWL-ViT/OWL-v2 (open-vocabulary with text queries)
+    if "owl" in model_type.lower():
+        # OWL-ViT requires text queries
+        queries = text_queries or config.get("text_queries") or config.get("queries") or ["object"]
+        if isinstance(queries, str):
+            queries = [q.strip() for q in queries.split(",")]
+        return run_owlvit_detection(model, processor, image, config, queries)
+
+    # Handle YOLO-NAS
+    if "nas" in model_type.lower():
+        return run_yolonas_detection(model, image, config, class_mapping)
 
     # Handle D-FINE/RT-DETR with transformers processor
     if processor is not None:
@@ -706,8 +1157,14 @@ def run_detection(
             conf_score = float(box.conf[0].cpu().numpy())
             cls_id = int(box.cls[0].cpu().numpy())
 
-            # Get class name
-            cls_name = names.get(cls_id) or names.get(str(cls_id)) or f"class_{cls_id}"
+            # Get class name - supports both simple format and nested dict format
+            mapping_value = names.get(cls_id) or names.get(str(cls_id))
+            if mapping_value is None:
+                cls_name = f"class_{cls_id}"
+            elif isinstance(mapping_value, dict):
+                cls_name = mapping_value.get("name", f"class_{cls_id}")
+            else:
+                cls_name = str(mapping_value)
 
             # Normalize coordinates
             x1_norm = float(bbox_raw[0]) / width
@@ -773,9 +1230,19 @@ def run_classification(
         if conf < threshold:
             continue
 
-        # Get class name
+        # Get class name - supports multiple formats:
+        # 1. Simple: {0: "class_a", 1: "class_b"}
+        # 2. CLS webhook format: {0: {"id": "uuid", "name": "class_a", "color": "#fff"}}
         if class_mapping:
-            class_name = class_mapping.get(class_id) or class_mapping.get(str(class_id)) or f"class_{class_id}"
+            mapping_value = class_mapping.get(class_id) or class_mapping.get(str(class_id))
+            if mapping_value is None:
+                class_name = f"class_{class_id}"
+            elif isinstance(mapping_value, dict):
+                # CLS webhook format - extract name from nested dict
+                class_name = mapping_value.get("name", f"class_{class_id}")
+            else:
+                # Simple string format
+                class_name = str(mapping_value)
         elif hasattr(model.config, 'id2label'):
             class_name = model.config.id2label.get(class_id, f"class_{class_id}")
         else:
@@ -862,6 +1329,204 @@ def run_embedding(
     }
 
 
+# =============================================================================
+# SEGMENTATION (SAM, SAM2)
+# =============================================================================
+
+def load_sam_model(
+    model_type: str,
+    model_source: str = "pretrained",
+    checkpoint_url: Optional[str] = None,
+) -> Tuple[Any, Any]:
+    """
+    Load SAM/SAM2 model and processor.
+
+    Args:
+        model_type: Model variant (sam2-tiny, sam2-base, sam2-large, etc.)
+        model_source: "pretrained" or "trained"
+        checkpoint_url: URL to checkpoint (for trained models)
+
+    Returns:
+        (model, processor)
+    """
+    from transformers import AutoProcessor, AutoModelForMaskGeneration
+
+    # Map model types to HuggingFace names
+    model_map = {
+        # SAM2 variants
+        "sam2-tiny": "facebook/sam2-hiera-tiny",
+        "sam2-small": "facebook/sam2-hiera-small",
+        "sam2-base": "facebook/sam2-hiera-base-plus",
+        "sam2-large": "facebook/sam2-hiera-large",
+        # SAM 2.1 variants
+        "sam2.1-tiny": "facebook/sam2.1-hiera-tiny",
+        "sam2.1-small": "facebook/sam2.1-hiera-small",
+        "sam2.1-base": "facebook/sam2.1-hiera-base-plus",
+        "sam2.1-large": "facebook/sam2.1-hiera-large",
+    }
+
+    model_name = model_map.get(model_type.lower(), "facebook/sam2-hiera-base-plus")
+    print(f"Loading SAM model: {model_name}")
+
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = AutoModelForMaskGeneration.from_pretrained(model_name)
+
+    # Load fine-tuned weights if provided
+    if model_source == "trained" and checkpoint_url:
+        local_path = download_checkpoint(checkpoint_url)
+        state_dict = torch.load(local_path, map_location="cpu", weights_only=False)
+
+        if isinstance(state_dict, dict):
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            elif "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
+
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded fine-tuned SAM weights from {local_path}")
+
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    return model, processor
+
+
+def run_segmentation(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    config: Dict[str, Any],
+    input_boxes: Optional[List[List[float]]] = None,
+    input_points: Optional[List[List[float]]] = None,
+    input_labels: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Run SAM segmentation inference.
+
+    Args:
+        model: SAM model
+        processor: SAM processor
+        image: PIL Image
+        config: Segmentation config
+        input_boxes: List of bounding boxes [[x1,y1,x2,y2], ...] in pixel coordinates
+        input_points: List of point coordinates [[x, y], ...]
+        input_labels: List of point labels (1=foreground, 0=background)
+
+    Returns:
+        Segmentation results with masks
+    """
+    multimask_output = config.get("multimask_output", True)
+    return_logits = config.get("return_logits", False)
+
+    width, height = image.size
+
+    # Prepare inputs based on prompts
+    inputs = processor(
+        image,
+        input_boxes=input_boxes if input_boxes else None,
+        input_points=input_points if input_points else None,
+        input_labels=input_labels if input_labels else None,
+        return_tensors="pt"
+    )
+
+    if torch.cuda.is_available():
+        inputs = {k: v.cuda() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+    # Run inference
+    with torch.no_grad():
+        outputs = model(**inputs, multimask_output=multimask_output)
+
+    # Process outputs
+    masks = outputs.pred_masks.cpu().numpy()
+    iou_scores = outputs.iou_scores.cpu().numpy() if hasattr(outputs, 'iou_scores') else None
+
+    # Convert masks to list format
+    result_masks = []
+    for i, mask_set in enumerate(masks[0]):  # First batch
+        if multimask_output:
+            # Multiple masks per prompt - select best by IoU
+            best_idx = 0
+            if iou_scores is not None:
+                best_idx = int(np.argmax(iou_scores[0][i] if len(iou_scores[0]) > i else iou_scores[0]))
+
+            mask = mask_set[best_idx] if len(mask_set.shape) > 2 else mask_set
+            score = float(iou_scores[0][i][best_idx]) if iou_scores is not None and len(iou_scores[0]) > i else 1.0
+        else:
+            mask = mask_set
+            score = float(iou_scores[0][i]) if iou_scores is not None else 1.0
+
+        # Threshold mask
+        binary_mask = (mask > 0).astype(np.uint8)
+
+        # Calculate mask area
+        area = int(np.sum(binary_mask))
+        area_ratio = area / (width * height)
+
+        # Encode mask as RLE for compact storage
+        rle = _mask_to_rle(binary_mask)
+
+        result_masks.append({
+            "id": i,
+            "score": round(score, 4),
+            "area": area,
+            "area_ratio": round(area_ratio, 6),
+            "rle": rle,
+            "bbox": _mask_to_bbox(binary_mask, width, height),
+        })
+
+    return {
+        "masks": result_masks,
+        "count": len(result_masks),
+        "image_size": {"width": width, "height": height},
+    }
+
+
+def _mask_to_rle(mask: np.ndarray) -> Dict[str, Any]:
+    """Convert binary mask to RLE encoding."""
+    pixels = mask.flatten()
+    runs = []
+    run_start = 0
+    run_length = 0
+
+    for i, pixel in enumerate(pixels):
+        if i == 0:
+            run_start = 0
+            run_length = 1
+        elif pixel == pixels[i - 1]:
+            run_length += 1
+        else:
+            runs.append(run_length)
+            run_start = i
+            run_length = 1
+
+    runs.append(run_length)
+
+    return {
+        "counts": runs,
+        "size": list(mask.shape),
+    }
+
+
+def _mask_to_bbox(mask: np.ndarray, img_width: int, img_height: int) -> Dict[str, float]:
+    """Convert binary mask to normalized bounding box."""
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+
+    if not np.any(rows) or not np.any(cols):
+        return {"x1": 0, "y1": 0, "x2": 0, "y2": 0}
+
+    y_min, y_max = np.where(rows)[0][[0, -1]]
+    x_min, x_max = np.where(cols)[0][[0, -1]]
+
+    return {
+        "x1": round(x_min / img_width, 4),
+        "y1": round(y_min / img_height, 4),
+        "x2": round((x_max + 1) / img_width, 4),
+        "y2": round((y_max + 1) / img_height, 4),
+    }
+
+
 def handler(job: dict) -> dict:
     """
     Main handler for unified inference worker.
@@ -880,7 +1545,7 @@ def handler(job: dict) -> dict:
         if not task:
             return {"success": False, "error": "Missing required field: task"}
 
-        if task not in ["detection", "classification", "embedding"]:
+        if task not in ["detection", "classification", "embedding", "segmentation"]:
             return {"success": False, "error": f"Invalid task: {task}"}
 
         model_id = job_input.get("model_id")
@@ -892,6 +1557,10 @@ def handler(job: dict) -> dict:
         embedding_dim = job_input.get("embedding_dim")
         image_data = job_input.get("image")
         config = job_input.get("config", {})
+
+        # Open-vocabulary detection parameters
+        text_prompt = job_input.get("text_prompt") or config.get("text_prompt")  # For Grounding DINO
+        text_queries = job_input.get("text_queries") or config.get("text_queries")  # For OWL-ViT
 
         if not model_type:
             return {"success": False, "error": "Missing required field: model_type"}
@@ -932,11 +1601,25 @@ def handler(job: dict) -> dict:
         start_time = time.time()
 
         if task == "detection":
-            result = run_detection(model, processor, image, config, class_mapping, model_type)
+            result = run_detection(
+                model, processor, image, config, class_mapping, model_type,
+                text_prompt=text_prompt, text_queries=text_queries
+            )
         elif task == "classification":
             result = run_classification(model, processor, image, config, class_mapping)
         elif task == "embedding":
             result = run_embedding(model, processor, image, config)
+        elif task == "segmentation":
+            # Get segmentation prompts from input
+            input_boxes = job_input.get("input_boxes")  # [[x1,y1,x2,y2], ...]
+            input_points = job_input.get("input_points")  # [[x, y], ...]
+            input_labels = job_input.get("input_labels")  # [1, 0, 1, ...]
+            result = run_segmentation(
+                model, processor, image, config,
+                input_boxes=input_boxes,
+                input_points=input_points,
+                input_labels=input_labels,
+            )
         else:
             return {"success": False, "error": f"Unknown task: {task}"}
 

@@ -4,11 +4,14 @@
 # RunPod serverless
 runpod>=1.6.0
 
-# HuggingFace transformers (for D-FINE, RT-DETR)
+# HuggingFace transformers (for D-FINE, RT-DETR, Grounding DINO, OWL-ViT)
 transformers>=4.45.0
 
 # Ultralytics (for YOLO models)
 ultralytics>=8.1.0
+
+# Super-gradients (for YOLO-NAS)
+super-gradients>=3.5.0
 
 # Image processing
 pillow>=10.0.0
@@ -19,3 +22,7 @@ httpx>=0.26.0
 
 # Vision models
 timm>=1.0.0
+
+# Additional HuggingFace utilities
+accelerate>=0.25.0
+safetensors>=0.4.0

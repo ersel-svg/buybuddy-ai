@@ -512,6 +512,12 @@ class DetectionBlock(ModelBlock):
         class_rename_map = self._parse_class_mapping(config.get("class_mapping", ""))
 
         try:
+            # Get open-vocabulary detection params
+            text_prompt = config.get("text_prompt")  # For Grounding DINO
+            text_queries = config.get("text_queries")  # For OWL-ViT
+            box_threshold = config.get("box_threshold", 0.35)
+            text_threshold = config.get("text_threshold", 0.25)
+
             # Run detection via InferenceService → RunPod GPU
             logger.info(f"Running detection: model={model_id}, source={model_source}, conf={confidence}")
 
@@ -524,6 +530,9 @@ class DetectionBlock(ModelBlock):
                 model_source=model_source,
                 input_size=input_size,
                 agnostic_nms=agnostic_nms,
+                # Open-vocabulary params
+                text_prompt=text_prompt,
+                text_queries=text_queries,
             )
 
             # Get detections from result
