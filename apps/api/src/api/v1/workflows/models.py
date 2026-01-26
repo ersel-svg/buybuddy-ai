@@ -93,6 +93,27 @@ async def get_workflow_models(
                 created_at=model.get("created_at"),
             ))
 
+        # Fetch Roboflow trained models (e.g., Slot Detection)
+        rf_query = supabase_service.client.table("od_roboflow_models").select("*")
+        if not include_inactive:
+            rf_query = rf_query.or_("is_active.eq.true,is_default.eq.true")
+        rf_result = rf_query.order("created_at", desc=True).execute()
+
+        for model in rf_result.data or []:
+            pretrained_by_type["detection"].append(TrainedModelResponse(
+                id=model["id"],
+                name=model.get("display_name") or model["name"],
+                description=model.get("description"),
+                model_type="detection",
+                provider=model.get("architecture", "yolov8"),  # yolov8n, yolov8s, rf-detr, etc.
+                checkpoint_url=model.get("checkpoint_url"),
+                classes=model.get("classes"),
+                class_count=model.get("class_count"),
+                map=model.get("map"),
+                is_active=model.get("is_active", False),
+                created_at=model.get("created_at"),
+            ))
+
     # Fetch trained classification models
     if not model_type or model_type == "classification":
         cls_query = supabase_service.client.table("cls_trained_models").select("*")

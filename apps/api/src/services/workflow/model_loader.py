@@ -113,26 +113,51 @@ class ModelLoader:
                     config=result.data.get("default_config", {}),
                 )
             else:
+                # Try od_trained_models first
                 result = supabase_service.client.table("od_trained_models").select(
                     "*"
                 ).eq("id", model_id).single().execute()
 
-                if not result.data:
-                    return None
+                if result.data:
+                    return ModelInfo(
+                        id=result.data["id"],
+                        name=result.data["name"],
+                        model_type=result.data.get("model_type", "yolo"),
+                        source="trained",
+                        checkpoint_url=result.data.get("checkpoint_url"),
+                        class_mapping=result.data.get("class_mapping", {}),
+                        config={
+                            "model_size": result.data.get("model_size"),
+                            "map": result.data.get("map"),
+                            "map_50": result.data.get("map_50"),
+                        },
+                    )
 
-                return ModelInfo(
-                    id=result.data["id"],
-                    name=result.data["name"],
-                    model_type=result.data.get("model_type", "yolo"),
-                    source="trained",
-                    checkpoint_url=result.data.get("checkpoint_url"),
-                    class_mapping=result.data.get("class_mapping", {}),
-                    config={
-                        "model_size": result.data.get("model_size"),
-                        "map": result.data.get("map"),
-                        "map_50": result.data.get("map_50"),
-                    },
-                )
+                # Try od_roboflow_models (e.g., Slot Detection)
+                result = supabase_service.client.table("od_roboflow_models").select(
+                    "*"
+                ).eq("id", model_id).single().execute()
+
+                if result.data:
+                    # Convert classes array to class_mapping dict
+                    classes = result.data.get("classes", [])
+                    class_mapping = {i: c for i, c in enumerate(classes)} if classes else {}
+
+                    return ModelInfo(
+                        id=result.data["id"],
+                        name=result.data.get("display_name") or result.data["name"],
+                        model_type=result.data.get("architecture", "yolov8"),
+                        source="trained",
+                        checkpoint_url=result.data.get("checkpoint_url"),
+                        class_mapping=class_mapping,
+                        config={
+                            "architecture": result.data.get("architecture"),
+                            "map": result.data.get("map"),
+                            "map_50": result.data.get("map_50"),
+                        },
+                    )
+
+                return None
         except Exception as e:
             logger.error(f"Failed to get detection model info: {e}")
             return None
@@ -578,6 +603,31 @@ class ModelLoader:
                         "category": "detection",
                         "source": "trained",
                         "provider": m.get("model_type", "rt-detr"),
+                        "is_active": m.get("is_active", False),
+                        "is_default": m.get("is_default", False),
+                        "metrics": {
+                            "map": m.get("map"),
+                            "map_50": m.get("map_50"),
+                        },
+                        "class_count": m.get("class_count"),
+                        "created_at": m.get("created_at"),
+                    })
+
+                # Fetch Roboflow trained models (e.g., Slot Detection)
+                rf_query = supabase_service.client.table("od_roboflow_models").select("*")
+                if not include_inactive:
+                    rf_query = rf_query.or_("is_active.eq.true,is_default.eq.true")
+
+                rf_result = rf_query.order("created_at", desc=True).execute()
+
+                for m in rf_result.data or []:
+                    models.append({
+                        "id": m["id"],
+                        "name": m.get("display_name") or m["name"],
+                        "model_type": m.get("architecture", "yolov8"),
+                        "category": "detection",
+                        "source": "trained",
+                        "provider": m.get("architecture", "yolov8"),
                         "is_active": m.get("is_active", False),
                         "is_default": m.get("is_default", False),
                         "metrics": {
