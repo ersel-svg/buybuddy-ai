@@ -445,42 +445,13 @@ def load_yolonas_model(model_variant: str = "l") -> Any:
     """
     Load YOLO-NAS model.
 
-    Args:
-        model_variant: "s", "m", or "l"
-
-    Returns:
-        YOLO-NAS model
+    DISABLED: super-gradients requires onnxruntime==1.13.1 which is incompatible
+    with Python 3.11. Use RT-DETR or D-FINE instead.
     """
-    try:
-        from super_gradients.training import models
-        from super_gradients.common.object_names import Models
-
-        MODEL_NAMES = {
-            "s": Models.YOLO_NAS_S,
-            "small": Models.YOLO_NAS_S,
-            "m": Models.YOLO_NAS_M,
-            "medium": Models.YOLO_NAS_M,
-            "l": Models.YOLO_NAS_L,
-            "large": Models.YOLO_NAS_L,
-            "yolo-nas-s": Models.YOLO_NAS_S,
-            "yolo-nas-m": Models.YOLO_NAS_M,
-            "yolo-nas-l": Models.YOLO_NAS_L,
-            "yolonas-s": Models.YOLO_NAS_S,
-            "yolonas-m": Models.YOLO_NAS_M,
-            "yolonas-l": Models.YOLO_NAS_L,
-        }
-
-        model_name = MODEL_NAMES.get(model_variant.lower(), Models.YOLO_NAS_L)
-        print(f"Loading YOLO-NAS: {model_name}")
-
-        model = models.get(model_name, pretrained_weights="coco")
-
-        if torch.cuda.is_available():
-            model = model.cuda()
-
-        return model
-    except ImportError as e:
-        raise ImportError(f"YOLO-NAS requires super-gradients library: {e}")
+    raise NotImplementedError(
+        "YOLO-NAS is disabled due to dependency conflicts. "
+        "Use RT-DETR or D-FINE instead - they have better accuracy anyway."
+    )
 
 
 def load_detection_model(
@@ -901,15 +872,13 @@ def run_yolonas_detection(
     """
     Run YOLO-NAS detection.
 
-    Args:
-        model: YOLO-NAS model
-        image: PIL Image
-        config: Detection config
-        class_mapping: Optional class mapping
-
-    Returns:
-        Detection results
+    DISABLED: super-gradients requires onnxruntime==1.13.1 which is incompatible
+    with Python 3.11. Use RT-DETR or D-FINE instead.
     """
+    raise NotImplementedError(
+        "YOLO-NAS is disabled due to dependency conflicts. "
+        "Use RT-DETR or D-FINE instead."
+    )
     confidence = config.get("confidence", 0.5)
     iou_threshold = config.get("iou_threshold", 0.45)
     max_detections = config.get("max_detections", 300)

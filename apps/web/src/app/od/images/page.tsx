@@ -66,6 +66,7 @@ import {
   Plus,
   FolderPlus,
   Package,
+  Sparkles,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import Image from "next/image";
@@ -503,6 +504,13 @@ export default function ODImagesPage() {
           <Badge variant="default" className="bg-green-600">
             <CheckCircle className="h-3 w-3 mr-1" />
             Completed
+          </Badge>
+        );
+      case "annotated":
+        return (
+          <Badge variant="default" className="bg-purple-600">
+            <Sparkles className="h-3 w-3 mr-1" />
+            Annotated
           </Badge>
         );
       case "annotating":

@@ -328,7 +328,13 @@ export function WorkflowTestPanel({
         inputs.image_url = previewUrl;
       }
 
-      return apiClient.executeWorkflow(workflowId, inputs);
+      console.log("=== Executing workflow ===");
+      console.log("Workflow ID:", workflowId);
+      console.log("Inputs:", { ...inputs, image_base64: inputs.image_base64 ? "[base64 data]" : undefined });
+
+      const result = await apiClient.executeWorkflow(workflowId, inputs);
+      console.log("Execution result:", result);
+      return result;
     },
     onSuccess: async (data) => {
       const details = await apiClient.getWorkflowExecution(data.id);
@@ -804,7 +810,10 @@ export function WorkflowTestPanel({
                 <p className="text-xs text-muted-foreground">
                   {hasImage ? "Ready to run" : "Select an image to test"}
                 </p>
-                <Button onClick={() => executeMutation.mutate()} disabled={!canExecute} className="gap-2">
+                <Button onClick={() => {
+                  console.log("Run button clicked!", { canExecute, hasImage, previewUrl, imageBase64: !!imageBase64 });
+                  executeMutation.mutate();
+                }} disabled={!canExecute} className="gap-2">
                   {executeMutation.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />

@@ -17,6 +17,7 @@ from services.workflow import get_block_metadata, BLOCK_CATEGORIES
 from .workflows import router as workflows_router
 from .executions import router as executions_router
 from .models import router as models_router
+from .websocket import router as websocket_router
 
 router = APIRouter()
 
@@ -150,5 +151,6 @@ async def get_workflows_stats() -> dict:
 # Include sub-routers AFTER static routes
 # ORDER MATTERS: models before workflows because workflows has /{workflow_id} catch-all
 router.include_router(models_router, prefix="/models", tags=["Workflow Models"])
+router.include_router(websocket_router, tags=["Workflow WebSocket"])
 router.include_router(executions_router, tags=["Workflow Executions"])
 router.include_router(workflows_router, tags=["Workflows"])

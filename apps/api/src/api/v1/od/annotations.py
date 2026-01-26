@@ -258,11 +258,19 @@ async def delete_annotations_bulk(dataset_id: str, image_id: str, annotation_ids
 
 def _update_annotation_counts(dataset_id: str, image_id: str, class_id: str, delta: int):
     """Update annotation counts on dataset, dataset_image, and class."""
-    # Update dataset_images annotation_count
-    di = supabase_service.client.table("od_dataset_images").select("annotation_count").eq("dataset_id", dataset_id).eq("image_id", image_id).single().execute()
+    # Update dataset_images annotation_count and status
+    di = supabase_service.client.table("od_dataset_images").select("annotation_count, status").eq("dataset_id", dataset_id).eq("image_id", image_id).single().execute()
     if di.data:
         new_count = max(0, (di.data.get("annotation_count", 0) or 0) + delta)
-        supabase_service.client.table("od_dataset_images").update({"annotation_count": new_count}).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+        current_status = di.data.get("status", "pending")
+        # Update status based on annotation count (only if not already completed/skipped)
+        new_status = current_status
+        if current_status not in ("completed", "skipped"):
+            new_status = "annotated" if new_count > 0 else "pending"
+        supabase_service.client.table("od_dataset_images").update({
+            "annotation_count": new_count,
+            "status": new_status
+        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
     # Update dataset annotation_count
     dataset = supabase_service.client.table("od_datasets").select("annotation_count").eq("id", dataset_id).single().execute()
@@ -284,8 +292,22 @@ def _update_class_count(class_id: str, delta: int):
 
 def _recalculate_image_annotation_count(dataset_id: str, image_id: str):
     """Recalculate annotation count for an image in a dataset."""
-    count = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
-    supabase_service.client.table("od_dataset_images").update({"annotation_count": count.count or 0}).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+    count_result = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+    new_count = count_result.count or 0
+
+    # Get current status to preserve completed/skipped
+    di = supabase_service.client.table("od_dataset_images").select("status").eq("dataset_id", dataset_id).eq("image_id", image_id).single().execute()
+    current_status = di.data.get("status", "pending") if di.data else "pending"
+
+    # Update status based on annotation count (only if not already completed/skipped)
+    new_status = current_status
+    if current_status not in ("completed", "skipped"):
+        new_status = "annotated" if new_count > 0 else "pending"
+
+    supabase_service.client.table("od_dataset_images").update({
+        "annotation_count": new_count,
+        "status": new_status
+    }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
 
 def _recalculate_dataset_annotation_count(dataset_id: str):

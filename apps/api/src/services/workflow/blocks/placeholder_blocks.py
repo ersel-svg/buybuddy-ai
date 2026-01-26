@@ -26,13 +26,29 @@ class ConditionBlock(BaseBlock):
         {"name": "value", "type": "any", "required": True},
     ]
     output_ports = [
-        {"name": "passed", "type": "boolean", "description": "Whether condition passed (true/false)"},
+        {"name": "result", "type": "boolean", "description": "Condition result (true/false)"},
+        {"name": "passed", "type": "boolean", "description": "Alias for result (backward compat)"},
         {"name": "true_output", "type": "any", "description": "Output when condition is true"},
         {"name": "false_output", "type": "any", "description": "Output when condition is false"},
+        {"name": "matched_conditions", "type": "array", "description": "Which conditions matched"},
     ]
     config_schema = {
         "type": "object",
         "properties": {
+            # Single condition fields (frontend format)
+            "field": {"type": "string", "description": "Field to evaluate (dot notation)"},
+            "operator": {
+                "type": "string",
+                "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "in", "nin", "contains", "matches", "exists", "empty",
+                         # Legacy operators (also supported)
+                         "equals", "not_equals", "greater_than", "greater_equal", "less_than", "less_equal",
+                         "is_true", "is_false", "array_empty", "array_not_empty", "array_contains"],
+                "default": "gt",
+            },
+            "value": {"type": "string", "description": "Value to compare against"},
+            "true_value": {"type": "string", "default": "pass", "description": "Output when true"},
+            "false_value": {"type": "string", "default": "fail", "description": "Output when false"},
+            # Multi-condition support (advanced)
             "conditions": {
                 "type": "array",
                 "items": {
@@ -218,6 +234,22 @@ class ConditionBlock(BaseBlock):
 
         return False
 
+    # Operator mapping from frontend short names to backend names
+    OPERATOR_MAP = {
+        "eq": "equals",
+        "neq": "not_equals",
+        "gt": "greater_than",
+        "gte": "greater_equal",
+        "lt": "less_than",
+        "lte": "less_equal",
+        "in": "in_array",
+        "nin": "not_in_array",
+        "contains": "contains",
+        "matches": "regex_match",
+        "exists": "exists",
+        "empty": "array_empty",
+    }
+
     async def execute(
         self,
         inputs: dict[str, Any],
@@ -234,9 +266,17 @@ class ConditionBlock(BaseBlock):
         default_branch = config.get("default_branch", "false")
         add_metadata = config.get("add_metadata", False)
 
-        # Legacy support: single condition
-        if not conditions:
-            operator = config.get("operator", "is_not_empty")
+        # Frontend format support: single condition with field, operator, value
+        if not conditions and config.get("operator"):
+            field = config.get("field", "")
+            operator = config.get("operator", "gt")
+            compare_value = config.get("value", "")
+            # Map frontend operator to backend operator
+            operator = self.OPERATOR_MAP.get(operator, operator)
+            conditions = [{"field": field, "operator": operator, "value": compare_value, "type": "auto"}]
+        # Legacy support: single condition with compare_value
+        elif not conditions:
+            operator = config.get("operator", "exists")
             compare_value = config.get("compare_value")
             conditions = [{"field": "", "operator": operator, "value": compare_value, "type": "auto"}]
 
@@ -295,10 +335,17 @@ class ConditionBlock(BaseBlock):
 
         duration = (time.time() - start_time) * 1000
 
+        # Build matched_conditions list
+        matched_conditions = [
+            i for i, r in enumerate(condition_results) if r
+        ]
+
         outputs = {
-            "passed": result,
+            "result": result,  # Frontend expects this
+            "passed": result,  # Backward compat
             "true_output": value if result else None,
             "false_output": None if result else value,
+            "matched_conditions": matched_conditions,
         }
 
         # Add metadata if requested
@@ -771,10 +818,12 @@ class ForEachBlock(BaseBlock):
     config_schema = {
         "type": "object",
         "properties": {
-            "max_items": {"type": "number", "description": "Limit number of items to process (0 = no limit)"},
+            # Frontend uses max_iterations, backend also accepts max_items for backward compat
+            "max_iterations": {"type": "number", "default": 0, "description": "Maximum items to process (0 = all)"},
+            "max_items": {"type": "number", "description": "Alias for max_iterations (backward compat)"},
             "start_index": {"type": "number", "default": 0, "description": "Start from this index"},
             "parallel": {"type": "boolean", "default": False, "description": "Process items in parallel"},
-            "batch_size": {"type": "number", "default": 1, "description": "Process in batches of this size"},
+            "batch_size": {"type": "number", "default": 10, "description": "Items per batch for parallel processing"},
         },
     }
 
@@ -795,7 +844,8 @@ class ForEachBlock(BaseBlock):
 
         items = inputs.get("items", [])
         ctx = inputs.get("context")
-        max_items = config.get("max_items", 0)
+        # Support both max_iterations (frontend) and max_items (legacy)
+        max_items = config.get("max_iterations") or config.get("max_items", 0)
         start_index = config.get("start_index", 0)
 
         if not isinstance(items, list):
@@ -873,6 +923,8 @@ class CollectBlock(BaseBlock):
         "properties": {
             "filter_nulls": {"type": "boolean", "default": True, "description": "Exclude null/None values"},
             "flatten": {"type": "boolean", "default": False, "description": "Flatten nested arrays"},
+            "unique": {"type": "boolean", "default": False, "description": "Remove duplicate values"},
+            "unique_key": {"type": "string", "description": "Field to use for uniqueness check (for objects)"},
         },
     }
 
@@ -888,20 +940,50 @@ class CollectBlock(BaseBlock):
         item = inputs.get("item")
         filter_nulls = config.get("filter_nulls", True)
         flatten = config.get("flatten", False)
+        unique = config.get("unique", False)
+        unique_key = config.get("unique_key")
 
         # Get or initialize results array from context
         results_key = f"_collect_{context.execution_id}"
         results = context.variables.get(results_key, [])
+        seen_keys_key = f"_collect_seen_{context.execution_id}"
+        seen_keys = context.variables.get(seen_keys_key, set())
 
         # Add item
         if not (filter_nulls and item is None):
-            if flatten and isinstance(item, list):
-                results.extend(item)
-            else:
-                results.append(item)
+            should_add = True
+
+            # Check uniqueness if enabled
+            if unique:
+                if unique_key and isinstance(item, dict):
+                    # Use specific field for uniqueness
+                    key_value = item.get(unique_key)
+                    if key_value in seen_keys:
+                        should_add = False
+                    else:
+                        seen_keys.add(key_value)
+                else:
+                    # Use item itself for uniqueness (for primitives)
+                    try:
+                        # Try to use item as hashable key
+                        item_key = item if not isinstance(item, (dict, list)) else str(item)
+                        if item_key in seen_keys:
+                            should_add = False
+                        else:
+                            seen_keys.add(item_key)
+                    except TypeError:
+                        # Unhashable, skip uniqueness check
+                        pass
+
+            if should_add:
+                if flatten and isinstance(item, list):
+                    results.extend(item)
+                else:
+                    results.append(item)
 
         # Store back in context
         context.variables[results_key] = results
+        context.variables[seen_keys_key] = seen_keys
 
         duration = (time.time() - start_time) * 1000
 
@@ -911,7 +993,7 @@ class CollectBlock(BaseBlock):
                 "count": len(results),
             },
             duration_ms=round(duration, 2),
-            metrics={"collected_count": len(results)},
+            metrics={"collected_count": len(results), "unique_enabled": unique},
         )
 
 

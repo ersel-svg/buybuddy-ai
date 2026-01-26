@@ -1,0 +1,159 @@
+{
+  "timestamp": "2026-01-26T01:17:17.212587",
+  "summary": {
+    "total": 6,
+    "passed": 0,
+    "failed": 6
+  },
+  "results": [
+    {
+      "name": "Retail Product Matching",
+      "success": false,
+      "workflow_id": "ffbc3076-9d0a-4485-adb5-d4689ccf1811",
+      "execution_id": "b83292c4-750a-4a5c-a233-40e9fcf7188f",
+      "status": "failed",
+      "duration": 1096.6110229492188,
+      "exec_duration": 13,
+      "output_data": {},
+      "node_metrics": {
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "640x480",
+          "duration_ms": 12.96,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 11.5,
+          "original_size": "640x480"
+        }
+      },
+      "error": "Input validation failed: Missing required input: image"
+    },
+    {
+      "name": "Multi-Model Ensemble",
+      "success": false,
+      "workflow_id": "4a4af1b2-0fbf-4160-b4a0-49e08ceefe91",
+      "execution_id": "f0f01a6c-9d69-4b1d-bd10-c6c83f8b25eb",
+      "status": "failed",
+      "duration": 947.4859237670898,
+      "exec_duration": 0,
+      "output_data": {},
+      "node_metrics": {
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "640x480",
+          "duration_ms": 0.72,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 11.5,
+          "original_size": "640x480"
+        }
+      },
+      "error": "Input validation failed: Missing required input: image"
+    },
+    {
+      "name": "Segmentation QC",
+      "success": false,
+      "workflow_id": "74611e44-02e0-49ca-b265-3605c3276139",
+      "execution_id": "76ca091c-b68a-4a75-91bb-517c26b93361",
+      "status": "failed",
+      "duration": 1058.4869384765625,
+      "exec_duration": 0,
+      "output_data": {},
+      "node_metrics": {
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "640x480",
+          "duration_ms": 0.26,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 11.5,
+          "original_size": "640x480"
+        }
+      },
+      "error": "Input validation failed: Missing required input: image"
+    },
+    {
+      "name": "SAHI Tiled Detection",
+      "success": false,
+      "workflow_id": "8ba173ba-7ff7-4e7f-b9bd-49bd38ccb171",
+      "execution_id": "665a8ccd-6a96-454d-b588-d48ae57bb2e3",
+      "status": "failed",
+      "duration": 4140.347957611084,
+      "exec_duration": 0,
+      "output_data": {},
+      "node_metrics": {
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "1920x1080",
+          "duration_ms": 0.15,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 38.7,
+          "original_size": "1920x1080"
+        }
+      },
+      "error": "Input validation failed: Missing required input: image"
+    },
+    {
+      "name": "Visual Search + Classification",
+      "success": false,
+      "workflow_id": "0dc1f159-3460-4c8c-b064-055847566bed",
+      "execution_id": "04b7ce4a-912d-4315-b859-8416805f1583",
+      "status": "failed",
+      "duration": 920.259952545166,
+      "exec_duration": 0,
+      "output_data": {},
+      "node_metrics": {
+        "embed_1": {
+          "type": "embedding",
+          "success": false,
+          "duration_ms": 0.01
+        },
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "640x480",
+          "duration_ms": 0.49,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 11.5,
+          "original_size": "640x480"
+        }
+      },
+      "error": "No images provided"
+    },
+    {
+      "name": "Transform Pipeline",
+      "success": false,
+      "workflow_id": "89f6ab42-640b-4361-bb65-e6cf9a668853",
+      "execution_id": "a0f8a740-142d-4082-b03d-e5e2c1b69ea6",
+      "status": "failed",
+      "duration": 1045.0189113616943,
+      "exec_duration": 0,
+      "output_data": {},
+      "node_metrics": {
+        "input_1": {
+          "type": "image_input",
+          "format": "JPEG",
+          "success": true,
+          "final_size": "640x480",
+          "duration_ms": 0.26,
+          "was_resized": false,
+          "was_rotated": false,
+          "file_size_kb": 11.5,
+          "original_size": "640x480"
+        }
+      },
+      "error": "Input validation failed: Missing required input: image"
+    }
+  ]
+}

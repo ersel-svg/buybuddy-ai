@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useDeferredValue, memo } from "react";
+import Image from "next/image";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
@@ -181,12 +182,180 @@ const statusColors: Record<ProductStatus, string> = {
   rejected: "bg-red-100 text-red-800 hover:bg-red-100",
 };
 
+// ===========================================
+// Memoized Dataset Product Table Row Component
+// ===========================================
+interface DatasetProductRowProps {
+  product: ProductWithFrameCounts;
+  isSelected: boolean;
+  onToggleSelect: (id: string) => void;
+  onRemove: (id: string) => void;
+  isRemoving: boolean;
+}
+
+const DatasetProductRow = memo(function DatasetProductRow({
+  product,
+  isSelected,
+  onToggleSelect,
+  onRemove,
+  isRemoving,
+}: DatasetProductRowProps) {
+  return (
+    <TableRow className={isSelected ? "bg-blue-50" : ""}>
+      <TableCell>
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={() => onToggleSelect(product.id)}
+        />
+      </TableCell>
+      <TableCell>
+        {product.primary_image_url ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="relative w-10 h-10 rounded cursor-pointer overflow-hidden">
+                <Image
+                  src={product.primary_image_url}
+                  alt=""
+                  fill
+                  className="object-cover"
+                  loading="lazy"
+                  quality={60}
+                  sizes="40px"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side="right"
+              className="p-0 bg-transparent border-0"
+              sideOffset={8}
+            >
+              <div className="relative w-48 h-48 rounded-lg shadow-lg bg-white overflow-hidden">
+                <Image
+                  src={product.primary_image_url}
+                  alt={product.product_name || product.barcode}
+                  fill
+                  className="object-contain"
+                  quality={75}
+                  sizes="192px"
+                />
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
+            <Package className="h-5 w-5 text-gray-400" />
+          </div>
+        )}
+      </TableCell>
+      <TableCell className="font-mono text-xs">
+        {product.barcode}
+      </TableCell>
+      <TableCell className="text-sm font-medium">
+        {product.brand_name || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.sub_brand || "-"}
+      </TableCell>
+      <TableCell className="max-w-[150px] truncate text-sm">
+        {product.product_name || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.variant_flavor || "-"}
+      </TableCell>
+      <TableCell className="text-sm">
+        {product.category || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.container_type || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.net_quantity || "-"}
+      </TableCell>
+      <TableCell className="text-sm text-gray-600">
+        {product.manufacturer_country || "-"}
+      </TableCell>
+      <TableCell>
+        <Badge className={statusColors[product.status]}>
+          {product.status.replace("_", " ")}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-xs text-gray-500 whitespace-nowrap">
+        {product.updated_at
+          ? new Date(product.updated_at).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+            })
+          : "-"}
+      </TableCell>
+      <TableCell className="text-center text-sm text-blue-600">
+        {product.frame_counts?.synthetic ?? 0}
+      </TableCell>
+      <TableCell className="text-center text-sm text-green-600">
+        {product.frame_counts?.real ?? 0}
+      </TableCell>
+      <TableCell className="text-center text-sm text-purple-600">
+        {product.frame_counts?.augmented ?? 0}
+      </TableCell>
+      <TableCell>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem asChild>
+              <Link href={`/products/${product.id}`}>
+                View Details
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={`/products/${product.id}?edit=true`}>
+                Edit
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const blob = await apiClient.downloadProduct(product.id);
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `product_${product.barcode}.zip`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  toast.success("Download started");
+                } catch {
+                  toast.error("Download failed");
+                }
+              }}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download Frames
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-red-600"
+              onClick={() => onRemove(product.id)}
+              disabled={isRemoving}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Remove from Dataset
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </TableCell>
+    </TableRow>
+  );
+});
+
 export default function DatasetDetailPage() {
   const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
 
   // Search, pagination, sorting state
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const [page, setPage] = useState(1);
   const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
@@ -294,12 +463,12 @@ export default function DatasetDetailPage() {
     refetch,
     isFetching,
   } = useQuery({
-    queryKey: ["dataset", id, { page, search, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection }],
+    queryKey: ["dataset", id, { page, search: deferredSearch, ...apiFilters, sort_by: serverSortColumn, sort_order: sortDirection }],
     queryFn: () =>
       apiClient.getDataset(id, {
         page,
-        limit: 100,
-        search: search || undefined,
+        limit: 25,
+        search: deferredSearch || undefined,
         sort_by: serverSortColumn,
         sort_order: sortDirection,
         include_frame_counts: true,
@@ -319,7 +488,7 @@ export default function DatasetDetailPage() {
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [apiFilters, serverSortColumn, sortDirection, search]);
+  }, [apiFilters, serverSortColumn, sortDirection, deferredSearch]);
 
   // Build filter sections from filter options
   const filterSections: FilterSection[] = useMemo(() => {
@@ -1337,22 +1506,33 @@ export default function DatasetDetailPage() {
                             {product.primary_image_url ? (
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <img
-                                    src={product.primary_image_url}
-                                    alt=""
-                                    className="w-10 h-10 object-cover rounded cursor-pointer"
-                                  />
+                                  <div className="relative w-10 h-10 rounded cursor-pointer overflow-hidden">
+                                    <Image
+                                      src={product.primary_image_url}
+                                      alt=""
+                                      fill
+                                      className="object-cover"
+                                      loading="lazy"
+                                      quality={60}
+                                      sizes="40px"
+                                    />
+                                  </div>
                                 </TooltipTrigger>
                                 <TooltipContent
                                   side="right"
                                   className="p-0 bg-transparent border-0"
                                   sideOffset={8}
                                 >
-                                  <img
-                                    src={product.primary_image_url}
-                                    alt={product.product_name || product.barcode}
-                                    className="w-48 h-48 object-contain rounded-lg shadow-lg bg-white"
-                                  />
+                                  <div className="relative w-48 h-48 rounded-lg shadow-lg bg-white overflow-hidden">
+                                    <Image
+                                      src={product.primary_image_url}
+                                      alt={product.product_name || product.barcode}
+                                      fill
+                                      className="object-contain"
+                                      quality={75}
+                                      sizes="192px"
+                                    />
+                                  </div>
                                 </TooltipContent>
                               </Tooltip>
                             ) : (

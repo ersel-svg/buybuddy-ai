@@ -1,0 +1,81 @@
+{
+  "timestamp": "2026-01-26T00:49:43.451903",
+  "summary": {
+    "total": 10,
+    "passed": 0,
+    "failed": 10,
+    "total_duration_ms": 2161.94
+  },
+  "tests": [
+    {
+      "name": "Test 1: YOLO Detection",
+      "status": "FAIL",
+      "duration_ms": 429.91,
+      "timestamp": "2026-01-26T00:49:41.718635",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 2: DINOv2 Embedding",
+      "status": "FAIL",
+      "duration_ms": 217.71,
+      "timestamp": "2026-01-26T00:49:41.936388",
+      "error": "Embedding model not found: None"
+    },
+    {
+      "name": "Test 3: Detection\u2192Crop\u2192Embedding",
+      "status": "FAIL",
+      "duration_ms": 171.83,
+      "timestamp": "2026-01-26T00:49:42.108268",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 4: Detection with Filter",
+      "status": "FAIL",
+      "duration_ms": 177.03,
+      "timestamp": "2026-01-26T00:49:42.285328",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 5: Image Transforms",
+      "status": "FAIL",
+      "duration_ms": 187.25,
+      "timestamp": "2026-01-26T00:49:42.472615",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 6: Multi-Model Detection",
+      "status": "FAIL",
+      "duration_ms": 175.82,
+      "timestamp": "2026-01-26T00:49:42.648467",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 7: Conditional Logic",
+      "status": "FAIL",
+      "duration_ms": 205.66,
+      "timestamp": "2026-01-26T00:49:42.854164",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 8: Visualization",
+      "status": "FAIL",
+      "duration_ms": 204.81,
+      "timestamp": "2026-01-26T00:49:43.059020",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 9: Aggregation",
+      "status": "FAIL",
+      "duration_ms": 181.24,
+      "timestamp": "2026-01-26T00:49:43.240296",
+      "error": "Detection model not found: None"
+    },
+    {
+      "name": "Test 10: Full Retail Pipeline",
+      "status": "FAIL",
+      "duration_ms": 210.68,
+      "timestamp": "2026-01-26T00:49:43.451035",
+      "error": "Detection model not found: None"
+    }
+  ]
+}

@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+// import type { NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/api"];
+// const PUBLIC_PATHS = ["/login", "/api"];
 
-export function middleware(request: NextRequest) {
+export function middleware() {
+  // TODO: Re-enable auth when ready for production
+  // For development, allow all requests
+  return NextResponse.next();
+
+  /*
   const { pathname } = request.nextUrl;
 
   // Allow public paths
@@ -31,6 +36,7 @@ export function middleware(request: NextRequest) {
   }
 
   return NextResponse.next();
+  */
 }
 
 export const config = {

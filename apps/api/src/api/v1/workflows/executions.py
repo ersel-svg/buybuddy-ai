@@ -2,20 +2,29 @@
 Workflows - Executions Router
 
 Endpoints for running workflows and viewing execution history.
+
+Supports three execution modes:
+- sync: Wait for completion (default)
+- async: Return immediately, poll for result
+- background: Fire-and-forget with optional webhook
 """
 
+import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from services.supabase import supabase_service
 from services.workflow import get_workflow_engine
 from schemas.workflows import (
     WorkflowRunRequest,
+    WorkflowRunResponse,
     ExecutionResponse,
     ExecutionListResponse,
+    ExecutionMode,
 )
+from middleware.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +66,38 @@ async def list_all_executions(
     )
 
 
-@router.post("/{workflow_id}/run", response_model=ExecutionResponse)
-@router.post("/{workflow_id}/execute", response_model=ExecutionResponse, include_in_schema=False)
-async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
+@router.post("/{workflow_id}/run", response_model=Union[WorkflowRunResponse, ExecutionResponse])
+@router.post("/{workflow_id}/execute", response_model=Union[WorkflowRunResponse, ExecutionResponse], include_in_schema=False)
+@limiter.limit("30/minute")  # GPU-intensive endpoint, stricter limit
+async def run_workflow(request: Request, response: Response, workflow_id: str, data: WorkflowRunRequest):
     """
     Run a workflow with the provided input.
 
-    Accepts either an image URL or base64 encoded image.
-    Returns the execution record with results.
+    Supports three execution modes:
+    - **sync** (default): Wait for completion, return full result
+    - **async**: Return immediately with execution_id, poll /executions/{id} for result
+    - **background**: Fire-and-forget with optional webhook callback
 
-    The workflow engine executes all nodes in topological order,
-    passing outputs between connected nodes.
+    Query params for async polling:
+    - GET /executions/{execution_id} - Check status and get result
+
+    Webhook payload (for background mode):
+    ```json
+    {
+        "event": "workflow.completed" | "workflow.failed",
+        "execution_id": "uuid",
+        "status": "completed" | "failed",
+        "output_data": {...},
+        "duration_ms": 1234
+    }
+    ```
     """
+    logger.info(f"=== Workflow execution request received ===")
+    logger.info(f"Workflow ID: {workflow_id}, Mode: {data.mode.value}")
+    logger.info(f"Request data: input={data.input is not None}, inputs={data.inputs is not None}")
+    if data.inputs:
+        logger.info(f"Inputs keys: {list(data.inputs.keys())}")
+
     # Verify workflow exists and is not archived
     workflow = supabase_service.client.table("wf_workflows").select(
         "id, name, status, definition"
@@ -82,6 +111,7 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
 
     # Normalize input from either format
     execution_input = data.get_execution_input()
+    logger.info(f"Execution input: image_url={execution_input.image_url is not None}, image_base64={execution_input.image_base64 is not None}")
 
     # If no image provided, use a placeholder test image for dry-run
     # This allows testing the workflow structure without real input
@@ -103,13 +133,20 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
                 detail="Either image_url or image_base64 must be provided"
             )
 
-    # Create execution record
+    # Create execution record with mode and options
     now = datetime.now(timezone.utc)
     execution_data = {
         "workflow_id": workflow_id,
         "status": "pending",
         "input_data": execution_input.model_dump(),
         "created_at": now.isoformat(),
+        # Async execution fields
+        "execution_mode": data.mode.value,
+        "priority": data.priority,
+        "callback_url": data.callback_url,
+        "timeout_seconds": data.timeout_seconds,
+        "max_retries": data.max_retries if data.retry_on_failure else 0,
+        "retry_count": 0,
     }
 
     result = supabase_service.client.table("wf_executions").insert(execution_data).execute()
@@ -120,6 +157,49 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
     execution = result.data[0]
     execution_id = execution["id"]
 
+    # Handle based on execution mode
+    if data.mode == ExecutionMode.SYNC:
+        # Synchronous execution - wait for result
+        return await _execute_sync(
+            workflow_id=workflow_id,
+            execution_id=execution_id,
+            workflow_def=workflow.data.get("definition", {}),
+            inputs=execution_input.model_dump(),
+            timeout=data.timeout_seconds,
+        )
+
+    elif data.mode == ExecutionMode.ASYNC:
+        # Async execution - return immediately, worker will process
+        # Estimate wait time based on queue depth
+        estimated_wait = await _estimate_wait_time(workflow_id)
+
+        return WorkflowRunResponse(
+            execution_id=execution_id,
+            status="pending",
+            mode=data.mode,
+            status_url=f"/api/v1/workflows/executions/{execution_id}",
+            estimated_wait_seconds=estimated_wait,
+        )
+
+    else:  # BACKGROUND
+        # Fire and forget - worker will process, webhook on completion
+        return WorkflowRunResponse(
+            execution_id=execution_id,
+            status="pending",
+            mode=data.mode,
+            status_url=f"/api/v1/workflows/executions/{execution_id}",
+        )
+
+
+async def _execute_sync(
+    workflow_id: str,
+    execution_id: str,
+    workflow_def: dict,
+    inputs: dict,
+    timeout: int,
+) -> ExecutionResponse:
+    """Execute workflow synchronously with timeout."""
+
     # Update status to running
     supabase_service.client.table("wf_executions").update({
         "status": "running",
@@ -127,15 +207,17 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
     }).eq("id", execution_id).execute()
 
     try:
-        # Execute the workflow
         engine = get_workflow_engine()
-        workflow_definition = workflow.data.get("definition", {})
 
-        engine_result = await engine.execute(
-            workflow=workflow_definition,
-            inputs=execution_input.model_dump(),
-            workflow_id=workflow_id,
-            execution_id=execution_id,
+        # Execute with timeout
+        engine_result = await asyncio.wait_for(
+            engine.execute(
+                workflow=workflow_def,
+                inputs=inputs,
+                workflow_id=workflow_id,
+                execution_id=execution_id,
+            ),
+            timeout=timeout,
         )
 
         # Determine status based on result
@@ -158,12 +240,21 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
             update_data
         ).eq("id", execution_id).execute()
 
-        return updated.data[0] if updated.data else execution
+        return updated.data[0] if updated.data else {"id": execution_id, **update_data}
+
+    except asyncio.TimeoutError:
+        error_msg = f"Execution timeout after {timeout}s"
+        supabase_service.client.table("wf_executions").update({
+            "status": "failed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "error_message": error_msg,
+        }).eq("id", execution_id).execute()
+
+        raise HTTPException(status_code=408, detail=error_msg)
 
     except Exception as e:
         logger.exception(f"Workflow execution failed: {workflow_id}")
 
-        # Update execution with error
         error_update = {
             "status": "failed",
             "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -178,6 +269,27 @@ async def run_workflow(workflow_id: str, data: WorkflowRunRequest):
             status_code=500,
             detail=f"Workflow execution failed: {str(e)}"
         )
+
+
+async def _estimate_wait_time(workflow_id: str) -> int:
+    """Estimate wait time based on queue depth and avg duration."""
+    # Count pending jobs ahead in queue
+    pending = supabase_service.client.table("wf_executions").select(
+        "id", count="exact"
+    ).eq("status", "pending").in_(
+        "execution_mode", ["async", "background"]
+    ).execute()
+
+    # Get avg duration for this workflow
+    stats = supabase_service.client.table("wf_workflows").select(
+        "avg_duration_ms"
+    ).eq("id", workflow_id).single().execute()
+
+    queue_depth = pending.count or 0
+    avg_ms = stats.data.get("avg_duration_ms", 5000) if stats.data else 5000
+
+    # Estimate: queue_depth * avg_duration / concurrent_workers (assume 5)
+    return max(1, int((queue_depth * avg_ms / 1000) / 5))
 
 
 @router.get("/{workflow_id}/executions", response_model=ExecutionListResponse)

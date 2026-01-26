@@ -1,0 +1,148 @@
+# Buybuddy AI Platform
+
+AI-powered product video processing platform for training data and product directories from field videos.
+
+## Project Structure (Turborepo Monorepo)
+
+```
+buybuddy-ai/
+├── apps/
+│   ├── web/              # Next.js 16 frontend (React 19 + TypeScript)
+│   └── api/              # FastAPI backend
+├── workers/              # Python GPU workers (Runpod Serverless)
+│   ├── video-segmentation/, od-training/, cls-training/
+│   ├── od-annotation/, augmentation/, embedding-extraction/
+└── packages/, libs/      # Shared code
+```
+
+## Tech Stack
+
+**Frontend:** Next.js 16 (App Router) + React 19 + TypeScript + Tailwind CSS 4 + Radix UI (shadcn/ui)
+**State:** Zustand + TanStack React Query
+**Workflow UI:** XY Flow (@xyflow/react)
+**Backend:** FastAPI (Python 3.10+) + Supabase (PostgreSQL + Storage)
+**GPU Workers:** Runpod Serverless (SAM3, Gemini Flash 2.5, YOLOv8, DINOv2)
+
+## Critical Directories
+
+- `apps/web/src/components/workflows/` - XY Flow workflow builder
+- `apps/web/src/components/ui/` - shadcn/ui components
+- `apps/web/src/components/cls/` - Classification UI
+- `apps/web/src/components/od/` - Object detection UI
+- `apps/api/src/services/buybuddy.py` - Buybuddy API auth service
+- `workers/*/` - GPU processing workers (Docker containers)
+
+## ⚠️ CRITICAL: Authentication
+
+**This project uses Buybuddy API authentication. Do NOT implement Supabase Auth or other auth systems.**
+
+Flow:
+```
+1. POST /user/sign_in → get passphrase
+2. POST /user/sign_in/token → get Bearer token
+3. All requests: Authorization: Bearer {token}
+```
+
+Implementation: `apps/api/src/services/buybuddy.py` (BuybuddyService class)
+
+## Code Standards
+
+### TypeScript/React
+- Functional components only (arrow functions)
+- TypeScript interfaces for all props
+- Naming: PascalCase (components), camelCase (functions/variables)
+- **Always use React Query** for data fetching (never fetch directly)
+- **Zustand** for global state, useState for local state
+- **Tailwind CSS** with `cn()` utility (tailwind-merge + clsx)
+- shadcn/ui patterns (class-variance-authority for variants)
+- Import order: React → third-party → local → types
+
+### Python
+- Python 3.10+, type hints, Pydantic models, async/await
+- Naming: snake_case (functions), PascalCase (classes), UPPER_CASE (constants)
+
+## Common Patterns
+
+### React Query
+```tsx
+import { useQuery } from '@tanstack/react-query'
+
+export function useProducts() {
+  return useQuery({
+    queryKey: ['products'],
+    queryFn: async () => {
+      const res = await fetch('/api/products')
+      return res.json()
+    }
+  })
+}
+```
+
+### Zustand Store
+```tsx
+import { create } from 'zustand'
+
+export const useStore = create<Store>((set) => ({
+  count: 0,
+  increment: () => set((s) => ({ count: s.count + 1 }))
+}))
+```
+
+### shadcn/ui Component
+```tsx
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+
+export function MyComponent({ className }: Props) {
+  return (
+    <div className={cn("flex items-center", className)}>
+      <Button>Click</Button>
+    </div>
+  )
+}
+```
+
+### XY Flow Workflow
+```tsx
+import { ReactFlow } from '@xyflow/react'
+
+export function WorkflowCanvas() {
+  const [nodes, setNodes] = useState<Node[]>([])
+  const [edges, setEdges] = useState<Edge[]>([])
+
+  return <ReactFlow nodes={nodes} edges={edges} />
+}
+```
+
+## Critical Do's & Don'ts
+
+### ✅ Do
+- Use React Query for ALL data fetching
+- Use TypeScript strict mode
+- Follow shadcn/ui patterns
+- Keep components small and focused
+- Use `cn()` for conditional classes
+
+### ❌ Don't
+- **Don't implement Supabase Auth or new auth systems** (use Buybuddy API only!)
+- Don't fetch data directly in components (use React Query)
+- Don't use class components
+- Don't skip TypeScript types
+- Don't hardcode credentials
+- Don't use inline styles (use Tailwind)
+
+## Development Commands
+
+```bash
+pnpm install    # Install dependencies
+pnpm dev        # Run dev server
+pnpm build      # Build all apps
+pnpm typecheck  # Type check
+```
+
+## Reference Files
+
+- `CONTEXT.md` - Full project context, APIs, credentials
+- `PROJECT_PLAN.md` - Roadmap and tasks
+- `WORKFLOW_MVP_PLAN.md` - Workflow architecture
+- `.cursorrules` - Cursor AI guidelines

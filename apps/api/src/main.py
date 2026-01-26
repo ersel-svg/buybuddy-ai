@@ -8,11 +8,17 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings
+from middleware.rate_limit import (
+    limiter,
+    RateLimitExceeded,
+    rate_limit_exceeded_handler,
+    SlowAPIMiddleware,
+)
 
 # Import routers
 from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts, scan_requests, product_matcher, product_bulk_update
@@ -111,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     print(f"🚀 Starting {settings.app_name}")
     print(f"   Debug mode: {settings.debug}")
     print(f"   API prefix: {settings.api_prefix}")
+    print(f"   Rate limiting: {'enabled' if settings.rate_limit_enabled else 'disabled'} ({settings.rate_limit_requests_per_minute}/min)")
 
     # Resume interrupted Roboflow imports (runs in background, doesn't block startup)
     asyncio.create_task(resume_interrupted_roboflow_imports())
@@ -124,6 +131,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from services.job_poller import job_poller
     poller_task = asyncio.create_task(job_poller.start())
     print(f"   Background job poller started (interval: {job_poller.poll_interval}s)")
+
+    # Start workflow background worker (processes async/background workflow executions)
+    from services.workflow.worker import get_workflow_worker
+    workflow_worker = get_workflow_worker()
+    workflow_worker_task = asyncio.create_task(workflow_worker.start())
+    print(f"   Workflow worker started (max_concurrent={workflow_worker.max_concurrent})")
 
     # Cleanup old import files
     try:
@@ -149,6 +162,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     print("   Background job poller stopped")
 
+    # Stop workflow worker gracefully
+    print("   Stopping workflow worker...")
+    await workflow_worker.stop()
+    workflow_worker_task.cancel()
+    try:
+        await workflow_worker_task
+    except asyncio.CancelledError:
+        pass
+    print("   Workflow worker stopped")
+
     # Stop local job worker gracefully
     print("   Stopping local job worker...")
     await local_job_worker.stop()
@@ -169,6 +192,12 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Rate limiting middleware (must be added before CORS)
+if settings.rate_limit_enabled:
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
 
 # CORS middleware - allow Vercel domains and localhost
 # Using allow_origin_regex to support all Vercel preview deployments

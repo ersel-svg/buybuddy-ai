@@ -15,7 +15,70 @@ from dataclasses import dataclass, field
 
 from .base import BaseBlock, BlockResult, ExecutionContext
 
+# WebSocket broadcast support (lazy import to avoid circular dependency)
+_ws_broadcast_enabled = True
+
 logger = logging.getLogger(__name__)
+
+
+async def _broadcast_node_event(
+    execution_id: str,
+    event_type: str,
+    node_id: str,
+    node_type: str,
+    **kwargs
+):
+    """
+    Broadcast a node execution event via WebSocket.
+
+    Lazily imports websocket module to avoid circular imports.
+    Silently fails if broadcasting is not available.
+    """
+    if not _ws_broadcast_enabled:
+        return
+
+    try:
+        from api.v1.workflows.websocket import (
+            broadcast_node_start,
+            broadcast_node_complete,
+            broadcast_node_error,
+            broadcast_progress,
+        )
+
+        if event_type == "node_start":
+            await broadcast_node_start(
+                execution_id=execution_id,
+                node_id=node_id,
+                node_type=node_type,
+                node_label=kwargs.get("node_label"),
+            )
+        elif event_type == "node_complete":
+            await broadcast_node_complete(
+                execution_id=execution_id,
+                node_id=node_id,
+                duration_ms=kwargs.get("duration_ms", 0),
+                outputs_summary=kwargs.get("outputs_summary"),
+            )
+        elif event_type == "node_error":
+            await broadcast_node_error(
+                execution_id=execution_id,
+                node_id=node_id,
+                error=kwargs.get("error", "Unknown error"),
+            )
+        elif event_type == "progress":
+            await broadcast_progress(
+                execution_id=execution_id,
+                percent=kwargs.get("percent", 0),
+                current_node=node_id,
+                completed_nodes=kwargs.get("completed_nodes", []),
+                total_nodes=kwargs.get("total_nodes", 0),
+            )
+    except ImportError:
+        # WebSocket module not available
+        pass
+    except Exception as e:
+        # Don't fail execution due to broadcast errors
+        logger.debug(f"WebSocket broadcast failed: {e}")
 
 
 class WorkflowExecutionError(Exception):
@@ -164,6 +227,9 @@ class WorkflowEngine:
         # Build input mappings from edges (React Flow style)
         edge_inputs = self._build_edge_inputs(edges)
 
+        # Build conditional edge mappings for branching
+        conditional_edges = self._build_conditional_edges(edges, nodes)
+
         # Detect iteration loops (ForEach → Collect patterns)
         iteration_loops = self._detect_iteration_loops(nodes, edges, execution_order)
 
@@ -173,11 +239,33 @@ class WorkflowEngine:
         active_iterations: dict[str, IterationState] = {}  # foreach_node_id -> state
 
         i = 0
+        skipped_nodes: set[str] = set()  # Track nodes skipped due to conditional branching
+
         while i < len(execution_order):
             node = execution_order[i]
             node_id = node["id"]
             node_type = node["type"]
             node_config = node.get("config", {})
+
+            # Check if this node should be skipped due to conditional branching
+            # Recalculate skipped nodes after each condition evaluation
+            if conditional_edges:
+                skipped_nodes = self._get_skipped_nodes(conditional_edges, context, nodes, edges)
+
+            if node_id in skipped_nodes:
+                logger.info(f"Skipping node {node_id} ({node_type}) due to conditional branching")
+                metrics[node_id] = {
+                    "type": node_type,
+                    "duration_ms": 0,
+                    "success": True,
+                    "skipped": True,
+                    "skip_reason": "conditional_branch",
+                }
+                # Set empty outputs so downstream references don't fail
+                context.nodes[node_id] = {"_skipped": True}
+                i += 1
+                continue
+
             # Merge edge-based inputs with explicit node inputs (explicit takes precedence)
             node_inputs_config = {**edge_inputs.get(node_id, {}), **node.get("inputs", {})}
 
@@ -263,6 +351,76 @@ class WorkflowEngine:
                         i += 1
                         continue
 
+                    # Check if parallel/batch execution is requested
+                    if active_iterations[node_id].iteration_mode in ("parallel", "batch"):
+                        iter_state = active_iterations[node_id]
+                        logger.info(f"ForEach parallel execution: {iter_state.total_items} items, mode={iter_state.iteration_mode}, concurrency={iter_state.max_concurrency}")
+
+                        # Get loop body nodes
+                        loop_body_node_objs = [
+                            n for n in execution_order
+                            if n["id"] in iter_state.loop_body_nodes
+                        ]
+
+                        # Execute all items in parallel
+                        start_parallel = time.time()
+                        collected_results, body_metrics, errors = await self._execute_parallel_iteration(
+                            iter_state=iter_state,
+                            loop_body_nodes=loop_body_node_objs,
+                            edge_inputs=edge_inputs,
+                            context=context,
+                            execution_id=execution_id,
+                        )
+                        parallel_duration = (time.time() - start_parallel) * 1000
+
+                        # Store results in context for collect node
+                        context.nodes[node_id] = {
+                            "item": None,  # No single item in parallel mode
+                            "index": iter_state.total_items - 1,
+                            "total": iter_state.total_items,
+                            "is_first": False,
+                            "is_last": True,
+                            "context": resolved_inputs.get("context"),
+                        }
+
+                        # Record metrics
+                        metrics[node_id] = {
+                            "type": node_type,
+                            "duration_ms": round(parallel_duration, 2),
+                            "success": True,
+                            "total_items": iter_state.total_items,
+                            "iterations_completed": iter_state.total_items,
+                            "iteration_mode": iter_state.iteration_mode,
+                            "errors_count": len(errors),
+                        }
+
+                        # Add body node metrics
+                        for body_node_id, body_node_metrics in body_metrics.items():
+                            metrics[body_node_id] = {
+                                **body_node_metrics,
+                                "success": True,
+                                "parallel": True,
+                            }
+
+                        # Store errors in iteration state for collect
+                        iter_state.collected_results = collected_results
+                        iter_state.errors = errors
+                        iter_state.current_index = iter_state.total_items  # Mark as complete
+
+                        # Skip to collect node
+                        collect_idx = next(
+                            (idx for idx, n in enumerate(execution_order) if n["id"] == iter_state.collect_node_id),
+                            None
+                        )
+                        if collect_idx is not None:
+                            i = collect_idx
+                            continue
+                        else:
+                            # No collect node, just continue
+                            del active_iterations[node_id]
+                            i += 1
+                            continue
+
                 iter_state = active_iterations[node_id]
 
                 # Set iteration context for blocks to access
@@ -305,6 +463,76 @@ class WorkflowEngine:
                 if parent_foreach:
                     iter_state = active_iterations[parent_foreach]
 
+                    # Check if parallel execution already collected results
+                    if iter_state.iteration_mode in ("parallel", "batch") and iter_state.is_complete:
+                        # Parallel execution already populated collected_results
+                        filter_nulls = resolved_config.get("filter_nulls", True)
+                        flatten = resolved_config.get("flatten", False)
+                        unique = resolved_config.get("unique", False)
+                        unique_key = resolved_config.get("unique_key")
+
+                        final_results = iter_state.collected_results
+
+                        # Apply post-processing
+                        if filter_nulls:
+                            final_results = [r for r in final_results if r is not None]
+
+                        if flatten:
+                            flattened = []
+                            for r in final_results:
+                                if isinstance(r, list):
+                                    flattened.extend(r)
+                                else:
+                                    flattened.append(r)
+                            final_results = flattened
+
+                        if unique:
+                            if unique_key and all(isinstance(r, dict) for r in final_results):
+                                seen_keys = set()
+                                unique_results = []
+                                for r in final_results:
+                                    key_val = r.get(unique_key)
+                                    if key_val not in seen_keys:
+                                        seen_keys.add(key_val)
+                                        unique_results.append(r)
+                                final_results = unique_results
+                            else:
+                                # Simple deduplication for primitives
+                                seen = set()
+                                unique_results = []
+                                for r in final_results:
+                                    r_hash = str(r)
+                                    if r_hash not in seen:
+                                        seen.add(r_hash)
+                                        unique_results.append(r)
+                                final_results = unique_results
+
+                        context.nodes[node_id] = {
+                            "results": final_results,
+                            "count": len(final_results),
+                            "errors": iter_state.errors if iter_state.errors else None,
+                        }
+                        metrics[node_id] = {
+                            "type": node_type,
+                            "duration_ms": 0,
+                            "success": True,
+                            "collected_count": len(final_results),
+                            "iterations": iter_state.total_items,
+                            "parallel": True,
+                            "errors_count": len(iter_state.errors),
+                        }
+
+                        # Clean up
+                        del active_iterations[parent_foreach]
+                        context.variables.pop("_iteration_index", None)
+                        context.variables.pop("_iteration_total", None)
+                        context.variables.pop("_iteration_foreach", None)
+
+                        logger.info(f"Parallel iteration complete. Collected {len(final_results)} items with {len(iter_state.errors)} errors.")
+                        i += 1
+                        continue
+
+                    # Sequential execution - collect one item at a time
                     # Get the item to collect from this iteration
                     item_to_collect = resolved_inputs.get("item")
                     filter_nulls = resolved_config.get("filter_nulls", True)
@@ -362,10 +590,52 @@ class WorkflowEngine:
             # Execute block normally
             try:
                 logger.info(f"Executing block: {node_id} ({node_type})")
+
+                # Broadcast node start via WebSocket
+                completed_nodes = [n["id"] for n in execution_order[:i] if n["id"] in context.nodes]
+                await _broadcast_node_event(
+                    execution_id=execution_id,
+                    event_type="node_start",
+                    node_id=node_id,
+                    node_type=node_type,
+                    node_label=node.get("data", {}).get("label", node_type),
+                )
+                await _broadcast_node_event(
+                    execution_id=execution_id,
+                    event_type="progress",
+                    node_id=node_id,
+                    node_type=node_type,
+                    percent=int((i / len(execution_order)) * 100),
+                    completed_nodes=completed_nodes,
+                    total_nodes=len(execution_order),
+                )
+
                 result = await block.execute(resolved_inputs, resolved_config, context)
 
                 # Store result in context
                 context.nodes[node_id] = result.outputs
+
+                # Broadcast node complete via WebSocket
+                outputs_summary = {}
+                if result.outputs:
+                    for k, v in result.outputs.items():
+                        if isinstance(v, (list, tuple)):
+                            outputs_summary[k] = f"[{len(v)} items]"
+                        elif isinstance(v, dict):
+                            outputs_summary[k] = f"{{...{len(v)} keys}}"
+                        elif isinstance(v, str) and len(v) > 100:
+                            outputs_summary[k] = f"{v[:50]}..."
+                        else:
+                            outputs_summary[k] = str(v)[:100] if v is not None else None
+
+                await _broadcast_node_event(
+                    execution_id=execution_id,
+                    event_type="node_complete",
+                    node_id=node_id,
+                    node_type=node_type,
+                    duration_ms=result.duration_ms,
+                    outputs_summary=outputs_summary,
+                )
 
                 # Record metrics (aggregate for loop body nodes)
                 if node_id in metrics:
@@ -405,6 +675,14 @@ class WorkflowEngine:
                             i += 1
                             continue
 
+                    # Broadcast node error via WebSocket
+                    await _broadcast_node_event(
+                        execution_id=execution_id,
+                        event_type="node_error",
+                        node_id=node_id,
+                        node_type=node_type,
+                        error=result.error,
+                    )
                     error_info = {
                         "error": result.error,
                         "error_node_id": node_id,
@@ -430,6 +708,14 @@ class WorkflowEngine:
                         i += 1
                         continue
 
+                # Broadcast node error via WebSocket
+                await _broadcast_node_event(
+                    execution_id=execution_id,
+                    event_type="node_error",
+                    node_id=node_id,
+                    node_type=node_type,
+                    error=str(e),
+                )
                 error_info = {
                     "error": str(e),
                     "error_node_id": node_id,
@@ -461,6 +747,19 @@ class WorkflowEngine:
         else:
             result["error"] = None
             result["error_node_id"] = None
+
+        # Broadcast execution complete via WebSocket
+        try:
+            from api.v1.workflows.websocket import broadcast_complete
+            await broadcast_complete(
+                execution_id=execution_id,
+                status="completed" if not error_info else "failed",
+                duration_ms=int(total_duration),
+                outputs=outputs if not error_info else None,
+                error=error_info.get("error") if error_info else None,
+            )
+        except Exception:
+            pass  # Don't fail execution due to broadcast errors
 
         return result
 
@@ -625,6 +924,280 @@ class WorkflowEngine:
             edge_inputs[target][target_handle] = ref
 
         return edge_inputs
+
+    def _build_conditional_edges(self, edges: list[dict], nodes: list[dict]) -> dict[str, dict[str, list[str]]]:
+        """
+        Build conditional edge mappings for branching.
+
+        Returns:
+            Dict mapping condition_node_id -> {"true": [target_ids], "false": [target_ids]}
+
+        Supports both sourceHandle-based ("true_output"/"false_output") and edge condition property.
+        """
+        # Find condition nodes
+        condition_node_ids = {n["id"] for n in nodes if n.get("type") == "condition"}
+
+        conditional_edges: dict[str, dict[str, list[str]]] = {}
+
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            source_handle = edge.get("sourceHandle") or edge.get("source_handle", "")
+            edge_condition = edge.get("condition")  # Explicit condition property
+
+            if not source or not target:
+                continue
+
+            # Check if source is a condition node
+            if source in condition_node_ids:
+                if source not in conditional_edges:
+                    conditional_edges[source] = {"true": [], "false": [], "any": []}
+
+                # Determine branch based on sourceHandle or condition property
+                if edge_condition in ("true", "false"):
+                    conditional_edges[source][edge_condition].append(target)
+                elif source_handle in ("true_output", "result") and source_handle != "false_output":
+                    conditional_edges[source]["true"].append(target)
+                elif source_handle == "false_output":
+                    conditional_edges[source]["false"].append(target)
+                else:
+                    # No explicit condition - runs regardless of result
+                    conditional_edges[source]["any"].append(target)
+
+        return conditional_edges
+
+    def _get_skipped_nodes(
+        self,
+        conditional_edges: dict[str, dict[str, list[str]]],
+        context: ExecutionContext,
+        nodes: list[dict],
+        edges: list[dict],
+    ) -> set[str]:
+        """
+        Determine which nodes should be skipped due to conditional branching.
+
+        Returns set of node IDs that should NOT be executed.
+        """
+        skipped = set()
+
+        # Build node adjacency for downstream propagation
+        adjacency = defaultdict(list)
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            if source and target:
+                adjacency[source].append(target)
+
+        for cond_node_id, branches in conditional_edges.items():
+            # Check if condition has been evaluated
+            if cond_node_id not in context.nodes:
+                continue
+
+            cond_result = context.nodes[cond_node_id].get("result", False)
+
+            # Determine which branch to skip
+            if cond_result:
+                # True branch active, skip false branch
+                skip_targets = branches.get("false", [])
+            else:
+                # False branch active, skip true branch
+                skip_targets = branches.get("true", [])
+
+            # Add skipped targets and their downstream nodes
+            for target in skip_targets:
+                skipped.add(target)
+                # Propagate skip to downstream nodes (unless they have other inputs)
+                self._propagate_skip(target, skipped, adjacency, conditional_edges, context)
+
+        return skipped
+
+    def _propagate_skip(
+        self,
+        node_id: str,
+        skipped: set[str],
+        adjacency: dict[str, list[str]],
+        conditional_edges: dict[str, dict[str, list[str]]],
+        context: ExecutionContext,
+    ):
+        """Propagate skip status to downstream nodes that only depend on skipped nodes."""
+        for downstream in adjacency.get(node_id, []):
+            if downstream in skipped:
+                continue
+
+            # Don't propagate past condition nodes - they'll make their own decisions
+            if downstream in conditional_edges:
+                continue
+
+            # Add to skipped and propagate
+            skipped.add(downstream)
+            self._propagate_skip(downstream, skipped, adjacency, conditional_edges, context)
+
+    async def _execute_parallel_iteration(
+        self,
+        iter_state: IterationState,
+        loop_body_nodes: list[dict],
+        edge_inputs: dict[str, dict[str, str]],
+        context: ExecutionContext,
+        execution_id: str,
+    ) -> tuple[list[Any], dict[str, dict], list[dict]]:
+        """
+        Execute loop body for all items in parallel.
+
+        Returns:
+            Tuple of (collected_results, metrics_by_node, errors)
+        """
+        items = iter_state.items
+        max_concurrency = iter_state.max_concurrency
+        batch_size = iter_state.batch_size
+        on_error = iter_state.on_error
+
+        collected_results = []
+        all_metrics: dict[str, dict] = {}
+        errors: list[dict] = []
+
+        async def execute_single_item(item: Any, index: int) -> tuple[Any, dict, Optional[dict]]:
+            """Execute loop body for a single item."""
+            item_context = ExecutionContext(
+                inputs=context.inputs,
+                nodes=dict(context.nodes),  # Copy to avoid conflicts
+                workflow_id=context.workflow_id,
+                execution_id=execution_id,
+                parameters=context.parameters,
+            )
+
+            # Set iteration variables for this item
+            item_context.variables["_iteration_index"] = index
+            item_context.variables["_iteration_total"] = len(items)
+            item_context.variables["_iteration_foreach"] = iter_state.foreach_node_id
+
+            # Set ForEach output for this iteration
+            item_context.nodes[iter_state.foreach_node_id] = {
+                "item": item,
+                "index": index,
+                "total": len(items),
+                "is_first": index == 0,
+                "is_last": index == len(items) - 1,
+            }
+
+            item_metrics = {}
+            result_item = None
+            error_info = None
+
+            # Execute each node in the loop body
+            for node in loop_body_nodes:
+                node_id = node["id"]
+                node_type = node["type"]
+                node_config = node.get("config", {})
+                node_inputs_config = {**edge_inputs.get(node_id, {}), **node.get("inputs", {})}
+
+                block = self._blocks.get(node_type)
+                if not block:
+                    error_info = {"index": index, "node_id": node_id, "error": f"Unknown block type: {node_type}"}
+                    break
+
+                try:
+                    resolved_inputs = self._resolve_inputs(node_inputs_config, item_context)
+                    resolved_config = self._resolve_config(node_config, item_context)
+
+                    result = await block.execute(resolved_inputs, resolved_config, item_context)
+                    item_context.nodes[node_id] = result.outputs
+
+                    # Accumulate metrics
+                    if node_id not in item_metrics:
+                        item_metrics[node_id] = {
+                            "type": node_type,
+                            "duration_ms": 0,
+                            "executions": 0,
+                        }
+                    item_metrics[node_id]["duration_ms"] += result.duration_ms
+                    item_metrics[node_id]["executions"] += 1
+
+                    if not result.success:
+                        error_info = {"index": index, "node_id": node_id, "error": result.error}
+                        if on_error == "stop":
+                            break
+
+                except Exception as e:
+                    error_info = {"index": index, "node_id": node_id, "error": str(e)}
+                    if on_error == "stop":
+                        break
+
+            # Get the final output (typically from the last node before collect)
+            if loop_body_nodes:
+                last_node_id = loop_body_nodes[-1]["id"]
+                if last_node_id in item_context.nodes:
+                    result_item = item_context.nodes[last_node_id]
+
+            return result_item, item_metrics, error_info
+
+        # Execute based on mode
+        if iter_state.iteration_mode == "parallel":
+            # Parallel with concurrency limit using semaphore
+            semaphore = asyncio.Semaphore(max_concurrency)
+
+            async def limited_execute(item: Any, index: int):
+                async with semaphore:
+                    return await execute_single_item(item, index)
+
+            results = await asyncio.gather(
+                *[limited_execute(item, idx) for idx, item in enumerate(items)],
+                return_exceptions=True,
+            )
+
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception):
+                    errors.append({"index": idx, "node_id": None, "error": str(res)})
+                else:
+                    result_item, item_metrics, error_info = res
+                    if result_item is not None:
+                        collected_results.append(result_item)
+                    if error_info:
+                        errors.append(error_info)
+
+                    # Merge metrics
+                    for node_id, node_metrics in item_metrics.items():
+                        if node_id not in all_metrics:
+                            all_metrics[node_id] = {
+                                "type": node_metrics["type"],
+                                "duration_ms": 0,
+                                "executions": 0,
+                            }
+                        all_metrics[node_id]["duration_ms"] += node_metrics["duration_ms"]
+                        all_metrics[node_id]["executions"] += node_metrics["executions"]
+
+        elif iter_state.iteration_mode == "batch":
+            # Process in batches
+            for batch_start in range(0, len(items), batch_size):
+                batch_items = items[batch_start:batch_start + batch_size]
+
+                # Execute batch in parallel
+                batch_results = await asyncio.gather(
+                    *[execute_single_item(item, batch_start + idx) for idx, item in enumerate(batch_items)],
+                    return_exceptions=True,
+                )
+
+                for idx, res in enumerate(batch_results):
+                    if isinstance(res, Exception):
+                        errors.append({"index": batch_start + idx, "node_id": None, "error": str(res)})
+                    else:
+                        result_item, item_metrics, error_info = res
+                        if result_item is not None:
+                            collected_results.append(result_item)
+                        if error_info:
+                            errors.append(error_info)
+
+                        # Merge metrics
+                        for node_id, node_metrics in item_metrics.items():
+                            if node_id not in all_metrics:
+                                all_metrics[node_id] = {
+                                    "type": node_metrics["type"],
+                                    "duration_ms": 0,
+                                    "executions": 0,
+                                }
+                            all_metrics[node_id]["duration_ms"] += node_metrics["duration_ms"]
+                            all_metrics[node_id]["executions"] += node_metrics["executions"]
+
+        return collected_results, all_metrics, errors
 
     def _resolve_inputs(
         self,

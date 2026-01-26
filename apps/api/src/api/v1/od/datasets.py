@@ -524,13 +524,11 @@ async def get_dataset_stats(dataset_id: str):
 
     ds = dataset.data
 
-    # Get image status counts
-    status_result = supabase_service.client.table("od_dataset_images").select("status").eq("dataset_id", dataset_id).execute()
-    status_counts = {"pending": 0, "annotating": 0, "completed": 0, "skipped": 0}
-    for item in status_result.data or []:
-        status = item.get("status", "pending")
-        if status in status_counts:
-            status_counts[status] += 1
+    # Get image status counts using individual count queries (more efficient for large datasets)
+    status_counts = {"pending": 0, "annotated": 0, "annotating": 0, "completed": 0, "skipped": 0}
+    for status in status_counts.keys():
+        count_result = supabase_service.client.table("od_dataset_images").select("id", count="exact").eq("dataset_id", dataset_id).eq("status", status).execute()
+        status_counts[status] = count_result.count or 0
 
     # Get annotation count
     annotation_result = supabase_service.client.table("od_annotations").select("id", count="exact").eq("dataset_id", dataset_id).execute()
@@ -580,7 +578,7 @@ async def get_dataset_stats(dataset_id: str):
 @router.patch("/{dataset_id}/images/{image_id}/status")
 async def update_image_status(dataset_id: str, image_id: str, status: str):
     """Update the status of an image in a dataset."""
-    valid_statuses = ["pending", "annotating", "completed", "skipped"]
+    valid_statuses = ["pending", "annotating", "annotated", "completed", "skipped"]
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 
@@ -610,14 +608,14 @@ async def update_images_status_bulk(dataset_id: str, image_ids: list[str], statu
     Args:
         dataset_id: The dataset ID
         image_ids: List of image IDs to update
-        status: New status (pending, annotating, completed, skipped)
+        status: New status (pending, annotating, annotated, completed, skipped)
 
     Returns:
         Count of updated images
     """
     from datetime import datetime, timezone
 
-    valid_statuses = ["pending", "annotating", "completed", "skipped"]
+    valid_statuses = ["pending", "annotating", "annotated", "completed", "skipped"]
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 

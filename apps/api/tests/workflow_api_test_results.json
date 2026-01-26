@@ -1,0 +1,89 @@
+{
+  "timestamp": "2026-01-26T00:56:06.171510",
+  "api_base": "http://localhost:8000/api/v1",
+  "summary": {
+    "total": 9,
+    "passed": 2,
+    "failed": 7,
+    "total_duration_ms": 630.94
+  },
+  "tests": [
+    {
+      "name": "Test 1: Create Workflow",
+      "status": "FAIL",
+      "duration_ms": 14.5,
+      "timestamp": "2026-01-26T00:56:05.553896",
+      "error": "HTTP 307: "
+    },
+    {
+      "name": "Test 3: Embedding Workflow",
+      "status": "FAIL",
+      "duration_ms": 14.47,
+      "timestamp": "2026-01-26T00:56:05.568426",
+      "error": "Create failed: "
+    },
+    {
+      "name": "Test 4: Detection + Filter",
+      "status": "FAIL",
+      "duration_ms": 17.77,
+      "timestamp": "2026-01-26T00:56:05.586274",
+      "error": ""
+    },
+    {
+      "name": "Test 5: List Workflows",
+      "status": "FAIL",
+      "duration_ms": 15.19,
+      "timestamp": "2026-01-26T00:56:05.601628",
+      "error": "HTTP 307"
+    },
+    {
+      "name": "Test 6: List Executions",
+      "status": "PASS",
+      "duration_ms": 302.48,
+      "timestamp": "2026-01-26T00:56:05.904198",
+      "total_executions": 0,
+      "recent_executions": 0,
+      "has_pagination": true
+    },
+    {
+      "name": "Test 7: Block Registry",
+      "status": "FAIL",
+      "duration_ms": 19.25,
+      "timestamp": "2026-01-26T00:56:05.923520",
+      "exception": "'str' object has no attribute 'get'"
+    },
+    {
+      "name": "Test 8: Transform Pipeline",
+      "status": "FAIL",
+      "duration_ms": 14.96,
+      "timestamp": "2026-01-26T00:56:05.938542",
+      "error": ""
+    },
+    {
+      "name": "Test 9: Update Workflow",
+      "status": "FAIL",
+      "duration_ms": 14.29,
+      "timestamp": "2026-01-26T00:56:05.952891",
+      "error": ""
+    },
+    {
+      "name": "Test 10: Pretrained Models",
+      "status": "PASS",
+      "duration_ms": 218.03,
+      "timestamp": "2026-01-26T00:56:06.171101",
+      "total_models": 34,
+      "model_types": [
+        "embedding",
+        "classification",
+        "detection",
+        "segmentation"
+      ],
+      "type_counts": {
+        "embedding": 7,
+        "classification": 5,
+        "detection": 14,
+        "segmentation": 8
+      }
+    }
+  ]
+}

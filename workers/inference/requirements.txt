@@ -10,10 +10,9 @@ transformers>=4.45.0
 # Ultralytics (for YOLO models)
 ultralytics>=8.1.0
 
-# Super-gradients (for YOLO-NAS)
-# Note: super-gradients requires onnxruntime==1.13.1 specifically
-onnxruntime==1.13.1
-super-gradients>=3.5.0
+# YOLO-NAS disabled - super-gradients requires onnxruntime==1.13.1 which is
+# incompatible with Python 3.11. Use RT-DETR or D-FINE instead (better anyway).
+# super-gradients>=3.5.0
 
 # Image processing
 pillow>=10.0.0

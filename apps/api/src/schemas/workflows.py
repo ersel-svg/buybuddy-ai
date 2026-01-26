@@ -5,8 +5,20 @@ Schemas for workflow definitions, executions, and models.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import Optional, Any, Literal
 from pydantic import BaseModel, Field
+
+
+# ===========================================
+# Execution Mode Enum
+# ===========================================
+
+class ExecutionMode(str, Enum):
+    """Workflow execution mode."""
+    SYNC = "sync"           # Wait for result (default, max timeout applies)
+    ASYNC = "async"         # Return execution_id immediately, poll for result
+    BACKGROUND = "background"  # Fire-and-forget with optional webhook callback
 
 
 # ===========================================
@@ -99,9 +111,26 @@ class ExecutionInput(BaseModel):
 
 
 class WorkflowRunRequest(BaseModel):
-    """Request to run a workflow."""
+    """
+    Request to run a workflow.
+
+    Supports three execution modes:
+    - sync: Wait for completion (default, subject to timeout)
+    - async: Return immediately with execution_id, poll /executions/{id} for result
+    - background: Fire-and-forget with optional webhook callback
+    """
     input: Optional[ExecutionInput] = None
     inputs: Optional[dict] = None  # Alternative format from frontend
+
+    # Execution options
+    mode: ExecutionMode = Field(default=ExecutionMode.SYNC, description="Execution mode")
+    priority: int = Field(default=5, ge=1, le=10, description="Queue priority (1=lowest, 10=highest)")
+    callback_url: Optional[str] = Field(default=None, description="Webhook URL for async completion notification")
+    timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Execution timeout in seconds")
+
+    # Retry options
+    max_retries: int = Field(default=3, ge=0, le=10, description="Maximum retry attempts on failure")
+    retry_on_failure: bool = Field(default=True, description="Whether to retry on failure")
 
     def get_execution_input(self) -> ExecutionInput:
         """Get normalized execution input."""
@@ -114,6 +143,30 @@ class WorkflowRunRequest(BaseModel):
                 parameters=self.inputs.get("parameters", {}),
             )
         return ExecutionInput()
+
+
+class WorkflowRunResponse(BaseModel):
+    """
+    Response from workflow run request.
+
+    For sync mode: Contains full output_data
+    For async/background mode: Contains status_url for polling
+    """
+    execution_id: str
+    status: str
+    mode: ExecutionMode
+
+    # Only populated for sync mode or completed async
+    output_data: Optional[dict] = None
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+
+    # For async/background mode
+    status_url: Optional[str] = None
+    estimated_wait_seconds: Optional[int] = None
+
+    class Config:
+        from_attributes = True
 
 
 class NodeMetrics(BaseModel):
@@ -138,6 +191,15 @@ class ExecutionResponse(BaseModel):
     error_message: Optional[str] = None
     error_node_id: Optional[str] = None
     created_at: datetime
+
+    # Async execution fields
+    execution_mode: Optional[str] = None
+    priority: Optional[int] = None
+    callback_url: Optional[str] = None
+    retry_count: Optional[int] = None
+    max_retries: Optional[int] = None
+    progress: Optional[dict] = None
+    workflow_version: Optional[int] = None
 
     class Config:
         from_attributes = True

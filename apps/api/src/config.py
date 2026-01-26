@@ -105,6 +105,24 @@ class Settings(BaseSettings):
     export_stream_batch_size: int = 500
     storage_delete_max_concurrent: int = 10
 
+    # ===========================================
+    # Rate Limiting Configuration
+    # ===========================================
+    # Redis URL for distributed rate limiting (optional, falls back to memory)
+    redis_url: str = ""
+
+    # Enable/disable rate limiting
+    rate_limit_enabled: bool = True
+
+    # Default rate limit for all endpoints (requests per minute)
+    rate_limit_requests_per_minute: int = 120
+
+    # Workflow execution rate limit (GPU-intensive, lower limit)
+    rate_limit_workflow_runs_per_minute: int = 30
+
+    # Burst allowance (extra requests allowed in short bursts)
+    rate_limit_burst: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:

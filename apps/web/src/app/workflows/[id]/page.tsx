@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -25,6 +25,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { apiClient } from "@/lib/api-client";
+import { getBlockDefaults, getBlockPalette, blockRegistry } from "@/lib/workflow";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -564,17 +565,23 @@ function WorkflowEditorContent() {
         setIsAutoSaving(true);
         try {
           const definition = {
-            nodes: nodes.map((node) => ({
-              id: node.id,
-              type: node.data.type,
-              position: node.position,
-              data: {
-                label: node.data.label,
-                config: node.data.config || {},
-                model_id: node.data.model_id,
-                model_source: node.data.model_source,
-              },
-            })),
+            nodes: nodes.map((node) => {
+              const config = node.data.config || {};
+              return {
+                id: node.id,
+                type: node.data.type,
+                position: node.position,
+                // Config at node level for backend compatibility
+                config: config,
+                // Also keep data for frontend display
+                data: {
+                  label: node.data.label,
+                  config: config,
+                  model_id: config.model_id ?? node.data.model_id,
+                  model_source: config.model_source ?? node.data.model_source,
+                },
+              };
+            }),
             edges: edges.map((edge) => {
               const edgeData = edge.data as { sourcePort?: string; targetPort?: string } | undefined;
               return {
@@ -613,19 +620,16 @@ function WorkflowEditorContent() {
     enabled: !!workflowId,
   });
 
-  // Fetch blocks registry
-  const { data: blocks } = useQuery({
-    queryKey: ["workflow-blocks"],
-    queryFn: () => apiClient.getWorkflowBlocks(),
-  });
+  // Get blocks from registry (memoized, no API call needed)
+  const blocks = useMemo(() => getBlockPalette(), []);
 
-  // Get block category
+  // Get block category from registry
   const getBlockCategory = useCallback(
     (type: string): string => {
-      const block = blocks?.find((b) => b.type === type);
+      const block = blockRegistry.get(type);
       return block?.category || "logic";
     },
-    [blocks]
+    []
   );
 
   // Load workflow definition into React Flow
@@ -687,17 +691,23 @@ function WorkflowEditorContent() {
   const saveMutation = useMutation({
     mutationFn: () => {
       const definition = {
-        nodes: nodes.map((node) => ({
-          id: node.id,
-          type: node.data.type,
-          position: node.position,
-          data: {
-            label: node.data.label,
-            config: node.data.config || {},
-            model_id: node.data.model_id,
-            model_source: node.data.model_source,
-          },
-        })),
+        nodes: nodes.map((node) => {
+          const config = node.data.config || {};
+          return {
+            id: node.id,
+            type: node.data.type,
+            position: node.position,
+            // Config at node level for backend compatibility
+            config: config,
+            // Also keep data for frontend display
+            data: {
+              label: node.data.label,
+              config: config,
+              model_id: config.model_id ?? node.data.model_id,
+              model_source: config.model_source ?? node.data.model_source,
+            },
+          };
+        }),
         edges: edges.map((edge) => {
           // Port mapping can be in edge.data (new format) or edge.sourceHandle/targetHandle (old format)
           const edgeData = edge.data as { sourcePort?: string; targetPort?: string } | undefined;
@@ -796,7 +806,7 @@ function WorkflowEditorContent() {
           label: block.display_name,
           type: block.type,
           category: block.category,
-          config: {},
+          config: getBlockDefaults(block.type),
         },
       };
 
@@ -828,7 +838,7 @@ function WorkflowEditorContent() {
           label: block.display_name,
           type: block.type,
           category: block.category,
-          config: {},
+          config: getBlockDefaults(block.type),
         },
       };
 
@@ -1170,7 +1180,7 @@ function WorkflowEditorContent() {
       {/* Main content */}
       <div className="flex-1 flex min-h-0">
         {/* Block palette */}
-        <BlockPalette blocks={(blocks as BlockDef[]) || []} onDragStart={onDragStart} onQuickAdd={handleQuickAdd} />
+        <BlockPalette blocks={blocks} onDragStart={onDragStart} onQuickAdd={handleQuickAdd} />
 
         {/* Canvas */}
         <div className="flex-1" ref={reactFlowWrapper}>

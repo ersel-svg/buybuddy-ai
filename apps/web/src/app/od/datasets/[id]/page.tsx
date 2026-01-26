@@ -265,6 +265,14 @@ export default function ODDatasetDetailPage({
     gcTime: 5 * 60 * 1000,
   });
 
+  // Fetch dataset stats (images_by_status)
+  const { data: datasetStats } = useQuery({
+    queryKey: ["od-dataset-stats", datasetId],
+    queryFn: () => apiClient.getODDatasetStats(datasetId),
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
+  });
+
   // Fetch dataset images
   const {
     data: imagesData,
@@ -523,6 +531,7 @@ export default function ODDatasetDetailPage({
       toast.success(data.message);
       queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
       queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
     },
     onError: (error) => {
       toast.error(`Failed to update status: ${error.message}`);
@@ -957,6 +966,13 @@ export default function ODDatasetDetailPage({
             Completed
           </Badge>
         );
+      case "annotated":
+        return (
+          <Badge variant="default" className="bg-purple-600">
+            <Sparkles className="h-3 w-3 mr-1" />
+            Annotated
+          </Badge>
+        );
       case "annotating":
         return (
           <Badge variant="default" className="bg-blue-600">
@@ -1122,7 +1138,7 @@ export default function ODDatasetDetailPage({
         {/* Images Tab */}
         <TabsContent value="images" className="space-y-6 mt-6">
           {/* Stats Cards */}
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-6 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Total Images</CardTitle>
@@ -1133,11 +1149,31 @@ export default function ODDatasetDetailPage({
         </Card>
         <Card>
           <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Pending</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-yellow-600">
+              {datasetStats?.images_by_status?.pending ?? 0}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Annotated</CardTitle>
           </CardHeader>
           <CardContent>
+            <p className="text-2xl font-bold text-purple-600">
+              {datasetStats?.images_by_status?.annotated ?? 0}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Completed</CardTitle>
+          </CardHeader>
+          <CardContent>
             <p className="text-2xl font-bold text-green-600">
-              {(dataset as any).annotated_image_count ?? 0}
+              {datasetStats?.images_by_status?.completed ?? 0}
             </p>
           </CardContent>
         </Card>
@@ -1231,7 +1267,7 @@ export default function ODDatasetDetailPage({
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="annotating">Annotating</SelectItem>
+                <SelectItem value="annotated">Annotated</SelectItem>
                 <SelectItem value="completed">Completed</SelectItem>
                 <SelectItem value="skipped">Skipped</SelectItem>
               </SelectContent>
@@ -1263,17 +1299,17 @@ export default function ODDatasetDetailPage({
           </div>
 
           {/* Quick Actions - Mark annotated images as completed */}
-          {dataset && dataset.image_count > 0 && dataset.annotated_image_count < dataset.image_count && (
-            <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg">
-              <CheckCircle className="h-4 w-4 text-blue-600" />
-              <span className="text-sm text-blue-700 dark:text-blue-300">
-                {dataset.image_count - dataset.annotated_image_count} images with annotations are still pending
+          {datasetStats && (datasetStats.images_by_status?.annotated ?? 0) > 0 && (
+            <div className="flex items-center gap-2 p-3 bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 rounded-lg">
+              <Sparkles className="h-4 w-4 text-purple-600" />
+              <span className="text-sm text-purple-700 dark:text-purple-300">
+                {datasetStats.images_by_status?.annotated ?? 0} images have AI annotations ready for review
               </span>
               <Button
                 variant="outline"
                 size="sm"
                 className="ml-auto"
-                onClick={() => bulkStatusByFilterMutation.mutate({ newStatus: "completed", currentStatus: "pending", hasAnnotations: true })}
+                onClick={() => bulkStatusByFilterMutation.mutate({ newStatus: "completed", currentStatus: "annotated" })}
                 disabled={bulkStatusByFilterMutation.isPending}
               >
                 {bulkStatusByFilterMutation.isPending ? (
@@ -2891,12 +2927,13 @@ export default function ODDatasetDetailPage({
         onOpenChange={setIsBulkAnnotateOpen}
         datasetId={datasetId}
         totalImages={dataset.image_count}
-        unannotatedCount={dataset.image_count - ((dataset as any).annotated_image_count ?? 0)}
+        unannotatedCount={datasetStats?.images_by_status?.pending ?? 0}
         selectedImageIds={Array.from(selectedImages)}
         existingClasses={classes || []}
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
           queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+          queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
         }}
       />
 

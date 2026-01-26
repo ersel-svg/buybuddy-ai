@@ -1,0 +1,74 @@
+{
+  "timestamp": "2026-01-26T14:26:41.177126",
+  "endpoint": "yz9lgcxh1rdj9o",
+  "total_tests": 8,
+  "passed": 8,
+  "failed": 0,
+  "success_rate": 1.0,
+  "results": [
+    {
+      "name": "Simple Detection",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 9429,
+      "execution_id": "4056edf0-5341-445a-b1c7-91ca58b75d35",
+      "error": null
+    },
+    {
+      "name": "Detection + Visualization",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 720,
+      "execution_id": "289029c3-011a-4639-a24b-62fc76019afd",
+      "error": null
+    },
+    {
+      "name": "DINOv2 Embedding",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 3787,
+      "execution_id": "b8885f38-309c-49fc-9b60-3651457b67b4",
+      "error": null
+    },
+    {
+      "name": "Parallel Models",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 3939,
+      "execution_id": "7d524532-cdc7-4ec9-b6b6-083761cbe665",
+      "error": null
+    },
+    {
+      "name": "ViT Classification",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 2595,
+      "execution_id": "a56946f4-8822-4597-addb-089212b2f15d",
+      "error": null
+    },
+    {
+      "name": "Detection + Filter",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 923,
+      "execution_id": "71a6062e-463f-4041-938d-0bb7d8eee35f",
+      "error": null
+    },
+    {
+      "name": "Transform Pipeline",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 749,
+      "execution_id": "660b0528-2d07-4deb-ba70-9c91f28bcfe4",
+      "error": null
+    },
+    {
+      "name": "Conditional Logic",
+      "success": true,
+      "status": "completed",
+      "duration_ms": 823,
+      "execution_id": "bc04b004-0347-443e-b233-2cd72ba34f73",
+      "error": null
+    }
+  ]
+}

@@ -1093,7 +1093,7 @@ async def _save_predictions_as_annotations(
                     "annotation_count": class_count
                 }).eq("id", class_id).execute()
 
-            # Update image annotation counts and last_annotated_at (batch for efficiency)
+            # Update image annotation counts, status, and last_annotated_at (batch for efficiency)
             image_ids = list(predictions_by_image.keys())
             for image_id in image_ids:
                 img_count_result = supabase_service.client.table("od_annotations").select(
@@ -1102,6 +1102,7 @@ async def _save_predictions_as_annotations(
                 img_count = img_count_result.count or 0
                 supabase_service.client.table("od_dataset_images").update({
                     "annotation_count": img_count,
+                    "status": "annotated" if img_count > 0 else "pending",  # Mark as annotated
                     "last_annotated_at": now,  # Track when this image was last annotated
                 }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
 
