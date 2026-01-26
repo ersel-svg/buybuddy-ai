@@ -5,10 +5,12 @@ on:
     branches: [main, develop]
     paths:
       - 'apps/web/**'
+      - '.github/workflows/lighthouse-ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'apps/web/**'
+      - '.github/workflows/lighthouse-ci.yml'
   # Allow manual trigger
   workflow_dispatch:
   # Run weekly for tracking
