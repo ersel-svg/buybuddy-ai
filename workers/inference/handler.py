@@ -534,8 +534,9 @@ def load_detection_model(
         if "d-fine" in model_type.lower() or "dfine" in model_type.lower():
             # D-FINE model using transformers
             model, processor = load_dfine_model(local_path, num_classes or 80)
-        elif "rtdetr" in model_type.lower() or "rt-detr" in model_type.lower():
-            # RT-DETR model using transformers
+        elif "rtdetr" in model_type.lower() or "rt-detr" in model_type.lower() or "rf-detr" in model_type.lower():
+            # RT-DETR / RF-DETR model using transformers
+            print(f"Loading RT-DETR/RF-DETR variant ({model_type}) from {local_path}")
             model, processor = load_rtdetr_model(local_path, model_type, num_classes or 80)
         elif "yolo" in model_type.lower() or model_type.startswith("yolov8") or model_type.startswith("yolov9"):
             # YOLO models (including Roboflow YOLOv8/v9 models)
