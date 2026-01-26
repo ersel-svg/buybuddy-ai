@@ -530,13 +530,14 @@ def load_detection_model(
         elif "rtdetr" in model_type.lower() or "rt-detr" in model_type.lower():
             # RT-DETR model using transformers
             model, processor = load_rtdetr_model(local_path, model_type, num_classes or 80)
-        elif "yolo" in model_type.lower():
-            print(f"Loading YOLO variant from {local_path}")
+        elif "yolo" in model_type.lower() or model_type.startswith("yolov8") or model_type.startswith("yolov9"):
+            # YOLO models (including Roboflow YOLOv8/v9 models)
+            print(f"Loading YOLO variant ({model_type}) from {local_path}")
             model = YOLO(local_path)
         else:
-            # Try YOLO first, fallback to raw checkpoint
+            # Try YOLO first (default for Roboflow models), fallback to raw checkpoint
             try:
-                print(f"Trying to load as YOLO model from {local_path}")
+                print(f"Trying to load as YOLO model (model_type: {model_type}) from {local_path}")
                 model = YOLO(local_path)
             except Exception as e:
                 print(f"YOLO load failed: {e}, trying raw checkpoint")
