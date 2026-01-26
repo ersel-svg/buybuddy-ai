@@ -197,6 +197,7 @@ export function ParamInput({
 }: ParamInputProps) {
   const isParam = isParamRef(value);
   const stringValue = value !== undefined && value !== null ? String(value) : "";
+  const hasValue = stringValue !== "";
 
   return (
     <div className="relative">
@@ -212,12 +213,29 @@ export function ParamInput({
           }
         }}
         placeholder={placeholder || (type === "number" ? "0 or {{ params.name }}" : "Value or {{ params.name }}")}
-        className={`${className || "h-8"} ${isParam ? "font-mono text-xs pr-8" : ""}`}
+        className={`${className || "h-8"} ${isParam ? "font-mono text-xs pr-16" : hasValue ? "pr-8" : ""}`}
         min={min}
         max={max}
       />
+      {hasValue && (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 hover:bg-destructive/10"
+                onClick={() => onChange(undefined)}
+              >
+                <span className="text-xs text-muted-foreground hover:text-destructive">✕</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Clear value</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
       {isParam && (
-        <Variable className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-blue-500" />
+        <Variable className="absolute right-9 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-blue-500" />
       )}
     </div>
   );
