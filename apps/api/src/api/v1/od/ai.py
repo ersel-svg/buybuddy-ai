@@ -570,20 +570,36 @@ async def batch_annotate(
     if not dataset_result.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Get images to process
-    if request.image_ids:
-        # Specific images
-        images_query = supabase_service.client.table("od_dataset_images").select(
-            "image_id, od_images!inner(id, image_url)"
-        ).eq("dataset_id", request.dataset_id).in_("image_id", request.image_ids)
-    else:
-        # All unannotated images in dataset
-        images_query = supabase_service.client.table("od_dataset_images").select(
-            "image_id, od_images!inner(id, image_url)"
-        ).eq("dataset_id", request.dataset_id).eq("status", "pending")
+    # Get images to process - use pagination to bypass Supabase 1000 row limit
+    images = []
+    batch_size = 1000
+    offset = 0
 
-    images_result = images_query.execute()
-    images = images_result.data or []
+    while True:
+        if request.image_ids:
+            # Specific images - batch the .in_() query to avoid URL length limits
+            # Process in chunks of 50 UUIDs at a time
+            chunk_size = 50
+            for i in range(0, len(request.image_ids), chunk_size):
+                chunk = request.image_ids[i:i + chunk_size]
+                chunk_result = supabase_service.client.table("od_dataset_images").select(
+                    "image_id, od_images!inner(id, image_url)"
+                ).eq("dataset_id", request.dataset_id).in_("image_id", chunk).execute()
+                images.extend(chunk_result.data or [])
+            break  # No pagination needed for specific IDs
+        else:
+            # All unannotated images in dataset - paginate
+            images_query = supabase_service.client.table("od_dataset_images").select(
+                "image_id, od_images!inner(id, image_url)"
+            ).eq("dataset_id", request.dataset_id).eq("status", "pending").range(offset, offset + batch_size - 1)
+
+            images_result = images_query.execute()
+            batch = images_result.data or []
+            images.extend(batch)
+
+            if len(batch) < batch_size:
+                break  # No more records
+            offset += batch_size
 
     if not images:
         raise HTTPException(
