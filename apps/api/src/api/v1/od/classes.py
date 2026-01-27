@@ -310,22 +310,45 @@ async def merge_classes(data: ODClassMergeRequest):
         raise HTTPException(status_code=400, detail="One or more source classes not found")
 
     total_moved = 0
+    BATCH_SIZE = 1000  # Process in batches to avoid timeout
 
     # Move annotations from source classes to target
     for source_id in data.source_class_ids:
         if source_id == data.target_class_id:
             continue
 
-        # Update annotations
-        result = supabase_service.client.table("od_annotations").update({
-            "class_id": data.target_class_id
-        }).eq("class_id", source_id).execute()
-
-        moved = len(result.data or [])
-        total_moved += moved
-
-        # Get source name for logging
+        # Get source class info
         source_class = next((s for s in sources.data if s["id"] == source_id), None)
+        source_annotation_count = source_class.get("annotation_count", 0) or 0 if source_class else 0
+
+        # Update annotations in batches
+        moved_for_source = 0
+        while True:
+            # Get batch of annotation IDs to update
+            batch_result = supabase_service.client.table("od_annotations") \
+                .select("id") \
+                .eq("class_id", source_id) \
+                .limit(BATCH_SIZE) \
+                .execute()
+
+            if not batch_result.data:
+                break
+
+            batch_ids = [ann["id"] for ann in batch_result.data]
+
+            # Update this batch
+            supabase_service.client.table("od_annotations").update({
+                "class_id": data.target_class_id
+            }).in_("id", batch_ids).execute()
+
+            moved_for_source += len(batch_ids)
+            print(f"[Merge] Moved {moved_for_source}/{source_annotation_count} annotations from {source_class['name'] if source_class else source_id}")
+
+            # If we got less than batch size, we're done
+            if len(batch_ids) < BATCH_SIZE:
+                break
+
+        total_moved += moved_for_source
 
         # Log the merge
         supabase_service.client.table("od_class_changes").insert({
@@ -334,7 +357,7 @@ async def merge_classes(data: ODClassMergeRequest):
             "target_class_id": data.target_class_id,
             "old_name": source_class["name"] if source_class else None,
             "new_name": target.data["name"],
-            "affected_annotation_count": moved,
+            "affected_annotation_count": moved_for_source,
         }).execute()
 
         # Delete source class
