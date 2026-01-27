@@ -1095,6 +1095,8 @@ class ApiClient {
     merchant_ids: number[];
     max_items?: number;
     page_size?: number;
+    inserted_at?: string;
+    updated_at?: string;
   }): Promise<{ job_id: string; status: string; message: string }> {
     return this.request<{ job_id: string; status: string; message: string }>("/api/v1/cutouts/sync/new", {
       method: "POST",
@@ -1107,6 +1109,8 @@ class ApiClient {
     max_items?: number;
     page_size?: number;
     start_page?: number;
+    inserted_at?: string;
+    updated_at?: string;
   }): Promise<{ job_id: string; status: string; message: string }> {
     return this.request<{ job_id: string; status: string; message: string }>("/api/v1/cutouts/sync/backfill", {
       method: "POST",

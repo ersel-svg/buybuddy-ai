@@ -124,6 +124,8 @@ class BuybuddyService:
         sort_field: Optional[str] = None,
         sort_order: str = "asc",
         merchant_ids: Optional[list[int]] = None,
+        inserted_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Fetch cutout images from BuyBuddy API.
@@ -137,6 +139,8 @@ class BuybuddyService:
             sort_field: Field to sort by (id, cutout_image_url, upc)
             sort_order: Sort direction (asc, desc)
             merchant_ids: List of merchant IDs to filter by (required for performance)
+            inserted_at: Filter by insertion date (YYYY-MM-DD format)
+            updated_at: Filter by update date (YYYY-MM-DD format)
 
         Returns:
             Dict with:
@@ -163,6 +167,12 @@ class BuybuddyService:
         # Add merchant_id[] params (multiple values with same key)
         for mid in merchant_ids:
             params.append(("merchant_id[]", mid))
+
+        # Add date filters
+        if inserted_at:
+            params.append(("inserted_at", inserted_at))
+        if updated_at:
+            params.append(("updated_at", updated_at))
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(

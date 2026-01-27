@@ -29,6 +29,9 @@ from .bulk_product_matcher import BulkProductMatcherHandler
 # Cutout Handlers
 from .cutout_sync import CutoutSyncJobHandler
 
+# OD Class Handlers
+from .class_merge import ClassMergeJobHandler
+
 __all__ = [
     # OD Handlers
     "BulkAddToDatasetHandler",
@@ -49,4 +52,6 @@ __all__ = [
     "BulkProductMatcherHandler",
     # Cutout Handlers
     "CutoutSyncJobHandler",
+    # OD Class Handlers
+    "ClassMergeJobHandler",
 ]

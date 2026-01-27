@@ -76,6 +76,8 @@ export default function CutoutsPage() {
   const [syncLimit, setSyncLimit] = useState("1000");
   const [backfillStartPage, setBackfillStartPage] = useState("1");
   const [selectedMerchantIds, setSelectedMerchantIds] = useState<number[]>([]);
+  const [insertedAt, setInsertedAt] = useState("");
+  const [updatedAt, setUpdatedAt] = useState("");
 
   // Active sync job tracking
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -158,7 +160,7 @@ export default function CutoutsPage() {
 
   // Sync New mutation - creates background job
   const syncNewMutation = useMutation({
-    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number }) =>
+    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number; inserted_at?: string; updated_at?: string }) =>
       apiClient.syncNewCutouts(params),
     onSuccess: (data) => {
       toast.info(`Sync job started. Tracking progress...`);
@@ -172,7 +174,7 @@ export default function CutoutsPage() {
 
   // Backfill mutation - creates background job
   const backfillMutation = useMutation({
-    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number; start_page?: number }) =>
+    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number; start_page?: number; inserted_at?: string; updated_at?: string }) =>
       apiClient.backfillCutouts(params),
     onSuccess: (data) => {
       toast.info(`Backfill job started. Tracking progress...`);
@@ -190,7 +192,13 @@ export default function CutoutsPage() {
       return;
     }
     const limit = parseInt(syncLimit) || 1000;
-    syncNewMutation.mutate({ merchant_ids: selectedMerchantIds, max_items: limit, page_size: 100 });
+    syncNewMutation.mutate({
+      merchant_ids: selectedMerchantIds,
+      max_items: limit,
+      page_size: 100,
+      inserted_at: insertedAt || undefined,
+      updated_at: updatedAt || undefined,
+    });
   };
 
   const handleBackfill = () => {
@@ -200,7 +208,14 @@ export default function CutoutsPage() {
     }
     const limit = parseInt(syncLimit) || 1000;
     const startPage = parseInt(backfillStartPage) || 1;
-    backfillMutation.mutate({ merchant_ids: selectedMerchantIds, max_items: limit, page_size: 100, start_page: startPage });
+    backfillMutation.mutate({
+      merchant_ids: selectedMerchantIds,
+      max_items: limit,
+      page_size: 100,
+      start_page: startPage,
+      inserted_at: insertedAt || undefined,
+      updated_at: updatedAt || undefined,
+    });
   };
 
   const toggleMerchant = (merchantId: number) => {
@@ -716,6 +731,31 @@ export default function CutoutsPage() {
                 )}
               </p>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Inserted After (optional)</Label>
+                <Input
+                  type="date"
+                  value={insertedAt}
+                  onChange={(e) => setInsertedAt(e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Updated After (optional)</Label>
+                <Input
+                  type="date"
+                  value={updatedAt}
+                  onChange={(e) => setUpdatedAt(e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </div>
+            </div>
+            {(insertedAt || updatedAt) && (
+              <p className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
+                Filtering by date: {insertedAt && `inserted_at ≥ ${insertedAt}`} {insertedAt && updatedAt && " and "} {updatedAt && `updated_at ≥ ${updatedAt}`}
+              </p>
+            )}
             {parseInt(syncLimit) > 10000 && (
               <p className="text-sm text-orange-600 bg-orange-50 p-3 rounded-lg">
                 Warning: Syncing more than 10,000 cutouts may take a while.
@@ -829,6 +869,31 @@ export default function CutoutsPage() {
                 Start from this page (100 items/page). Use higher values to fill gaps in the middle.
               </p>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Inserted After (optional)</Label>
+                <Input
+                  type="date"
+                  value={insertedAt}
+                  onChange={(e) => setInsertedAt(e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Updated After (optional)</Label>
+                <Input
+                  type="date"
+                  value={updatedAt}
+                  onChange={(e) => setUpdatedAt(e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                />
+              </div>
+            </div>
+            {(insertedAt || updatedAt) && (
+              <p className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
+                Filtering by date: {insertedAt && `inserted_at ≥ ${insertedAt}`} {insertedAt && updatedAt && " and "} {updatedAt && `updated_at ≥ ${updatedAt}`}
+              </p>
+            )}
             {syncState?.backfill_completed && (
               <p className="text-sm text-green-600 bg-green-50 p-3 rounded-lg">
                 Backfill already completed - all historical data has been synced.

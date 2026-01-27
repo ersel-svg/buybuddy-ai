@@ -40,6 +40,8 @@ class SyncNewRequest(BaseModel):
     merchant_ids: list[int]  # Required - filter by merchant IDs
     max_items: int = 10000  # Safety limit
     page_size: int = 100
+    inserted_at: Optional[str] = None  # Filter by insertion date (YYYY-MM-DD)
+    updated_at: Optional[str] = None  # Filter by update date (YYYY-MM-DD)
 
 
 class BackfillRequest(BaseModel):
@@ -48,6 +50,8 @@ class BackfillRequest(BaseModel):
     max_items: int = 10000  # Items per backfill batch
     page_size: int = 100
     start_page: int = 1  # Start from this page number (useful for filling gaps)
+    inserted_at: Optional[str] = None  # Filter by insertion date (YYYY-MM-DD)
+    updated_at: Optional[str] = None  # Filter by update date (YYYY-MM-DD)
 
 
 class SyncResponse(BaseModel):
@@ -293,14 +297,20 @@ async def sync_new_cutouts(
     try:
         from services.local_jobs import create_local_job
 
+        config = {
+            "mode": "sync_new",
+            "merchant_ids": request.merchant_ids,
+            "max_items": request.max_items,
+            "page_size": request.page_size,
+        }
+        if request.inserted_at:
+            config["inserted_at"] = request.inserted_at
+        if request.updated_at:
+            config["updated_at"] = request.updated_at
+
         job = await create_local_job(
             job_type="local_cutout_sync",
-            config={
-                "mode": "sync_new",
-                "merchant_ids": request.merchant_ids,
-                "max_items": request.max_items,
-                "page_size": request.page_size,
-            }
+            config=config
         )
 
         return SyncJobResponse(
@@ -504,15 +514,21 @@ async def backfill_cutouts(
     try:
         from services.local_jobs import create_local_job
 
+        config = {
+            "mode": "backfill",
+            "merchant_ids": request.merchant_ids,
+            "max_items": request.max_items,
+            "page_size": request.page_size,
+            "start_page": request.start_page,
+        }
+        if request.inserted_at:
+            config["inserted_at"] = request.inserted_at
+        if request.updated_at:
+            config["updated_at"] = request.updated_at
+
         job = await create_local_job(
             job_type="local_cutout_sync",
-            config={
-                "mode": "backfill",
-                "merchant_ids": request.merchant_ids,
-                "max_items": request.max_items,
-                "page_size": request.page_size,
-                "start_page": request.start_page,
-            }
+            config=config
         )
 
         return SyncJobResponse(

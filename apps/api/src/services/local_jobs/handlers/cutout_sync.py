@@ -63,6 +63,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
         max_items = config.get("max_items", 10000)
         page_size = config.get("page_size", 100)
         start_page = config.get("start_page", 1)
+        inserted_at = config.get("inserted_at")
+        updated_at = config.get("updated_at")
 
         update_progress(JobProgress(
             progress=0,
@@ -73,11 +75,13 @@ class CutoutSyncJobHandler(BaseJobHandler):
 
         if mode == "sync_new":
             return await self._sync_new(
-                job_id, merchant_ids, max_items, page_size, update_progress
+                job_id, merchant_ids, max_items, page_size, update_progress,
+                inserted_at=inserted_at, updated_at=updated_at
             )
         else:
             return await self._backfill(
-                job_id, merchant_ids, max_items, page_size, start_page, update_progress
+                job_id, merchant_ids, max_items, page_size, start_page, update_progress,
+                inserted_at=inserted_at, updated_at=updated_at
             )
 
     async def _sync_new(
@@ -87,6 +91,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
         max_items: int,
         page_size: int,
         update_progress: Callable[[JobProgress], None],
+        inserted_at: str | None = None,
+        updated_at: str | None = None,
     ) -> dict:
         """Sync new cutouts (newest first, stop when hitting existing)."""
         max_pages = max_items // page_size
@@ -125,6 +131,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
                     sort_field="id",
                     sort_order="desc",
                     merchant_ids=merchant_ids,
+                    inserted_at=inserted_at,
+                    updated_at=updated_at,
                 )
             except Exception as e:
                 errors.append(f"Page {page}: {str(e)}")
@@ -225,6 +233,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
         page_size: int,
         start_page: int,
         update_progress: Callable[[JobProgress], None],
+        inserted_at: str | None = None,
+        updated_at: str | None = None,
     ) -> dict:
         """Backfill old cutouts (oldest first)."""
         pages_to_fetch = max_items // page_size
@@ -255,6 +265,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
                     sort_field="id",
                     sort_order="asc",
                     merchant_ids=merchant_ids,
+                    inserted_at=inserted_at,
+                    updated_at=updated_at,
                 )
             except Exception as e:
                 errors.append(f"Page {page}: {str(e)}")
