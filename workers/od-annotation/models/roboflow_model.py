@@ -26,6 +26,114 @@ from .base import BaseModel
 from config import config
 
 
+class RFDETRWrapper:
+    """Wrapper to make RF-DETR model compatible with YOLO-style inference API."""
+
+    def __init__(self, model, classes: list[str], device: str = "cuda"):
+        self.model = model
+        self.classes = classes
+        self.device = device
+        self.names = {i: c for i, c in enumerate(classes)}
+
+    def __call__(self, image, conf: float = 0.3, verbose: bool = False, **kwargs):
+        """Run inference and return results in YOLO-compatible format."""
+        import torch
+        from PIL import Image
+        import numpy as np
+
+        # Ensure image is PIL Image
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+
+        # Preprocess image for RF-DETR
+        # RF-DETR expects normalized tensor
+        from torchvision import transforms
+
+        transform = transforms.Compose([
+            transforms.Resize((640, 640)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+        img_tensor = transform(image).unsqueeze(0)
+        if self.device == "cuda" and torch.cuda.is_available():
+            img_tensor = img_tensor.cuda()
+
+        # Run inference
+        with torch.no_grad():
+            outputs = self.model(img_tensor)
+
+        # Process outputs to YOLO-style format
+        results = [RFDETRResult(outputs, image.size, self.classes, conf)]
+        return results
+
+    def to(self, device):
+        """Move model to device."""
+        import torch
+        if device == "cuda" and torch.cuda.is_available():
+            self.model = self.model.cuda()
+        return self
+
+
+class RFDETRResult:
+    """Wrapper for RF-DETR results to match YOLO result format."""
+
+    def __init__(self, outputs: dict, orig_size: tuple, classes: list[str], conf_threshold: float):
+        import torch
+        import numpy as np
+
+        self.boxes = None
+        self.orig_size = orig_size  # (width, height)
+
+        # RF-DETR outputs: {'pred_logits': [...], 'pred_boxes': [...]}
+        pred_logits = outputs.get('pred_logits', outputs.get('logits'))
+        pred_boxes = outputs.get('pred_boxes', outputs.get('boxes'))
+
+        if pred_logits is None or pred_boxes is None:
+            return
+
+        # Get predictions (batch size 1)
+        logits = pred_logits[0]  # [num_queries, num_classes]
+        boxes = pred_boxes[0]    # [num_queries, 4] in cxcywh format, normalized
+
+        # Get class probabilities
+        probs = torch.softmax(logits, dim=-1)
+        scores, labels = probs[..., :-1].max(-1)  # Exclude background class
+
+        # Filter by confidence
+        mask = scores > conf_threshold
+        scores = scores[mask]
+        labels = labels[mask]
+        boxes = boxes[mask]
+
+        if len(boxes) == 0:
+            return
+
+        # Convert boxes from cxcywh to xyxy and scale to image size
+        w, h = orig_size
+        cx, cy, bw, bh = boxes.unbind(-1)
+        x1 = (cx - bw / 2) * w
+        y1 = (cy - bh / 2) * h
+        x2 = (cx + bw / 2) * w
+        y2 = (cy + bh / 2) * h
+        boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=-1)
+
+        # Create boxes object
+        self.boxes = RFDETRBoxes(boxes_xyxy, scores, labels)
+
+
+class RFDETRBoxes:
+    """Wrapper for RF-DETR boxes to match YOLO boxes format."""
+
+    def __init__(self, xyxy, conf, cls):
+        self.xyxy = xyxy
+        self.conf = conf
+        self.cls = cls
+
+    def __len__(self):
+        return len(self.xyxy)
+
+
 class RoboflowModel(BaseModel):
     """
     Wrapper for Roboflow-trained YOLO/DETR models.
@@ -140,13 +248,29 @@ class RoboflowModel(BaseModel):
         return model
 
     def _load_rtdetr(self, weights_path: str) -> Any:
-        """Load RT-DETR model using ultralytics."""
+        """Load RT-DETR / RF-DETR model.
+
+        Supports:
+        1. Ultralytics RTDETR format
+        2. Roboflow RF-DETR training checkpoint format (with 'model' and 'args' keys)
+        """
+        import torch
+
+        # First, check the checkpoint format
+        checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+
+        # Check if it's Roboflow RF-DETR format (has 'model' and 'args' keys)
+        if isinstance(checkpoint, dict) and 'model' in checkpoint and 'args' in checkpoint:
+            logger.info("Detected Roboflow RF-DETR training checkpoint format")
+            return self._load_rfdetr_roboflow(weights_path, checkpoint)
+
+        # Otherwise try Ultralytics RTDETR
+        logger.info("Trying Ultralytics RTDETR loader...")
         from ultralytics import RTDETR
 
         model = RTDETR(weights_path)
 
         if self.device == "cuda":
-            import torch
             if torch.cuda.is_available():
                 model.to(self.device)
                 logger.info(f"RT-DETR model loaded on CUDA")
@@ -156,6 +280,57 @@ class RoboflowModel(BaseModel):
             logger.info(f"RT-DETR model loaded on {self.device}")
 
         return model
+
+    def _load_rfdetr_roboflow(self, weights_path: str, checkpoint: dict) -> Any:
+        """Load Roboflow RF-DETR model from training checkpoint.
+
+        RF-DETR models from Roboflow training have a different format than Ultralytics.
+        They use the rfdetr package for inference.
+        """
+        import torch
+
+        try:
+            from rfdetr import RFDETRBase
+            from rfdetr.util.coco_classes import COCO_CLASSES
+        except ImportError:
+            logger.error("rfdetr package not installed. Install with: pip install rfdetr")
+            raise ImportError("rfdetr package required for Roboflow RF-DETR models")
+
+        # Get model args from checkpoint
+        args = checkpoint.get('args', {})
+        num_classes = getattr(args, 'num_classes', len(self.classes)) if hasattr(args, 'num_classes') else len(self.classes)
+
+        # Determine model size from checkpoint or default
+        # RF-DETR has base/medium/large variants
+        hidden_dim = 256  # Default for medium
+        if 'transformer.decoder.layers.0.self_attn.in_proj_weight' in checkpoint['model']:
+            weight_shape = checkpoint['model']['transformer.decoder.layers.0.self_attn.in_proj_weight'].shape
+            if weight_shape[0] == 768:  # 3 * 256
+                hidden_dim = 256  # Medium
+            elif weight_shape[0] == 1536:  # 3 * 512
+                hidden_dim = 512  # Large
+
+        logger.info(f"Loading RF-DETR with {num_classes} classes, hidden_dim={hidden_dim}")
+
+        # Create model with correct number of classes
+        model = RFDETRBase(
+            num_classes=num_classes,
+            hidden_dim=hidden_dim,
+        )
+
+        # Load state dict
+        model.load_state_dict(checkpoint['model'], strict=False)
+        model.eval()
+
+        # Move to device
+        if self.device == "cuda" and torch.cuda.is_available():
+            model = model.cuda()
+            logger.info("RF-DETR model loaded on CUDA")
+        else:
+            logger.info(f"RF-DETR model loaded on CPU")
+
+        # Wrap in a compatible interface
+        return RFDETRWrapper(model, self.classes, self.device)
 
     def predict(
         self,
