@@ -123,6 +123,7 @@ class BuybuddyService:
         page_size: int = 100,
         sort_field: Optional[str] = None,
         sort_order: str = "asc",
+        merchant_ids: Optional[list[int]] = None,
     ) -> dict[str, Any]:
         """
         Fetch cutout images from BuyBuddy API.
@@ -135,24 +136,33 @@ class BuybuddyService:
             page_size: Items per page
             sort_field: Field to sort by (id, cutout_image_url, upc)
             sort_order: Sort direction (asc, desc)
+            merchant_ids: List of merchant IDs to filter by (required for performance)
 
         Returns:
             Dict with:
-            - items: List of cutout images [{id, cutout_image_url, upc}]
+            - items: List of cutout images with merchant info and annotated UPC
             - page: Current page
             - page_size: Page size
+            - page_count: Total number of pages
             - has_more: Whether there are more pages
         """
+        if not merchant_ids or len(merchant_ids) == 0:
+            raise ValueError("merchant_ids is required and must contain at least one ID")
+
         token = await self._ensure_token()
 
-        # Build query params
-        params = {
-            "page": page,
-            "page_size": page_size,
-        }
+        # Build query params - merchant_id[] needs special handling
+        params: list[tuple[str, Any]] = [
+            ("page", page),
+            ("page_size", page_size),
+        ]
         if sort_field:
-            params["field"] = sort_field
-            params["sort"] = sort_order
+            params.append(("field", sort_field))
+            params.append(("sort", sort_order))
+
+        # Add merchant_id[] params (multiple values with same key)
+        for mid in merchant_ids:
+            params.append(("merchant_id[]", mid))
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
@@ -179,27 +189,34 @@ class BuybuddyService:
             resp.raise_for_status()
             data = resp.json()
 
-        # API returns array directly
-        items = data if isinstance(data, list) else data.get("data", [])
+        # New API returns {page_count, data: [...]}
+        page_count = data.get("page_count", 0) if isinstance(data, dict) else 0
+        items = data.get("data", []) if isinstance(data, dict) else data
 
-        # Transform to our format
+        # Transform to our format with new fields
         result_items = []
         for item in items:
             result_items.append({
                 "external_id": item.get("id"),
                 "image_url": item.get("cutout_image_url"),
                 "predicted_upc": item.get("upc"),
+                "merchant": item.get("merchant"),
+                "row_index": item.get("row_index"),
+                "column_index": item.get("column_index"),
+                "annotated_upc": item.get("annotated_upc"),
             })
 
         return {
             "items": result_items,
             "page": page,
             "page_size": page_size,
-            "has_more": len(items) == page_size,  # If full page, likely more
+            "page_count": page_count,
+            "has_more": page < page_count,
         }
 
     async def get_all_cutout_images(
         self,
+        merchant_ids: list[int],
         max_pages: Optional[int] = None,
         page_size: int = 100,
         sort_order: str = "desc",
@@ -208,6 +225,7 @@ class BuybuddyService:
         Fetch all cutout images (paginated internally).
 
         Args:
+            merchant_ids: List of merchant IDs to filter by (required)
             max_pages: Maximum pages to fetch (None for all)
             page_size: Items per page
             sort_order: Sort direction - "desc" for newest first, "asc" for oldest first
@@ -224,6 +242,7 @@ class BuybuddyService:
                 page_size=page_size,
                 sort_field="id",
                 sort_order=sort_order,
+                merchant_ids=merchant_ids,
             )
 
             all_items.extend(result["items"])
@@ -242,6 +261,73 @@ class BuybuddyService:
 
         return all_items
 
+
+    # ===========================================
+    # Merchants
+    # ===========================================
+
+    async def get_merchants(
+        self,
+        all_merchant: bool = True,
+        merchant_ids: Optional[list[int]] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch merchants from BuyBuddy API.
+
+        Args:
+            all_merchant: If True, returns all merchants. If False, returns only user's merchant.
+            merchant_ids: Filter by specific merchant IDs (optional).
+
+        Returns:
+            List of merchants with id, name, created_at, updated_at.
+        """
+        token = await self._ensure_token()
+
+        # Build query params
+        params: list[tuple[str, Any]] = []
+        if all_merchant:
+            params.append(("all_merchant", "true"))
+        if merchant_ids:
+            for mid in merchant_ids:
+                params.append(("merchant_id[]", mid))
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self.base_url}/merchant",
+                params=params if params else None,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            # Retry with fresh token on 401
+            if resp.status_code == 401:
+                token = await self._ensure_token(force_refresh=True)
+                resp = await client.get(
+                    f"{self.base_url}/merchant",
+                    params=params if params else None,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Response is a list of merchants
+        merchants = data if isinstance(data, list) else []
+
+        return [
+            {
+                "id": m.get("id"),
+                "name": m.get("name"),
+                "created_at": m.get("created_at"),
+                "updated_at": m.get("updated_at"),
+            }
+            for m in merchants
+        ]
 
     # ===========================================
     # Object Detection - Evaluation Images

@@ -2815,11 +2815,13 @@ class SupabaseService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         search: Optional[str] = None,
+        # Merchant filter
+        merchant_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Get cutout images with pagination and filters."""
         # Determine if we need to JOIN with products table
         needs_product_join = matched_category or matched_brand or search
-        
+
         if needs_product_join:
             # Use JOIN query for product filters
             select_fields = "*, products!left(id, product_name, brand_name, category)"
@@ -2835,6 +2837,8 @@ class SupabaseService:
             query = query.is_("matched_product_id", "null")
         if predicted_upc:
             query = query.eq("predicted_upc", predicted_upc)
+        if merchant_id is not None:
+            query = query.eq("merchant_id", merchant_id)
         
         # Date range filters
         if date_from:
@@ -2910,7 +2914,8 @@ class SupabaseService:
         Sync cutout images from BuyBuddy API.
 
         Args:
-            cutouts: List of cutout dicts with external_id, image_url, predicted_upc
+            cutouts: List of cutout dicts with external_id, image_url, predicted_upc,
+                     merchant, merchant_id, row_index, column_index, annotated_upc
 
         Returns:
             Dict with synced_count and skipped_count
@@ -2928,12 +2933,17 @@ class SupabaseService:
         )
         existing_ids = {item["external_id"] for item in existing.data}
 
-        # Filter new cutouts
+        # Filter new cutouts with all fields
         new_cutouts = [
             {
                 "external_id": c["external_id"],
                 "image_url": c["image_url"],
                 "predicted_upc": c.get("predicted_upc"),
+                "merchant": c.get("merchant"),
+                "merchant_id": c.get("merchant_id"),
+                "row_index": c.get("row_index"),
+                "column_index": c.get("column_index"),
+                "annotated_upc": c.get("annotated_upc"),
             }
             for c in cutouts
             if c["external_id"] not in existing_ids
@@ -3868,12 +3878,17 @@ class SupabaseService:
         )
         existing_ids = {item["external_id"] for item in existing.data}
 
-        # Filter new cutouts
+        # Filter new cutouts with all fields
         new_cutouts = [
             {
                 "external_id": c["external_id"],
                 "image_url": c["image_url"],
                 "predicted_upc": c.get("predicted_upc"),
+                "merchant": c.get("merchant"),
+                "merchant_id": c.get("merchant_id"),
+                "row_index": c.get("row_index"),
+                "column_index": c.get("column_index"),
+                "annotated_upc": c.get("annotated_upc"),
             }
             for c in filtered_cutouts
             if c["external_id"] not in existing_ids

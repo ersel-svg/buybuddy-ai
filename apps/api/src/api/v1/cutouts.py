@@ -29,6 +29,7 @@ class CutoutMatchRequest(BaseModel):
 
 class SyncRequest(BaseModel):
     """Request to sync cutouts from BuyBuddy."""
+    merchant_ids: list[int]  # Required - filter by merchant IDs
     max_pages: Optional[int] = None
     page_size: int = 100
     sort_order: str = "desc"  # "desc" for newest first, "asc" for oldest first
@@ -36,12 +37,14 @@ class SyncRequest(BaseModel):
 
 class SyncNewRequest(BaseModel):
     """Request to sync new cutouts (newest first until existing found)."""
+    merchant_ids: list[int]  # Required - filter by merchant IDs
     max_items: int = 10000  # Safety limit
     page_size: int = 100
 
 
 class BackfillRequest(BaseModel):
     """Request to backfill old cutouts."""
+    merchant_ids: list[int]  # Required - filter by merchant IDs
     max_items: int = 10000  # Items per backfill batch
     page_size: int = 100
     start_page: int = 1  # Start from this page number (useful for filling gaps)
@@ -81,6 +84,21 @@ class CutoutStatsResponse(BaseModel):
     unmatched: int
 
 
+class MerchantResponse(BaseModel):
+    """Merchant from BuyBuddy."""
+    id: int
+    name: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SyncJobResponse(BaseModel):
+    """Response when sync job is created."""
+    job_id: str
+    status: str
+    message: str
+
+
 # ===========================================
 # Dependency
 # ===========================================
@@ -109,6 +127,7 @@ async def list_cutouts(
     date_from: Optional[str] = Query(None, description="Filter cutouts synced after this date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="Filter cutouts synced before this date (YYYY-MM-DD)"),
     search: Optional[str] = Query(None, description="Search in matched product name or predicted UPC"),
+    merchant_id: Optional[int] = Query(None, description="Filter by merchant ID"),
     db: SupabaseService = Depends(get_supabase),
 ):
     """
@@ -122,6 +141,7 @@ async def list_cutouts(
     - matched_brand: Filter by matched product's brand
     - date_from/date_to: Filter by sync date range
     - search: Search in matched product name or predicted UPC
+    - merchant_id: Filter by merchant ID
     """
     result = await db.get_cutouts(
         page=page,
@@ -134,6 +154,7 @@ async def list_cutouts(
         date_from=date_from,
         date_to=date_to,
         search=search,
+        merchant_id=merchant_id,
     )
     return result
 
@@ -183,6 +204,29 @@ async def get_cutout_filter_options(
     return filters
 
 
+@router.get("/merchants")
+async def get_merchants() -> list[MerchantResponse]:
+    """
+    Get list of merchants from BuyBuddy API.
+
+    Returns all available merchants for cutout filtering.
+    """
+    if not buybuddy_service.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="BuyBuddy API credentials not configured"
+        )
+
+    try:
+        merchants = await buybuddy_service.get_merchants(all_merchant=True)
+        return [MerchantResponse(**m) for m in merchants]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch merchants: {str(e)}"
+        )
+
+
 @router.get("/stats")
 async def get_cutout_stats(
     db: SupabaseService = Depends(get_supabase),
@@ -200,31 +244,12 @@ async def get_sync_state(
     Get current cutout sync state.
 
     Returns min/max synced external IDs and progress information.
+    Note: buybuddy_max_id is no longer fetched since merchant_ids is now required.
     """
     state = await db.get_cutout_sync_state()
 
     if not state:
         return SyncStateResponse()
-
-    # Get BuyBuddy max ID for progress calculation
-    buybuddy_max_id = None
-    estimated_remaining = None
-
-    try:
-        if buybuddy_service.is_configured():
-            result = await buybuddy_service.get_cutout_images(
-                page=1, page_size=1, sort_field="id", sort_order="desc"
-            )
-            if result["items"]:
-                buybuddy_max_id = result["items"][0]["external_id"]
-
-                # Estimate remaining
-                min_synced = state.get("min_synced_external_id")
-                if min_synced and buybuddy_max_id:
-                    # This is rough - assumes sequential IDs
-                    estimated_remaining = min_synced - 1  # IDs below min
-    except Exception:
-        pass  # Ignore errors getting BuyBuddy max
 
     return SyncStateResponse(
         min_synced_external_id=state.get("min_synced_external_id"),
@@ -234,27 +259,87 @@ async def get_sync_state(
         last_sync_new_at=state.get("last_sync_new_at"),
         last_backfill_at=state.get("last_backfill_at"),
         last_backfill_page=state.get("last_backfill_page", 1),
-        buybuddy_max_id=buybuddy_max_id,
-        estimated_remaining=estimated_remaining,
+        buybuddy_max_id=None,
+        estimated_remaining=None,
     )
 
 
 @router.post("/sync/new")
 async def sync_new_cutouts(
-    request: SyncNewRequest = SyncNewRequest(),
+    request: SyncNewRequest,
     current_user: UserInfo = Depends(get_current_user),
-    db: SupabaseService = Depends(get_supabase),
-) -> SyncResponse:
+) -> SyncJobResponse:
     """
-    Sync NEW cutouts from BuyBuddy (newest first).
+    Sync NEW cutouts from BuyBuddy (newest first) - BACKGROUND JOB.
 
-    Fetches from newest to oldest and stops when it hits already-synced cutouts.
-    Use this for regular updates to get new cutouts.
+    Creates a background job that fetches from newest to oldest and stops
+    when it hits already-synced cutouts. Poll GET /api/v1/jobs/{job_id}
+    to track progress.
+
+    Requires merchant_ids to filter by merchant (for performance).
     """
     if not buybuddy_service.is_configured():
         raise HTTPException(
             status_code=400,
             detail="BuyBuddy API credentials not configured"
+        )
+
+    if not request.merchant_ids or len(request.merchant_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_ids is required and must contain at least one ID"
+        )
+
+    try:
+        from services.local_jobs import create_local_job
+
+        job = await create_local_job(
+            job_type="local_cutout_sync",
+            config={
+                "mode": "sync_new",
+                "merchant_ids": request.merchant_ids,
+                "max_items": request.max_items,
+                "page_size": request.page_size,
+            }
+        )
+
+        return SyncJobResponse(
+            job_id=job["id"],
+            status=job["status"],
+            message=f"Sync job created. Poll GET /api/v1/jobs/{job['id']} for progress.",
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create sync job: {str(e)}"
+        )
+
+
+@router.post("/sync/new/inline")
+async def sync_new_cutouts_inline(
+    request: SyncNewRequest,
+    current_user: UserInfo = Depends(get_current_user),
+    db: SupabaseService = Depends(get_supabase),
+) -> SyncResponse:
+    """
+    Sync NEW cutouts from BuyBuddy (newest first) - INLINE (blocking).
+
+    This is the original synchronous endpoint. For large syncs, prefer
+    POST /sync/new which runs as a background job.
+    """
+    if not buybuddy_service.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="BuyBuddy API credentials not configured"
+        )
+
+    if not request.merchant_ids or len(request.merchant_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_ids is required and must contain at least one ID"
         )
 
     try:
@@ -278,6 +363,7 @@ async def sync_new_cutouts(
                 page_size=request.page_size,
                 sort_field="id",
                 sort_order="desc",
+                merchant_ids=request.merchant_ids,
             )
 
             cutouts = result["items"]
@@ -343,6 +429,10 @@ async def sync_new_cutouts(
                 "external_id": c["external_id"],
                 "image_url": c["image_url"],
                 "predicted_upc": c.get("predicted_upc"),
+                "merchant": c.get("merchant"),
+                "row_index": c.get("row_index"),
+                "column_index": c.get("column_index"),
+                "annotated_upc": c.get("annotated_upc"),
             }
             for c in all_cutouts
             if c["external_id"] not in existing_ids
@@ -377,6 +467,8 @@ async def sync_new_cutouts(
             stopped_early=stopped_early,
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -386,20 +478,80 @@ async def sync_new_cutouts(
 
 @router.post("/sync/backfill")
 async def backfill_cutouts(
-    request: BackfillRequest = BackfillRequest(),
+    request: BackfillRequest,
     current_user: UserInfo = Depends(get_current_user),
-    db: SupabaseService = Depends(get_supabase),
-) -> SyncResponse:
+) -> SyncJobResponse:
     """
-    Backfill cutouts from BuyBuddy (oldest first).
+    Backfill cutouts from BuyBuddy (oldest first) - BACKGROUND JOB.
 
-    Fetches from oldest to newest and syncs any cutouts not already in DB.
-    Use this to fill in gaps and historical cutouts.
+    Creates a background job that fetches from oldest to newest and syncs
+    any cutouts not already in DB. Poll GET /api/v1/jobs/{job_id} for progress.
+
+    Requires merchant_ids to filter by merchant (for performance).
     """
     if not buybuddy_service.is_configured():
         raise HTTPException(
             status_code=400,
             detail="BuyBuddy API credentials not configured"
+        )
+
+    if not request.merchant_ids or len(request.merchant_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_ids is required and must contain at least one ID"
+        )
+
+    try:
+        from services.local_jobs import create_local_job
+
+        job = await create_local_job(
+            job_type="local_cutout_sync",
+            config={
+                "mode": "backfill",
+                "merchant_ids": request.merchant_ids,
+                "max_items": request.max_items,
+                "page_size": request.page_size,
+                "start_page": request.start_page,
+            }
+        )
+
+        return SyncJobResponse(
+            job_id=job["id"],
+            status=job["status"],
+            message=f"Backfill job created. Poll GET /api/v1/jobs/{job['id']} for progress.",
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create backfill job: {str(e)}"
+        )
+
+
+@router.post("/sync/backfill/inline")
+async def backfill_cutouts_inline(
+    request: BackfillRequest,
+    current_user: UserInfo = Depends(get_current_user),
+    db: SupabaseService = Depends(get_supabase),
+) -> SyncResponse:
+    """
+    Backfill cutouts from BuyBuddy (oldest first) - INLINE (blocking).
+
+    This is the original synchronous endpoint. For large backfills, prefer
+    POST /sync/backfill which runs as a background job.
+    """
+    if not buybuddy_service.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="BuyBuddy API credentials not configured"
+        )
+
+    if not request.merchant_ids or len(request.merchant_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_ids is required and must contain at least one ID"
         )
 
     try:
@@ -423,6 +575,7 @@ async def backfill_cutouts(
                 page_size=request.page_size,
                 sort_field="id",
                 sort_order="asc",
+                merchant_ids=request.merchant_ids,
             )
 
             cutouts = result["items"]
@@ -479,12 +632,16 @@ async def backfill_cutouts(
                 last_page=page,
             )
 
-        # Phase 2: Insert new cutouts
+        # Phase 2: Insert new cutouts with all fields
         new_cutouts = [
             {
                 "external_id": c["external_id"],
                 "image_url": c["image_url"],
                 "predicted_upc": c.get("predicted_upc"),
+                "merchant": c.get("merchant"),
+                "row_index": c.get("row_index"),
+                "column_index": c.get("column_index"),
+                "annotated_upc": c.get("annotated_upc"),
             }
             for c in all_cutouts
         ]
@@ -520,6 +677,8 @@ async def backfill_cutouts(
             last_page=page,
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -529,7 +688,7 @@ async def backfill_cutouts(
 
 @router.post("/sync")
 async def sync_cutouts(
-    request: SyncRequest = SyncRequest(),
+    request: SyncRequest,
     current_user: UserInfo = Depends(get_current_user),
     db: SupabaseService = Depends(get_supabase),
 ) -> SyncResponse:
@@ -537,11 +696,19 @@ async def sync_cutouts(
     Legacy sync endpoint - syncs cutouts from BuyBuddy.
 
     For new implementations, prefer /sync/new (for updates) or /sync/backfill (for historical data).
+
+    Requires merchant_ids to filter by merchant (for performance).
     """
     if not buybuddy_service.is_configured():
         raise HTTPException(
             status_code=400,
             detail="BuyBuddy API credentials not configured"
+        )
+
+    if not request.merchant_ids or len(request.merchant_ids) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_ids is required and must contain at least one ID"
         )
 
     # Validate sort_order
@@ -554,6 +721,7 @@ async def sync_cutouts(
     try:
         # Fetch from BuyBuddy API with sort order
         cutouts = await buybuddy_service.get_all_cutout_images(
+            merchant_ids=request.merchant_ids,
             max_pages=request.max_pages,
             page_size=request.page_size,
             sort_order=request.sort_order,
@@ -580,6 +748,8 @@ async def sync_cutouts(
             stopped_early=result.get("stopped_early", False),
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(
             status_code=500,

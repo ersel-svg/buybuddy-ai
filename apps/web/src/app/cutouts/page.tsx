@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
@@ -57,8 +57,9 @@ import {
   Clock,
   Database,
 } from "lucide-react";
-import type { CutoutImage } from "@/types";
+import type { CutoutImage, Job } from "@/types";
 import Image from "next/image";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const PAGE_SIZE = 50;
 
@@ -74,6 +75,52 @@ export default function CutoutsPage() {
   const [isBackfillDialogOpen, setIsBackfillDialogOpen] = useState(false);
   const [syncLimit, setSyncLimit] = useState("1000");
   const [backfillStartPage, setBackfillStartPage] = useState("1");
+  const [selectedMerchantIds, setSelectedMerchantIds] = useState<number[]>([]);
+
+  // Active sync job tracking
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJob, setActiveJob] = useState<Job | null>(null);
+
+  // Poll active job status
+  useEffect(() => {
+    if (!activeJobId) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const job = await apiClient.getJob(activeJobId);
+        setActiveJob(job);
+
+        if (job.status === "completed") {
+          const result = job.result as { synced_count?: number; message?: string } | undefined;
+          toast.success(result?.message || `Synced ${result?.synced_count || 0} cutouts`);
+          setActiveJobId(null);
+          setActiveJob(null);
+          queryClient.invalidateQueries({ queryKey: ["cutouts"] });
+          queryClient.invalidateQueries({ queryKey: ["cutout-stats"] });
+          queryClient.invalidateQueries({ queryKey: ["cutout-sync-state"] });
+        } else if (job.status === "failed") {
+          toast.error(`Sync failed: ${job.error || "Unknown error"}`);
+          setActiveJobId(null);
+          setActiveJob(null);
+        } else if (job.status === "cancelled") {
+          toast.info("Sync job was cancelled");
+          setActiveJobId(null);
+          setActiveJob(null);
+        }
+      } catch {
+        console.error("Failed to poll job status");
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [activeJobId, queryClient]);
+
+  // Fetch merchants from BuyBuddy API
+  const { data: merchants, isLoading: merchantsLoading } = useQuery({
+    queryKey: ["merchants"],
+    queryFn: () => apiClient.getMerchants(),
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
 
   // Fetch sync state
   const { data: syncState, isLoading: syncStateLoading } = useQuery({
@@ -109,63 +156,59 @@ export default function CutoutsPage() {
       }),
   });
 
-  // Sync New mutation
+  // Sync New mutation - creates background job
   const syncNewMutation = useMutation({
-    mutationFn: (params: { max_items?: number; page_size?: number }) =>
+    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number }) =>
       apiClient.syncNewCutouts(params),
     onSuccess: (data) => {
-      if (data.synced_count > 0) {
-        toast.success(
-          `Synced ${data.synced_count} new cutouts (ID ${data.lowest_external_id} - ${data.highest_external_id})`
-        );
-      } else {
-        toast.info("No new cutouts to sync - already up to date");
-      }
-      queryClient.invalidateQueries({ queryKey: ["cutouts"] });
-      queryClient.invalidateQueries({ queryKey: ["cutout-stats"] });
-      queryClient.invalidateQueries({ queryKey: ["cutout-sync-state"] });
+      toast.info(`Sync job started. Tracking progress...`);
+      setActiveJobId(data.job_id);
       setIsSyncNewDialogOpen(false);
     },
     onError: (error) => {
-      toast.error(`Sync failed: ${error.message}`);
+      toast.error(`Failed to start sync: ${error.message}`);
     },
   });
 
-  // Backfill mutation
+  // Backfill mutation - creates background job
   const backfillMutation = useMutation({
-    mutationFn: (params: { max_items?: number; page_size?: number; start_page?: number }) =>
+    mutationFn: (params: { merchant_ids: number[]; max_items?: number; page_size?: number; start_page?: number }) =>
       apiClient.backfillCutouts(params),
     onSuccess: (data) => {
-      if (data.synced_count > 0) {
-        toast.success(
-          `Backfilled ${data.synced_count} cutouts (ID ${data.lowest_external_id} - ${data.highest_external_id}). Last page: ${data.last_page}`
-        );
-        // Auto-update start page for continuation
-        if (data.last_page) {
-          setBackfillStartPage(String(data.last_page + 1));
-        }
-      } else {
-        toast.info(`No new cutouts found. Last page checked: ${data.last_page}. Try a higher start page.`);
-      }
-      queryClient.invalidateQueries({ queryKey: ["cutouts"] });
-      queryClient.invalidateQueries({ queryKey: ["cutout-stats"] });
-      queryClient.invalidateQueries({ queryKey: ["cutout-sync-state"] });
+      toast.info(`Backfill job started. Tracking progress...`);
+      setActiveJobId(data.job_id);
       setIsBackfillDialogOpen(false);
     },
     onError: (error) => {
-      toast.error(`Backfill failed: ${error.message}`);
+      toast.error(`Failed to start backfill: ${error.message}`);
     },
   });
 
   const handleSyncNew = () => {
+    if (selectedMerchantIds.length === 0) {
+      toast.error("Please select at least one merchant");
+      return;
+    }
     const limit = parseInt(syncLimit) || 1000;
-    syncNewMutation.mutate({ max_items: limit, page_size: 100 });
+    syncNewMutation.mutate({ merchant_ids: selectedMerchantIds, max_items: limit, page_size: 100 });
   };
 
   const handleBackfill = () => {
+    if (selectedMerchantIds.length === 0) {
+      toast.error("Please select at least one merchant");
+      return;
+    }
     const limit = parseInt(syncLimit) || 1000;
     const startPage = parseInt(backfillStartPage) || 1;
-    backfillMutation.mutate({ max_items: limit, page_size: 100, start_page: startPage });
+    backfillMutation.mutate({ merchant_ids: selectedMerchantIds, max_items: limit, page_size: 100, start_page: startPage });
+  };
+
+  const toggleMerchant = (merchantId: number) => {
+    setSelectedMerchantIds((prev) =>
+      prev.includes(merchantId)
+        ? prev.filter((id) => id !== merchantId)
+        : [...prev, merchantId]
+    );
   };
 
   const totalPages = cutoutsData
@@ -177,7 +220,7 @@ export default function CutoutsPage() {
     return new Date(dateStr).toLocaleString();
   };
 
-  const isSyncing = syncNewMutation.isPending || backfillMutation.isPending;
+  const isSyncing = syncNewMutation.isPending || backfillMutation.isPending || !!activeJobId;
 
   return (
     <div className="space-y-6">
@@ -209,10 +252,10 @@ export default function CutoutsPage() {
             onClick={() => setIsSyncNewDialogOpen(true)}
             disabled={isSyncing}
           >
-            {syncNewMutation.isPending ? (
+            {syncNewMutation.isPending || (activeJob && activeJob.config?.mode === "sync_new") ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Syncing...
+                {activeJob ? `${activeJob.progress}%` : "Starting..."}
               </>
             ) : (
               <>
@@ -226,10 +269,10 @@ export default function CutoutsPage() {
             onClick={() => setIsBackfillDialogOpen(true)}
             disabled={isSyncing}
           >
-            {backfillMutation.isPending ? (
+            {backfillMutation.isPending || (activeJob && activeJob.config?.mode === "backfill") ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Backfilling...
+                {activeJob ? `${activeJob.progress}%` : "Starting..."}
               </>
             ) : (
               <>
@@ -298,6 +341,25 @@ export default function CutoutsPage() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">No sync state available</p>
+          )}
+
+          {/* Active Job Progress */}
+          {activeJob && (
+            <div className="mt-4 pt-4 border-t">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                  <span className="text-sm font-medium">
+                    {activeJob.config?.mode === "sync_new" ? "Syncing New" : "Backfilling"}
+                  </span>
+                </div>
+                <span className="text-sm text-muted-foreground">{activeJob.progress}%</span>
+              </div>
+              <Progress value={activeJob.progress} className="h-2" />
+              {activeJob.current_step && (
+                <p className="text-xs text-muted-foreground mt-1">{activeJob.current_step}</p>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -463,8 +525,10 @@ export default function CutoutsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[80px]">Image</TableHead>
+                    <TableHead>Merchant</TableHead>
                     <TableHead>Predicted UPC</TableHead>
-                    <TableHead>External ID</TableHead>
+                    <TableHead>Annotated UPC</TableHead>
+                    <TableHead>Position</TableHead>
                     <TableHead>Embedding</TableHead>
                     <TableHead>Match Status</TableHead>
                     <TableHead>Synced</TableHead>
@@ -500,12 +564,28 @@ export default function CutoutsPage() {
                         </Tooltip>
                       </TableCell>
                       <TableCell>
+                        <span className="text-sm font-medium">
+                          {cutout.merchant || "-"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
                         <code className="text-sm bg-muted px-2 py-1 rounded">
                           {cutout.predicted_upc || "-"}
                         </code>
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        #{cutout.external_id}
+                      <TableCell>
+                        {cutout.annotated_upc ? (
+                          <code className="text-sm bg-green-100 text-green-800 px-2 py-1 rounded">
+                            {cutout.annotated_upc}
+                          </code>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {cutout.row_index && cutout.column_index
+                          ? `R${cutout.row_index} C${cutout.column_index}`
+                          : "-"}
                       </TableCell>
                       <TableCell>
                         {cutout.has_embedding ? (
@@ -585,6 +665,38 @@ export default function CutoutsPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
+              <Label>Select Merchants (Required)</Label>
+              <div className="grid grid-cols-2 gap-2 p-3 border rounded-lg">
+                {merchantsLoading ? (
+                  <div className="col-span-2 flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading merchants...
+                  </div>
+                ) : merchants && merchants.length > 0 ? (
+                  merchants.map((merchant) => (
+                    <div key={merchant.id} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`sync-merchant-${merchant.id}`}
+                        checked={selectedMerchantIds.includes(merchant.id)}
+                        onCheckedChange={() => toggleMerchant(merchant.id)}
+                      />
+                      <label
+                        htmlFor={`sync-merchant-${merchant.id}`}
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                      >
+                        {merchant.name}
+                      </label>
+                    </div>
+                  ))
+                ) : (
+                  <p className="col-span-2 text-sm text-muted-foreground">No merchants available</p>
+                )}
+              </div>
+              {selectedMerchantIds.length === 0 && !merchantsLoading && (
+                <p className="text-xs text-red-500">Please select at least one merchant</p>
+              )}
+            </div>
+            <div className="space-y-2">
               <Label>Maximum cutouts to sync</Label>
               <Input
                 type="number"
@@ -614,7 +726,7 @@ export default function CutoutsPage() {
             <Button variant="outline" onClick={() => setIsSyncNewDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSyncNew} disabled={syncNewMutation.isPending}>
+            <Button onClick={handleSyncNew} disabled={syncNewMutation.isPending || selectedMerchantIds.length === 0}>
               {syncNewMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -644,6 +756,38 @@ export default function CutoutsPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Select Merchants (Required)</Label>
+              <div className="grid grid-cols-2 gap-2 p-3 border rounded-lg">
+                {merchantsLoading ? (
+                  <div className="col-span-2 flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading merchants...
+                  </div>
+                ) : merchants && merchants.length > 0 ? (
+                  merchants.map((merchant) => (
+                    <div key={merchant.id} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`backfill-merchant-${merchant.id}`}
+                        checked={selectedMerchantIds.includes(merchant.id)}
+                        onCheckedChange={() => toggleMerchant(merchant.id)}
+                      />
+                      <label
+                        htmlFor={`backfill-merchant-${merchant.id}`}
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                      >
+                        {merchant.name}
+                      </label>
+                    </div>
+                  ))
+                ) : (
+                  <p className="col-span-2 text-sm text-muted-foreground">No merchants available</p>
+                )}
+              </div>
+              {selectedMerchantIds.length === 0 && !merchantsLoading && (
+                <p className="text-xs text-red-500">Please select at least one merchant</p>
+              )}
+            </div>
             <div className="space-y-2">
               <Label>Maximum cutouts to backfill</Label>
               <Input
@@ -695,7 +839,7 @@ export default function CutoutsPage() {
             <Button variant="outline" onClick={() => setIsBackfillDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleBackfill} disabled={backfillMutation.isPending}>
+            <Button onClick={handleBackfill} disabled={backfillMutation.isPending || selectedMerchantIds.length === 0}>
               {backfillMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />

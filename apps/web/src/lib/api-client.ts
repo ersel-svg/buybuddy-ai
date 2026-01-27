@@ -1044,12 +1044,14 @@ class ApiClient {
     has_embedding?: boolean;
     is_matched?: boolean;
     predicted_upc?: string;
-    // NEW: Visual picker filters
+    // Visual picker filters
     matched_category?: string;
     matched_brand?: string;
     date_from?: string;
     date_to?: string;
     search?: string;
+    // Merchant filter
+    merchant_id?: number;
   }): Promise<CutoutsResponse> {
     return this.request<CutoutsResponse>("/api/v1/cutouts", { params });
   }
@@ -1069,14 +1071,19 @@ class ApiClient {
     return this.request<CutoutStats>("/api/v1/cutouts/stats");
   }
 
-  async syncCutouts(params?: {
+  async getMerchants(): Promise<{ id: number; name: string }[]> {
+    return this.request<{ id: number; name: string }[]>("/api/v1/cutouts/merchants");
+  }
+
+  async syncCutouts(params: {
+    merchant_ids: number[];
     max_pages?: number;
     page_size?: number;
     sort_order?: "asc" | "desc";  // "desc" for newest first, "asc" for oldest first
   }): Promise<CutoutSyncResponse> {
     return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync", {
       method: "POST",
-      body: params || {},
+      body: params,
     });
   }
 
@@ -1084,24 +1091,26 @@ class ApiClient {
     return this.request<CutoutSyncState>("/api/v1/cutouts/sync/state");
   }
 
-  async syncNewCutouts(params?: {
+  async syncNewCutouts(params: {
+    merchant_ids: number[];
     max_items?: number;
     page_size?: number;
-  }): Promise<CutoutSyncResponse> {
-    return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync/new", {
+  }): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request<{ job_id: string; status: string; message: string }>("/api/v1/cutouts/sync/new", {
       method: "POST",
-      body: params || {},
+      body: params,
     });
   }
 
-  async backfillCutouts(params?: {
+  async backfillCutouts(params: {
+    merchant_ids: number[];
     max_items?: number;
     page_size?: number;
     start_page?: number;
-  }): Promise<CutoutSyncResponse> {
-    return this.request<CutoutSyncResponse>("/api/v1/cutouts/sync/backfill", {
+  }): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request<{ job_id: string; status: string; message: string }>("/api/v1/cutouts/sync/backfill", {
       method: "POST",
-      body: params || {},
+      body: params,
     });
   }
 

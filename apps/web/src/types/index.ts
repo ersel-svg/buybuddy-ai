@@ -323,6 +323,7 @@ export interface Job {
   type: JobType;
   status: JobStatus;
   progress: number;
+  current_step?: string;
   config?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
@@ -335,7 +336,8 @@ export type JobType =
   | "video_processing"
   | "augmentation"
   | "training"
-  | "embedding_extraction";
+  | "embedding_extraction"
+  | "local_cutout_sync";
 
 export type JobStatus =
   | "pending"
@@ -516,13 +518,22 @@ export interface CutoutImage {
   external_id: number;
   image_url: string;
   predicted_upc?: string;
+  // New fields from BuyBuddy API
+  merchant?: string;
+  merchant_id?: number;
+  row_index?: string;
+  column_index?: string;
+  annotated_upc?: string;
+  // Embedding fields
   qdrant_point_id?: string;
   embedding_model_id?: string;
   has_embedding: boolean;
+  // Match fields
   matched_product_id?: string;
   match_similarity?: number;
   matched_by?: string;
   matched_at?: string;
+  // Timestamps
   synced_at: string;
   created_at: string;
 }
