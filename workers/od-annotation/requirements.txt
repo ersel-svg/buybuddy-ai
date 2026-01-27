@@ -31,9 +31,6 @@ supervision>=0.18.0
 # Ultralytics (YOLOv8, RT-DETR) for Roboflow trained models
 ultralytics>=8.1.0
 
-# Roboflow RF-DETR (for RF-DETR training checkpoints)
-rfdetr>=1.0.0
-
 # ONNX for custom model support
 onnx>=1.15.0
 onnxruntime-gpu>=1.16.0
