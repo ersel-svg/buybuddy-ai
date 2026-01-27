@@ -574,14 +574,21 @@ async def batch_annotate(
     images = []
     batch_size = 1000
     offset = 0
+    max_images = request.limit if request.limit else None  # Early limit optimization
 
     while True:
+        # Stop early if we've reached the limit
+        if max_images and len(images) >= max_images:
+            images = images[:max_images]
+            break
+
         if request.image_ids:
             # Specific images - batch the .in_() query to avoid URL length limits
             # Process in chunks of 50 UUIDs at a time
             chunk_size = 50
-            for i in range(0, len(request.image_ids), chunk_size):
-                chunk = request.image_ids[i:i + chunk_size]
+            ids_to_fetch = request.image_ids[:max_images] if max_images else request.image_ids
+            for i in range(0, len(ids_to_fetch), chunk_size):
+                chunk = ids_to_fetch[i:i + chunk_size]
                 chunk_result = supabase_service.client.table("od_dataset_images").select(
                     "image_id, od_images!inner(id, image_url)"
                 ).eq("dataset_id", request.dataset_id).in_("image_id", chunk).execute()
