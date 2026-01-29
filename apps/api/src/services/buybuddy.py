@@ -1,18 +1,103 @@
-"""BuyBuddy Legacy API client for fetching products with video URLs."""
+"""BuyBuddy Legacy API client for fetching products with video URLs.
 
+SOTA Features:
+- Exponential backoff retry with jitter
+- Connection pooling for better performance
+- Automatic token refresh on 401
+- Rate limiting awareness
+"""
+
+import asyncio
+import random
 import httpx
 from typing import Any, Optional
 from config import settings
 
 
 class BuybuddyService:
-    """Client for BuyBuddy Legacy API."""
+    """Client for BuyBuddy Legacy API with SOTA retry and pooling."""
+
+    # Retry configuration
+    MAX_RETRIES = 3
+    BASE_DELAY = 1.0  # seconds
+    MAX_DELAY = 30.0  # seconds
 
     def __init__(self):
         self.base_url = settings.buybuddy_api_url
         self.username = settings.buybuddy_username
         self.password = settings.buybuddy_password
         self._token: Optional[str] = None
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create a persistent HTTP client with connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=10.0),
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return self._client
+
+    async def close(self):
+        """Close the HTTP client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> httpx.Response:
+        """Make HTTP request with exponential backoff retry."""
+        client = await self._get_client()
+        last_exception = None
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                resp = await client.request(method, url, **kwargs)
+
+                # Handle 401 - refresh token and retry
+                if resp.status_code == 401 and attempt < self.MAX_RETRIES - 1:
+                    self._token = await self._login()
+                    if "headers" in kwargs:
+                        kwargs["headers"]["Authorization"] = f"Bearer {self._token}"
+                    continue
+
+                # Handle rate limiting (429)
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", 5))
+                    await asyncio.sleep(retry_after)
+                    continue
+
+                resp.raise_for_status()
+                return resp
+
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                last_exception = e
+                if attempt < self.MAX_RETRIES - 1:
+                    # Exponential backoff with jitter
+                    delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
+                    jitter = random.uniform(0, delay * 0.1)
+                    await asyncio.sleep(delay + jitter)
+                    continue
+                raise
+
+            except httpx.HTTPStatusError as e:
+                # Don't retry client errors (4xx) except 401, 429
+                if 400 <= e.response.status_code < 500:
+                    raise
+                last_exception = e
+                if attempt < self.MAX_RETRIES - 1:
+                    delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Request failed after retries")
 
     def is_configured(self) -> bool:
         """Check if credentials are configured."""
@@ -174,30 +259,17 @@ class BuybuddyService:
         if updated_at:
             params.append(("updated_at", updated_at))
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(
-                f"{self.base_url}/ai/basket_image/cutout",
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-            )
-
-            # Retry with fresh token on 401
-            if resp.status_code == 401:
-                token = await self._ensure_token(force_refresh=True)
-                resp = await client.get(
-                    f"{self.base_url}/ai/basket_image/cutout",
-                    params=params,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                )
-
-            resp.raise_for_status()
-            data = resp.json()
+        # Use retry-enabled request
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/ai/basket_image/cutout",
+            params=params,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        data = resp.json()
 
         # New API returns {page_count, data: [...]}
         page_count = data.get("page_count", 0) if isinstance(data, dict) else 0

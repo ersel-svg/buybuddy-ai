@@ -1094,53 +1094,82 @@ async def _save_predictions_as_annotations(
                 except Exception as inner_e:
                     print(f"[AI Annotation] Failed single insert: {inner_e}")
 
-    # Update annotation counts on dataset, classes, and images
+    # Update annotation counts using batch RPC (prevents system lockup with large batches)
     if annotations_created > 0:
+        image_ids = list(predictions_by_image.keys())
+        class_ids = list(set(class_cache.values()))
+
+        # Try RPC first (most efficient - single query for all counts)
+        rpc_success = False
         try:
-            # Recalculate dataset annotation count
-            count_result = supabase_service.client.table("od_annotations").select(
-                "id", count="exact"
-            ).eq("dataset_id", dataset_id).execute()
-            total_count = count_result.count or 0
-            supabase_service.client.table("od_datasets").update({
-                "annotation_count": total_count
-            }).eq("id", dataset_id).execute()
+            result = supabase_service.client.rpc(
+                "update_annotation_counts_batch",
+                {
+                    "p_dataset_id": dataset_id,
+                    "p_image_ids": image_ids,
+                    "p_class_ids": class_ids,
+                }
+            ).execute()
 
-            # Update class annotation counts (for all classes that were used)
-            for class_id in set(class_cache.values()):
-                class_count_result = supabase_service.client.table("od_annotations").select(
-                    "id", count="exact"
-                ).eq("dataset_id", dataset_id).eq("class_id", class_id).execute()
-                class_count = class_count_result.count or 0
-                supabase_service.client.table("od_classes").update({
-                    "annotation_count": class_count
-                }).eq("id", class_id).execute()
-
-            # Update image annotation counts, status, and last_annotated_at (batch for efficiency)
-            image_ids = list(predictions_by_image.keys())
-            for image_id in image_ids:
-                img_count_result = supabase_service.client.table("od_annotations").select(
-                    "id", count="exact"
-                ).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
-                img_count = img_count_result.count or 0
-                supabase_service.client.table("od_dataset_images").update({
-                    "annotation_count": img_count,
-                    "status": "annotated" if img_count > 0 else "pending",  # Mark as annotated
-                    "last_annotated_at": now,  # Track when this image was last annotated
-                }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
-
-            # Update annotated_image_count on dataset (count images with annotation_count > 0)
-            annotated_images_result = supabase_service.client.table("od_dataset_images").select(
-                "id", count="exact"
-            ).eq("dataset_id", dataset_id).gt("annotation_count", 0).execute()
-            annotated_image_count = annotated_images_result.count or 0
-            supabase_service.client.table("od_datasets").update({
-                "annotated_image_count": annotated_image_count
-            }).eq("id", dataset_id).execute()
-            print(f"[AI Annotation] Updated annotated_image_count: {annotated_image_count}")
+            if result.data:
+                print(f"[AI Annotation] Batch count update: {result.data}")
+                rpc_success = True
+            else:
+                print(f"[AI Annotation] Batch count update completed")
+                rpc_success = True
 
         except Exception as e:
-            print(f"[AI Annotation] Failed to update counts: {e}")
+            print(f"[AI Annotation] RPC not available, using legacy method: {e}")
+
+        # Fallback to legacy method if RPC failed
+        if not rpc_success:
+            try:
+                # 1. Dataset total count (single query)
+                count_result = supabase_service.client.table("od_annotations").select(
+                    "id", count="exact"
+                ).eq("dataset_id", dataset_id).execute()
+                total_count = count_result.count or 0
+                supabase_service.client.table("od_datasets").update({
+                    "annotation_count": total_count
+                }).eq("id", dataset_id).execute()
+
+                # 2. Class counts (one query per class - usually just 1-2 classes)
+                for class_id in class_ids:
+                    class_count_result = supabase_service.client.table("od_annotations").select(
+                        "id", count="exact"
+                    ).eq("dataset_id", dataset_id).eq("class_id", class_id).execute()
+                    class_count = class_count_result.count or 0
+                    supabase_service.client.table("od_classes").update({
+                        "annotation_count": class_count
+                    }).eq("id", class_id).execute()
+
+                # 3. Image counts - SKIP for large batches to prevent lockup
+                # User can trigger manual recount if needed
+                if len(image_ids) <= 1000:
+                    for image_id in image_ids:
+                        img_count_result = supabase_service.client.table("od_annotations").select(
+                            "id", count="exact"
+                        ).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+                        img_count = img_count_result.count or 0
+                        supabase_service.client.table("od_dataset_images").update({
+                            "annotation_count": img_count,
+                            "status": "annotated" if img_count > 0 else "pending",
+                            "last_annotated_at": now,
+                        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
+
+                    # Update annotated_image_count
+                    annotated_images_result = supabase_service.client.table("od_dataset_images").select(
+                        "id", count="exact"
+                    ).eq("dataset_id", dataset_id).gt("annotation_count", 0).execute()
+                    supabase_service.client.table("od_datasets").update({
+                        "annotated_image_count": annotated_images_result.count or 0
+                    }).eq("id", dataset_id).execute()
+                else:
+                    print(f"[AI Annotation] Skipping image count updates for {len(image_ids)} images (too large, use RPC)")
+                    print(f"[AI Annotation] Run migration 071 to enable batch count updates")
+
+            except Exception as fallback_e:
+                print(f"[AI Annotation] Legacy fallback failed: {fallback_e}")
 
     return annotations_created
 
@@ -1279,3 +1308,104 @@ async def list_available_models() -> dict:
             },
         ],
     }
+
+
+@router.get("/models/{model_id}/debug")
+async def get_model_debug_info(model_id: str) -> dict:
+    """
+    Debug endpoint to get full model configuration from database.
+    Use this to verify model classes, architecture, and checkpoint URL.
+
+    model_id format:
+    - "rf:uuid" for Roboflow models
+    - "trained:uuid" for custom trained models
+    """
+    if model_id.startswith("rf:"):
+        rf_id = model_id.replace("rf:", "")
+        try:
+            result = supabase_service.client.table("od_roboflow_models").select(
+                "id, name, display_name, architecture, classes, checkpoint_url, map, class_count, is_active"
+            ).eq("id", rf_id).single().execute()
+
+            if not result.data:
+                raise HTTPException(status_code=404, detail=f"Roboflow model not found: {rf_id}")
+
+            model_data = result.data
+            return {
+                "model_type": "roboflow",
+                "id": model_data["id"],
+                "name": model_data["name"],
+                "display_name": model_data["display_name"],
+                "architecture": model_data["architecture"],
+                "classes": model_data["classes"],
+                "class_count": model_data["class_count"],
+                "num_classes_in_array": len(model_data["classes"]) if model_data["classes"] else 0,
+                "checkpoint_url": model_data["checkpoint_url"],
+                "map": model_data["map"],
+                "is_active": model_data["is_active"],
+                "_debug_info": {
+                    "what_worker_receives": {
+                        "model": "roboflow",
+                        "model_config": {
+                            "checkpoint_url": model_data["checkpoint_url"],
+                            "architecture": model_data["architecture"],
+                            "classes": model_data["classes"],
+                        }
+                    }
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    elif model_id.startswith("trained:"):
+        trained_id = model_id.replace("trained:", "")
+        try:
+            result = supabase_service.client.table("od_trained_models").select(
+                "id, name, model_type, checkpoint_url, class_mapping, map, map_50, is_active"
+            ).eq("id", trained_id).single().execute()
+
+            if not result.data:
+                raise HTTPException(status_code=404, detail=f"Trained model not found: {trained_id}")
+
+            model_data = result.data
+
+            # Resolve class names from class_mapping
+            class_mapping = model_data.get("class_mapping", {})
+            classes = []
+            if class_mapping:
+                sorted_classes = sorted(class_mapping.items(), key=lambda x: x[1])
+                class_ids = [class_id for class_id, _ in sorted_classes]
+
+                if class_ids:
+                    classes_result = supabase_service.client.table("od_classes").select(
+                        "id, name"
+                    ).in_("id", class_ids).execute()
+
+                    class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
+                    classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+
+            return {
+                "model_type": "trained",
+                "id": model_data["id"],
+                "name": model_data["name"],
+                "architecture": model_data["model_type"],
+                "class_mapping": class_mapping,
+                "resolved_classes": classes,
+                "num_classes": len(classes),
+                "checkpoint_url": model_data["checkpoint_url"],
+                "map": model_data["map"],
+                "map_50": model_data["map_50"],
+                "is_active": model_data["is_active"],
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid model_id format. Use 'rf:uuid' or 'trained:uuid'"
+        )

@@ -70,9 +70,15 @@ import {
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { useDropzone } from "react-dropzone";
-import { ImportModal } from "@/components/od/import-modal";
 import { JobProgressModal } from "@/components/common/job-progress-modal";
+
+// Lazy load heavy modal component
+const ImportModal = dynamic(
+  () => import("@/components/od/import-modal").then((mod) => mod.ImportModal),
+  { ssr: false }
+);
 
 const PAGE_SIZE = 48;
 const ASYNC_THRESHOLD = 500; // Use async for more than 500 images

@@ -95,8 +95,14 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { CLSImportModal } from "@/components/cls/import-modal";
+import dynamic from "next/dynamic";
 import { JobProgressModal } from "@/components/common/job-progress-modal";
+
+// Lazy load heavy modal component
+const CLSImportModal = dynamic(
+  () => import("@/components/cls/import-modal").then((mod) => mod.CLSImportModal),
+  { ssr: false }
+);
 
 // Debounce hook
 function useDebounce<T>(value: T, delay: number): T {

@@ -117,6 +117,7 @@ const STATUS_COLORS: Record<ProductStatus, string> = {
 interface ProductTableRowProps {
   product: Product;
   isSelected: boolean;
+  isHighlighted?: boolean;
   onToggleSelect: (id: string) => void;
   onDownload: (product: Product) => void;
   onReprocess: (id: string) => void;
@@ -127,6 +128,7 @@ interface ProductTableRowProps {
 const ProductTableRow = memo(function ProductTableRow({
   product,
   isSelected,
+  isHighlighted = false,
   onToggleSelect,
   onDownload,
   onReprocess,
@@ -134,7 +136,7 @@ const ProductTableRow = memo(function ProductTableRow({
   isReprocessing,
 }: ProductTableRowProps) {
   return (
-    <TableRow className={isSelected ? "bg-blue-50" : ""}>
+    <TableRow className={isSelected || isHighlighted ? "bg-blue-50" : ""}>
       <TableCell>
         <Checkbox
           checked={isSelected}
@@ -1034,8 +1036,16 @@ function ProductsPageContent() {
   const addToDatasetMutation = useMutation({
     mutationFn: ({ datasetId, productIds }: { datasetId: string; productIds: string[] }) =>
       apiClient.addProductsToDataset(datasetId, productIds),
-    onSuccess: () => {
-      toast.success(`${selectedIds.size} product(s) added to dataset`);
+    onSuccess: (result) => {
+      // Check if this is a background job (50+ products)
+      if (result.job_id) {
+        toast.success(
+          "Background job started. Products will be added to the dataset. Check the Jobs page for progress.",
+          { duration: 5000 }
+        );
+      } else {
+        toast.success(`${selectedIds.size} product(s) added to dataset`);
+      }
       setSelectedIds(new Set());
       setSelectAllFilteredMode(false);
       setDatasetDialogOpen(false);
@@ -1052,23 +1062,31 @@ function ProductsPageContent() {
     mutationFn: ({ datasetId, filters }: { datasetId: string; filters: ExportFilters }) =>
       apiClient.addFilteredProductsToDataset(datasetId, filters),
     onSuccess: (result) => {
-      const added = result.added_count || 0;
-      const skipped = result.skipped_count || 0;
-      const total = result.total_matching || added;
-      const durationSec = result.duration_ms ? (result.duration_ms / 1000).toFixed(1) : null;
-      
-      if (skipped > 0) {
+      // Check if this is a background job
+      if (result.job_id) {
         toast.success(
-          `Added ${added} product(s) to dataset (${skipped} already existed)` +
-          (durationSec ? ` in ${durationSec}s` : "")
+          "Background job started. Products will be added to the dataset. Check the Jobs page for progress.",
+          { duration: 5000 }
         );
       } else {
-        toast.success(
-          `${added} product(s) added to dataset` +
-          (durationSec ? ` in ${durationSec}s` : "")
-        );
+        // Sync result
+        const added = result.added_count || 0;
+        const skipped = result.skipped_count || 0;
+        const durationSec = result.duration_ms ? (result.duration_ms / 1000).toFixed(1) : null;
+
+        if (skipped > 0) {
+          toast.success(
+            `Added ${added} product(s) to dataset (${skipped} already existed)` +
+            (durationSec ? ` in ${durationSec}s` : "")
+          );
+        } else {
+          toast.success(
+            `${added} product(s) added to dataset` +
+            (durationSec ? ` in ${durationSec}s` : "")
+          );
+        }
       }
-      
+
       setSelectedIds(new Set());
       setSelectAllFilteredMode(false);
       setDatasetDialogOpen(false);
@@ -1462,6 +1480,7 @@ function ProductsPageContent() {
                     key={product.id}
                     product={product}
                     isSelected={selectedIds.has(product.id)}
+                    isHighlighted={selectAllFilteredMode}
                     onToggleSelect={toggleOne}
                     onDownload={handleRowDownload}
                     onReprocess={handleRowReprocess}

@@ -121,6 +121,8 @@ export interface NodeConfigDrawerProps {
   edges?: EdgeInfo[];
   /** Callback when edge should be created/updated */
   onEdgeChange?: (sourceId: string, sourceHandle: string, targetId: string, targetHandle: string) => void;
+  /** Callback when edge should be removed */
+  onEdgeRemove?: (targetId: string, targetHandle: string) => void;
 }
 
 // =============================================================================
@@ -569,6 +571,7 @@ export function NodeConfigDrawer({
   allNodes = [],
   edges = [],
   onEdgeChange,
+  onEdgeRemove,
 }: NodeConfigDrawerProps) {
   // Get node icon
   const nodeIcon = useMemo(() => {
@@ -746,43 +749,58 @@ export function NodeConfigDrawer({
                             )}
                             {/* Source Selection */}
                             <div className="flex items-center gap-2">
-                              <Select
-                                value={connection ? `${connection.sourceId}::${connection.sourceHandle}` : ""}
-                                onValueChange={(val) => {
-                                  if (val && onEdgeChange) {
-                                    const [sourceId, sourceHandle] = val.split("::");
-                                    handleInputChange(inputPort.name, sourceId, sourceHandle);
-                                  }
-                                }}
-                              >
-                                <SelectTrigger className="h-8 text-xs">
-                                  <SelectValue placeholder="Select source..." />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {availableSourceNodes.map((sourceNode) => {
-                                    const sourcePorts = BLOCK_PORTS[sourceNode.type]?.outputs || [];
-                                    // Filter compatible ports
-                                    const compatiblePorts = sourcePorts.filter(
-                                      (p) => p.type === inputPort.type || p.type === "any" || inputPort.type === "any"
-                                    );
+                              <div className="relative flex-1">
+                                <Select
+                                  value={connection ? `${connection.sourceId}::${connection.sourceHandle}` : ""}
+                                  onValueChange={(val) => {
+                                    if (val && onEdgeChange) {
+                                      const [sourceId, sourceHandle] = val.split("::");
+                                      handleInputChange(inputPort.name, sourceId, sourceHandle);
+                                    }
+                                  }}
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue placeholder="Select source..." />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {availableSourceNodes.map((sourceNode) => {
+                                      const sourcePorts = BLOCK_PORTS[sourceNode.type]?.outputs || [];
+                                      // Filter compatible ports
+                                      const compatiblePorts = sourcePorts.filter(
+                                        (p) => p.type === inputPort.type || p.type === "any" || inputPort.type === "any"
+                                      );
 
-                                    if (compatiblePorts.length === 0) return null;
+                                      if (compatiblePorts.length === 0) return null;
 
-                                    return compatiblePorts.map((outputPort) => (
-                                      <SelectItem
-                                        key={`${sourceNode.id}::${outputPort.name}`}
-                                        value={`${sourceNode.id}::${outputPort.name}`}
-                                      >
-                                        <div className="flex items-center gap-2">
-                                          <span>{sourceNode.label}</span>
-                                          <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                                          <span className={PORT_TYPE_COLORS[outputPort.type]}>{outputPort.name}</span>
-                                        </div>
-                                      </SelectItem>
-                                    ));
-                                  })}
-                                </SelectContent>
-                              </Select>
+                                      return compatiblePorts.map((outputPort) => (
+                                        <SelectItem
+                                          key={`${sourceNode.id}::${outputPort.name}`}
+                                          value={`${sourceNode.id}::${outputPort.name}`}
+                                        >
+                                          <div className="flex items-center gap-2">
+                                            <span>{sourceNode.label}</span>
+                                            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                                            <span className={PORT_TYPE_COLORS[outputPort.type]}>{outputPort.name}</span>
+                                          </div>
+                                        </SelectItem>
+                                      ));
+                                    })}
+                                  </SelectContent>
+                                </Select>
+                                {isConnected && onEdgeRemove && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="absolute right-8 top-1/2 -translate-y-1/2 h-6 w-6 hover:bg-destructive/10 z-10"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onEdgeRemove(node.id, inputPort.name);
+                                    }}
+                                  >
+                                    <span className="text-xs text-muted-foreground hover:text-destructive">✕</span>
+                                  </Button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>

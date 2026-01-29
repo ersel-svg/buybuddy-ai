@@ -114,48 +114,54 @@ class ModelLoader:
                 )
             else:
                 # Try od_trained_models first
-                result = supabase_service.client.table("od_trained_models").select(
-                    "*"
-                ).eq("id", model_id).single().execute()
+                try:
+                    result = supabase_service.client.table("od_trained_models").select(
+                        "*"
+                    ).eq("id", model_id).single().execute()
 
-                if result.data:
-                    return ModelInfo(
-                        id=result.data["id"],
-                        name=result.data["name"],
-                        model_type=result.data.get("model_type", "yolo"),
-                        source="trained",
-                        checkpoint_url=result.data.get("checkpoint_url"),
-                        class_mapping=result.data.get("class_mapping", {}),
-                        config={
-                            "model_size": result.data.get("model_size"),
-                            "map": result.data.get("map"),
-                            "map_50": result.data.get("map_50"),
-                        },
-                    )
+                    if result.data:
+                        return ModelInfo(
+                            id=result.data["id"],
+                            name=result.data["name"],
+                            model_type=result.data.get("model_type", "yolo"),
+                            source="trained",
+                            checkpoint_url=result.data.get("checkpoint_url"),
+                            class_mapping=result.data.get("class_mapping", {}),
+                            config={
+                                "model_size": result.data.get("model_size"),
+                                "map": result.data.get("map"),
+                                "map_50": result.data.get("map_50"),
+                            },
+                        )
+                except Exception:
+                    pass  # Model not in od_trained_models, try next table
 
                 # Try od_roboflow_models (e.g., Slot Detection)
-                result = supabase_service.client.table("od_roboflow_models").select(
-                    "*"
-                ).eq("id", model_id).single().execute()
+                try:
+                    result = supabase_service.client.table("od_roboflow_models").select(
+                        "*"
+                    ).eq("id", model_id).single().execute()
 
-                if result.data:
-                    # Convert classes array to class_mapping dict
-                    classes = result.data.get("classes", [])
-                    class_mapping = {i: c for i, c in enumerate(classes)} if classes else {}
+                    if result.data:
+                        # Convert classes array to class_mapping dict
+                        classes = result.data.get("classes", [])
+                        class_mapping = {i: c for i, c in enumerate(classes)} if classes else {}
 
-                    return ModelInfo(
-                        id=result.data["id"],
-                        name=result.data.get("display_name") or result.data["name"],
-                        model_type=result.data.get("architecture", "yolov8"),
-                        source="trained",
-                        checkpoint_url=result.data.get("checkpoint_url"),
-                        class_mapping=class_mapping,
-                        config={
-                            "architecture": result.data.get("architecture"),
-                            "map": result.data.get("map"),
-                            "map_50": result.data.get("map_50"),
-                        },
-                    )
+                        return ModelInfo(
+                            id=result.data["id"],
+                            name=result.data.get("display_name") or result.data["name"],
+                            model_type=result.data.get("architecture", "yolov8"),
+                            source="trained",
+                            checkpoint_url=result.data.get("checkpoint_url"),
+                            class_mapping=class_mapping,
+                            config={
+                                "architecture": result.data.get("architecture"),
+                                "map": result.data.get("map"),
+                                "map_50": result.data.get("map_50"),
+                            },
+                        )
+                except Exception:
+                    pass  # Model not in od_roboflow_models either
 
                 return None
         except Exception as e:

@@ -39,8 +39,14 @@ import {
   Crosshair,
 } from "lucide-react";
 import Link from "next/link";
-import { AIPanel } from "@/components/od/ai-panel";
+import dynamic from "next/dynamic";
 import type { AIPrediction } from "@/types/od";
+
+// Lazy load AI Panel component
+const AIPanel = dynamic(
+  () => import("@/components/od/ai-panel").then((mod) => mod.AIPanel),
+  { ssr: false }
+);
 
 // ============================================
 // TYPES
@@ -246,6 +252,11 @@ export default function ODAnnotationEditorPage({
     },
     onSuccess: (newAnnotation) => {
       queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+      // Invalidate dataset-related queries to update status and counts
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
       setLastUsedClassId(newAnnotation.class_id);
     },
     onError: (error) => {
@@ -271,6 +282,11 @@ export default function ODAnnotationEditorPage({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+      // Invalidate dataset-related queries to update status and counts
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
     },
     onError: (error) => {
       toast.error(`Failed to delete annotation: ${error.message}`);
@@ -282,6 +298,11 @@ export default function ODAnnotationEditorPage({
       return apiClient.updateODDatasetImageStatus(datasetId, imageId, "completed");
     },
     onSuccess: () => {
+      // Invalidate dataset-related queries to update status
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+      queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
       toast.success("Marked as completed - advancing to next");
       goToNextImage();
     },
@@ -479,6 +500,11 @@ export default function ODAnnotationEditorPage({
 
         // Invalidate cache to sync with server
         queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+        // Invalidate dataset-related queries to update status and counts
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
       }
     } catch (error) {
       console.error("Bulk create failed:", error);
@@ -1266,6 +1292,11 @@ export default function ODAnnotationEditorPage({
       try {
         await apiClient.deleteODAnnotationsBulk(datasetId, imageId, dbAnnotationIds);
         queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+        // Invalidate dataset-related queries to update status and counts
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
       } catch (error) {
         toast.error("Failed to delete annotations");
         return;
@@ -1300,6 +1331,11 @@ export default function ODAnnotationEditorPage({
       try {
         await apiClient.deleteODAnnotationsBulk(datasetId, imageId, dbAnnotationIds);
         queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
+        // Invalidate dataset-related queries to update status and counts
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-images-nav", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset", datasetId] });
+        queryClient.invalidateQueries({ queryKey: ["od-dataset-stats", datasetId] });
       } catch (error) {
         toast.error("Failed to delete annotations");
         return;

@@ -1304,6 +1304,15 @@ function WorkflowEditorContent() {
             });
             setHasChanges(true);
           }}
+          onEdgeRemove={(targetId, targetHandle) => {
+            // Remove edge connected to this target input
+            setEdges((eds) =>
+              eds.filter(
+                (e) => !(e.target === targetId && (e.data as { targetPort?: string })?.targetPort === targetHandle)
+              )
+            );
+            setHasChanges(true);
+          }}
         />
 
         {/* Workflow Parameters Panel */}

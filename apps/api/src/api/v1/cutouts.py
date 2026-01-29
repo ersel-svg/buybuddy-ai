@@ -124,7 +124,7 @@ async def list_cutouts(
     limit: int = Query(50, ge=1, le=200),
     has_embedding: Optional[bool] = None,
     is_matched: Optional[bool] = None,
-    predicted_upc: Optional[str] = None,
+    predicted_upc: Optional[str] = Query(None, description="Filter by predicted UPC (partial match)"),
     # NEW: Matched product filters for visual picker
     matched_category: Optional[str] = Query(None, description="Filter by matched product's category"),
     matched_brand: Optional[str] = Query(None, description="Filter by matched product's brand"),
@@ -132,6 +132,8 @@ async def list_cutouts(
     date_to: Optional[str] = Query(None, description="Filter cutouts synced before this date (YYYY-MM-DD)"),
     search: Optional[str] = Query(None, description="Search in matched product name or predicted UPC"),
     merchant_id: Optional[int] = Query(None, description="Filter by merchant ID"),
+    merchant: Optional[str] = Query(None, description="Filter by merchant name (exact match)"),
+    annotated_upc: Optional[str] = Query(None, description="Filter by annotated UPC (partial match)"),
     db: SupabaseService = Depends(get_supabase),
 ):
     """
@@ -140,12 +142,14 @@ async def list_cutouts(
     Filters:
     - has_embedding: Filter by whether cutout has embedding vector
     - is_matched: Filter by whether cutout has been matched to a product
-    - predicted_upc: Filter by predicted UPC code
+    - predicted_upc: Filter by predicted UPC code (partial match)
     - matched_category: Filter by matched product's category
     - matched_brand: Filter by matched product's brand
     - date_from/date_to: Filter by sync date range
     - search: Search in matched product name or predicted UPC
     - merchant_id: Filter by merchant ID
+    - merchant: Filter by merchant name (exact match)
+    - annotated_upc: Filter by annotated/ground truth UPC (partial match)
     """
     result = await db.get_cutouts(
         page=page,
@@ -159,6 +163,8 @@ async def list_cutouts(
         date_to=date_to,
         search=search,
         merchant_id=merchant_id,
+        merchant=merchant,
+        annotated_upc=annotated_upc,
     )
     return result
 

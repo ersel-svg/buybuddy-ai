@@ -2,7 +2,7 @@
 Handler for background class merge operations.
 
 Merges multiple OD classes into a target class with progress tracking.
-Useful for large merges that would timeout as synchronous operations.
+Uses RPC function for efficient bulk updates that bypass REST API limitations.
 """
 
 from typing import Callable
@@ -20,7 +20,6 @@ class ClassMergeJobHandler(BaseJobHandler):
     Config:
         target_class_id: str - ID of the class to merge into
         source_class_ids: list[str] - IDs of classes to merge from
-        dataset_id: str - Dataset ID (for updating counts)
 
     Result:
         merged_count: int - Number of source classes merged
@@ -29,7 +28,6 @@ class ClassMergeJobHandler(BaseJobHandler):
     """
 
     job_type = "local_class_merge"
-    BATCH_SIZE = 1000  # Annotations per batch
 
     def validate_config(self, config: dict) -> str | None:
         if not config.get("target_class_id"):
@@ -105,7 +103,7 @@ class ClassMergeJobHandler(BaseJobHandler):
             total=total_annotations,
         ))
 
-        # Move annotations from source classes to target
+        # Move annotations from source classes to target using RPC
         for idx, source_id in enumerate(source_class_ids):
             if source_id == target_class_id:
                 continue
@@ -121,40 +119,29 @@ class ClassMergeJobHandler(BaseJobHandler):
                 total=total_annotations,
             ))
 
-            # Move annotations in batches
+            # Use RPC function for efficient bulk update
             moved_for_source = 0
             try:
-                while True:
-                    # Get batch of annotation IDs
-                    batch_result = supabase_service.client.table("od_annotations") \
-                        .select("id") \
-                        .eq("class_id", source_id) \
-                        .limit(self.BATCH_SIZE) \
-                        .execute()
+                result = supabase_service.client.rpc(
+                    "merge_class_annotations",
+                    {
+                        "p_source_class_id": source_id,
+                        "p_target_class_id": target_class_id,
+                    }
+                ).execute()
 
-                    if not batch_result.data:
-                        break
+                # RPC returns the count of moved annotations
+                moved_for_source = result.data if isinstance(result.data, int) else source_annotation_count
+                total_moved += moved_for_source
 
-                    batch_ids = [ann["id"] for ann in batch_result.data]
+                update_progress(JobProgress(
+                    progress=5 + int(((idx + 1) / len(source_class_ids)) * 85),
+                    current_step=f"Moved {moved_for_source:,} annotations from '{source_name}'",
+                    processed=total_moved,
+                    total=total_annotations,
+                ))
 
-                    # Update batch
-                    supabase_service.client.table("od_annotations").update({
-                        "class_id": target_class_id
-                    }).in_("id", batch_ids).execute()
-
-                    moved_for_source += len(batch_ids)
-                    total_moved += len(batch_ids)
-
-                    update_progress(JobProgress(
-                        progress=5 + int((idx / len(source_class_ids)) * 85) + int((moved_for_source / max(source_annotation_count, 1)) * (85 / len(source_class_ids))),
-                        current_step=f"Moving annotations from '{source_name}' ({moved_for_source:,}/{source_annotation_count:,})...",
-                        processed=total_moved,
-                        total=total_annotations,
-                    ))
-
-                    # If less than batch size, we're done with this source
-                    if len(batch_ids) < self.BATCH_SIZE:
-                        break
+                print(f"[ClassMerge] RPC moved {moved_for_source:,} annotations from '{source_name}'")
 
             except Exception as e:
                 error_msg = f"Error moving annotations from '{source_name}': {str(e)}"

@@ -25,6 +25,7 @@ from .cls_bulk_update_tags import BulkUpdateCLSTagsHandler
 from .bulk_update_products import BulkUpdateProductsHandler
 from .bulk_delete_products import BulkDeleteProductsHandler
 from .bulk_product_matcher import BulkProductMatcherHandler
+from .bulk_add_products_to_dataset import BulkAddProductsToDatasetHandler
 
 # Cutout Handlers
 from .cutout_sync import CutoutSyncJobHandler
@@ -50,6 +51,7 @@ __all__ = [
     "BulkUpdateProductsHandler",
     "BulkDeleteProductsHandler",
     "BulkProductMatcherHandler",
+    "BulkAddProductsToDatasetHandler",
     # Cutout Handlers
     "CutoutSyncJobHandler",
     # OD Class Handlers

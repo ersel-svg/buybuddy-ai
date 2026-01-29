@@ -475,6 +475,9 @@ export default function DatasetDetailPage() {
         ...apiFilters,
       }),
     enabled: !!id,
+    staleTime: 30000, // 30 seconds - products update frequently
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData, // Keep old data while loading new
   });
 
   // Fetch filter options for this dataset
@@ -482,7 +485,9 @@ export default function DatasetDetailPage() {
     queryKey: ["dataset-filter-options", id],
     queryFn: () => apiClient.getDatasetFilterOptions(id),
     enabled: !!id,
-    staleTime: 60000,
+    staleTime: 300000, // 5 minutes - filter options rarely change
+    gcTime: 300000, // Keep in cache for 5 minutes
+    refetchOnWindowFocus: false,
   });
 
   // Reset page when filters change
@@ -794,11 +799,11 @@ export default function DatasetDetailPage() {
     setSelectedIds(newSet);
   };
 
-  // Calculate augmentation plan
+  // Calculate augmentation plan (only when dialog is open)
   const augmentationPlan = useMemo(() => {
-    if (!products.length) return [];
+    if (!augDialogOpen || !products.length) return [];
     return calculateAugmentationPlan(products, augConfig.syn_target, augConfig.frame_interval);
-  }, [products, augConfig.syn_target, augConfig.frame_interval]);
+  }, [augDialogOpen, products, augConfig.syn_target, augConfig.frame_interval]);
 
   const totalAugmentations = useMemo(() => {
     return augmentationPlan.reduce((sum, p) => sum + (p.augsPerFrame * p.selectedFrames), 0);
@@ -1492,154 +1497,14 @@ export default function DatasetDetailPage() {
                     </TableHeader>
                     <TableBody>
                       {sortedProducts.map((product: ProductWithFrameCounts) => (
-                        <TableRow
+                        <DatasetProductRow
                           key={product.id}
-                          className={selectedIds.has(product.id) ? "bg-blue-50" : ""}
-                        >
-                          <TableCell>
-                            <Checkbox
-                              checked={selectedIds.has(product.id)}
-                              onCheckedChange={() => toggleOne(product.id)}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            {product.primary_image_url ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <div className="relative w-10 h-10 rounded cursor-pointer overflow-hidden">
-                                    <Image
-                                      src={product.primary_image_url}
-                                      alt=""
-                                      fill
-                                      className="object-cover"
-                                      loading="lazy"
-                                      quality={60}
-                                      sizes="40px"
-                                    />
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent
-                                  side="right"
-                                  className="p-0 bg-transparent border-0"
-                                  sideOffset={8}
-                                >
-                                  <div className="relative w-48 h-48 rounded-lg shadow-lg bg-white overflow-hidden">
-                                    <Image
-                                      src={product.primary_image_url}
-                                      alt={product.product_name || product.barcode}
-                                      fill
-                                      className="object-contain"
-                                      quality={75}
-                                      sizes="192px"
-                                    />
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center">
-                                <Package className="h-5 w-5 text-gray-400" />
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {product.barcode}
-                          </TableCell>
-                          <TableCell className="text-sm font-medium">
-                            {product.brand_name || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {product.sub_brand || "-"}
-                          </TableCell>
-                          <TableCell className="max-w-[150px] truncate text-sm">
-                            {product.product_name || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {product.variant_flavor || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {product.category || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {product.container_type || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {product.net_quantity || "-"}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {product.manufacturer_country || "-"}
-                          </TableCell>
-                          <TableCell>
-                            <Badge className={statusColors[product.status]}>
-                              {product.status.replace("_", " ")}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-xs text-gray-500 whitespace-nowrap">
-                            {product.updated_at
-                              ? new Date(product.updated_at).toLocaleDateString("en-US", {
-                                  month: "short",
-                                  day: "numeric",
-                                })
-                              : "-"}
-                          </TableCell>
-                          <TableCell className="text-center text-sm text-blue-600">
-                            {product.frame_counts?.synthetic ?? 0}
-                          </TableCell>
-                          <TableCell className="text-center text-sm text-green-600">
-                            {product.frame_counts?.real ?? 0}
-                          </TableCell>
-                          <TableCell className="text-center text-sm text-purple-600">
-                            {product.frame_counts?.augmented ?? 0}
-                          </TableCell>
-                          <TableCell>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem asChild>
-                                  <Link href={`/products/${product.id}`}>
-                                    View Details
-                                  </Link>
-                                </DropdownMenuItem>
-                                <DropdownMenuItem asChild>
-                                  <Link href={`/products/${product.id}?edit=true`}>
-                                    Edit
-                                  </Link>
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={async () => {
-                                    try {
-                                      const blob = await apiClient.downloadProduct(product.id);
-                                      const url = URL.createObjectURL(blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-                                      a.download = `product_${product.barcode}.zip`;
-                                      a.click();
-                                      URL.revokeObjectURL(url);
-                                      toast.success("Download started");
-                                    } catch {
-                                      toast.error("Download failed");
-                                    }
-                                  }}
-                                >
-                                  <Download className="h-4 w-4 mr-2" />
-                                  Download Frames
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  className="text-red-600"
-                                  onClick={() => removeProductMutation.mutate(product.id)}
-                                  disabled={removeProductMutation.isPending}
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Remove from Dataset
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </TableCell>
-                        </TableRow>
+                          product={product}
+                          isSelected={selectedIds.has(product.id)}
+                          onToggleSelect={toggleOne}
+                          onRemove={(id) => removeProductMutation.mutate(id)}
+                          isRemoving={removeProductMutation.isPending}
+                        />
                       ))}
                     </TableBody>
                   </Table>
@@ -1661,7 +1526,7 @@ export default function DatasetDetailPage() {
                   </Button>
                   <Button
                     variant="outline"
-                    disabled={page * 100 >= productsTotal}
+                    disabled={page * 25 >= productsTotal}
                     onClick={() => setPage(page + 1)}
                   >
                     Next

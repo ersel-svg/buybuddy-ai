@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,7 +14,12 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Sun, Moon, User, LogOut } from "lucide-react";
 import { logout, getUser } from "@/lib/auth";
-import { JobsDrawer } from "@/components/jobs-drawer";
+
+// Lazy load JobsDrawer component
+const JobsDrawer = dynamic(
+  () => import("@/components/jobs-drawer").then((mod) => mod.JobsDrawer),
+  { ssr: false }
+);
 
 export function Header() {
   const { setTheme } = useTheme();

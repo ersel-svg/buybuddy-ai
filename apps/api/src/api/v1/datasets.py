@@ -213,7 +213,10 @@ async def create_dataset(
     # Add products if provided
     if data.product_ids:
         await db.add_products_to_dataset(dataset["id"], data.product_ids)
-        dataset = await db.get_dataset(dataset["id"])
+        # Refresh dataset to get updated product_count
+        result = db.client.table("datasets").select("*").eq("id", dataset["id"]).limit(1).execute()
+        if result.data:
+            dataset = result.data[0]
 
     return dataset
 
@@ -257,9 +260,21 @@ async def get_dataset(
     include_frame_counts: bool = Query(True),
     db: SupabaseService = Depends(get_supabase),
 ):
-    """Get dataset with filtered products."""
-    dataset = await db.get_dataset(
-        dataset_id=dataset_id,
+    """Get dataset with filtered products.
+
+    Uses the same filtering approach as the products page for consistency.
+    Filters are applied to the products table, then intersected with dataset membership.
+    """
+    # First, get the dataset metadata (without loading all products)
+    dataset_result = db.client.table("datasets").select("*").eq("id", dataset_id).limit(1).execute()
+    if not dataset_result.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset_info = dataset_result.data[0]
+
+    # Use get_products with include_dataset_id to get filtered products
+    # This uses the same filtering logic as the products page
+    products_result = await db.get_products(
         page=page,
         limit=limit,
         search=search,
@@ -286,11 +301,47 @@ async def get_dataset(
         frame_count_max=frame_count_max,
         visibility_score_min=visibility_score_min,
         visibility_score_max=visibility_score_max,
+        include_dataset_id=dataset_id,
         include_frame_counts=include_frame_counts,
     )
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    return dataset
+
+    # Calculate total frame counts from products
+    products = products_result.get("items", [])
+    total_synthetic = 0
+    total_real = 0
+    total_augmented = 0
+
+    for product in products:
+        frame_counts = product.get("frame_counts", {})
+        total_synthetic += frame_counts.get("synthetic", 0) or 0
+        total_real += frame_counts.get("real", 0) or 0
+        total_augmented += frame_counts.get("augmented", 0) or 0
+
+    # Note: For accurate totals across ALL products (not just current page),
+    # we need to fetch totals separately if pagination is active
+    products_total = products_result.get("total", 0)
+
+    # If we're on page 1 and have all products, the above totals are accurate
+    # Otherwise, we need to get totals from all products in dataset
+    if products_total > len(products):
+        # Fetch frame count totals for all products in dataset
+        totals = await db.get_dataset_frame_totals(dataset_id)
+        total_synthetic = totals.get("synthetic", 0)
+        total_real = totals.get("real", 0)
+        total_augmented = totals.get("augmented", 0)
+
+    # Combine dataset info with products
+    return {
+        **dataset_info,
+        "products": products,
+        "products_total": products_total,
+        "total": products_total,  # Keep for backwards compatibility
+        "page": products_result.get("page", page),
+        "limit": products_result.get("limit", limit),
+        "total_synthetic": total_synthetic,
+        "total_real": total_real,
+        "total_augmented": total_augmented,
+    }
 
 
 @router.patch("/{dataset_id}")
@@ -300,8 +351,9 @@ async def update_dataset(
     db: SupabaseService = Depends(get_supabase),
 ):
     """Update dataset with optimistic locking."""
-    existing = await db.get_dataset(dataset_id)
-    if not existing:
+    # Simple existence check
+    existing = db.client.table("datasets").select("id").eq("id", dataset_id).limit(1).execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     update_data = data.model_dump(exclude_unset=True, exclude={"version"})
@@ -314,8 +366,9 @@ async def delete_dataset(
     db: SupabaseService = Depends(get_supabase),
 ):
     """Delete a dataset."""
-    existing = await db.get_dataset(dataset_id)
-    if not existing:
+    # Simple existence check
+    existing = db.client.table("datasets").select("id").eq("id", dataset_id).limit(1).execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     await db.delete_dataset(dataset_id)
@@ -337,8 +390,9 @@ async def add_products_to_dataset(
     For large batches (50+ products), returns job_id for progress tracking.
     For small batches (<50), returns added_count immediately.
     """
-    existing = await db.get_dataset(dataset_id)
-    if not existing:
+    # Simple existence check without loading all products
+    dataset_check = db.client.table("datasets").select("id").eq("id", dataset_id).limit(1).execute()
+    if not dataset_check.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     # Validate request - must have either product_ids or filters
@@ -348,6 +402,8 @@ async def add_products_to_dataset(
             detail="Either product_ids or filters must be provided"
         )
 
+    from services.local_jobs import create_local_job
+
     # Mode 1: Add specific products by ID (sync for small batches)
     if request.product_ids:
         # For small batches (<50), process synchronously
@@ -356,25 +412,25 @@ async def add_products_to_dataset(
             return {"added_count": added_count}
 
         # For large batches (50+), use background job
-        job = await db.create_job({
-            "type": "local_bulk_add_to_dataset",
-            "config": {
+        job = await create_local_job(
+            job_type="local_bulk_add_products_to_dataset",
+            config={
                 "dataset_id": dataset_id,
                 "product_ids": request.product_ids,
             }
-        })
+        )
         return {"job_id": job["id"], "message": "Background job started"}
 
     # Mode 2: Add all products matching filters (always async)
     if request.filters:
         # Create background job for filtered products
-        job = await db.create_job({
-            "type": "local_bulk_add_to_dataset",
-            "config": {
+        job = await create_local_job(
+            job_type="local_bulk_add_products_to_dataset",
+            config={
                 "dataset_id": dataset_id,
                 "filters": request.filters,
             }
-        })
+        )
         return {"job_id": job["id"], "message": "Background job started"}
 
     return {"added_count": 0}
@@ -387,8 +443,9 @@ async def remove_product_from_dataset(
     db: SupabaseService = Depends(get_supabase),
 ):
     """Remove product from dataset."""
-    existing = await db.get_dataset(dataset_id)
-    if not existing:
+    # Simple existence check
+    existing = db.client.table("datasets").select("id").eq("id", dataset_id).limit(1).execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     await db.remove_product_from_dataset(dataset_id, product_id)
@@ -421,10 +478,12 @@ async def start_augmentation(
     runpod: RunpodService = Depends(get_runpod),
 ):
     """Start augmentation job for dataset."""
-    dataset = await db.get_dataset(dataset_id)
-    if not dataset:
+    # Get dataset with product_count
+    dataset_result = db.client.table("datasets").select("id, product_count").eq("id", dataset_id).limit(1).execute()
+    if not dataset_result.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
+    dataset = dataset_result.data[0]
     if dataset.get("product_count", 0) == 0:
         raise HTTPException(status_code=400, detail="Dataset has no products")
 
@@ -499,10 +558,12 @@ async def start_training(
     runpod: RunpodService = Depends(get_runpod),
 ):
     """Start training job for dataset."""
-    dataset = await db.get_dataset(dataset_id)
-    if not dataset:
+    # Get dataset with product_count
+    dataset_result = db.client.table("datasets").select("id, product_count").eq("id", dataset_id).limit(1).execute()
+    if not dataset_result.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
+    dataset = dataset_result.data[0]
     if dataset.get("product_count", 0) == 0:
         raise HTTPException(status_code=400, detail="Dataset has no products")
 
@@ -560,10 +621,12 @@ async def start_embedding_extraction(
     runpod: RunpodService = Depends(get_runpod),
 ):
     """Start embedding extraction job for dataset."""
-    dataset = await db.get_dataset(dataset_id)
-    if not dataset:
+    # Get dataset with product_count
+    dataset_result = db.client.table("datasets").select("id, product_count").eq("id", dataset_id).limit(1).execute()
+    if not dataset_result.data:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
+    dataset = dataset_result.data[0]
     if dataset.get("product_count", 0) == 0:
         raise HTTPException(status_code=400, detail="Dataset has no products")
 

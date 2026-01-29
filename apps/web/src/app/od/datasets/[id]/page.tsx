@@ -123,9 +123,18 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { ImportModal } from "@/components/od/import-modal";
-import { BulkAnnotateModal } from "@/components/od/bulk-annotate-modal";
+import dynamic from "next/dynamic";
 import { JobProgressModal } from "@/components/common/job-progress-modal";
+
+// Lazy load heavy modal components
+const ImportModal = dynamic(
+  () => import("@/components/od/import-modal").then((mod) => mod.ImportModal),
+  { ssr: false }
+);
+const BulkAnnotateModal = dynamic(
+  () => import("@/components/od/bulk-annotate-modal").then((mod) => mod.BulkAnnotateModal),
+  { ssr: false }
+);
 
 // Thresholds for switching to async operations
 const ASYNC_REMOVE_THRESHOLD = 50;

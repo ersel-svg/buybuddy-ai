@@ -126,6 +126,7 @@ class MatchingExtractionRequest(BaseModel):
     # Cutout source
     include_cutouts: bool = True
     cutout_filter_has_upc: bool = False
+    cutout_merchant_ids: Optional[list[int]] = None  # Filter cutouts by merchant IDs
 
     # Collection configuration
     collection_mode: Literal["create", "append"] = "create"
@@ -2269,9 +2270,13 @@ async def start_matching_extraction(
         if request.cutout_filter_has_upc:
             filters["not_null"] = ["predicted_upc"]
 
+        # Add merchant filter if specified
+        if request.cutout_merchant_ids:
+            filters["in"] = {"merchant_id": request.cutout_merchant_ids}
+
         cutouts = await db.paginated_query(
             table_name="cutout_images",
-            select="id, image_url, predicted_upc",
+            select="id, image_url, predicted_upc, merchant, merchant_id",
             filters=filters if filters else None,
             max_records=None  # No limit - get ALL cutouts
         )
@@ -2290,6 +2295,8 @@ async def start_matching_extraction(
                     "cutout_id": c["id"],
                     "domain": "real",  # Cutouts are real images
                     "predicted_upc": c.get("predicted_upc"),
+                    "merchant": c.get("merchant"),
+                    "merchant_id": c.get("merchant_id"),
                 },
             })
             cutout_count += 1
@@ -2312,6 +2319,7 @@ async def start_matching_extraction(
         "source_config": {
             "product_source": request.product_source,
             "include_cutouts": request.include_cutouts,
+            "cutout_merchant_ids": request.cutout_merchant_ids,
             "frame_selection": request.frame_selection,
             "product_collection": product_collection,
             "cutout_collection": cutout_collection if request.include_cutouts else None,

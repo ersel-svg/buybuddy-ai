@@ -188,6 +188,8 @@ def handle_batch(job_input: dict) -> dict[str, Any]:
     # Log request details
     if model_name == "roboflow" and model_config:
         logger.info(f"Batch request: {len(images)} images, model=roboflow ({model_config.get('architecture')})")
+        logger.info(f"[DEBUG] model_config.classes: {model_config.get('classes')}")
+        logger.info(f"[DEBUG] filter_classes: {filter_classes}")
     else:
         logger.info(f"Batch request: {len(images)} images, model={model_name}")
 
@@ -216,9 +218,12 @@ def handle_batch(job_input: dict) -> dict[str, Any]:
             # Apply class filter if specified (for Roboflow models)
             if filter_classes:
                 original_count = len(predictions)
+                # Log what labels we got before filtering
+                if original_count > 0:
+                    labels_found = set(p.get("label") for p in predictions)
+                    logger.info(f"[DEBUG] Labels found in predictions: {labels_found}")
                 predictions = [p for p in predictions if p.get("label") in filter_classes]
-                if len(predictions) < original_count:
-                    logger.debug(f"Class filter: {original_count} -> {len(predictions)} predictions")
+                logger.info(f"[DEBUG] Class filter applied: {original_count} -> {len(predictions)} (filter={filter_classes})")
 
             results.append({
                 "id": image_id,

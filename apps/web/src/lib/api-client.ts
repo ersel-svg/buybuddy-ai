@@ -1050,8 +1050,11 @@ class ApiClient {
     date_from?: string;
     date_to?: string;
     search?: string;
-    // Merchant filter
+    // Merchant filters
     merchant_id?: number;
+    merchant?: string;
+    // Annotated UPC filter
+    annotated_upc?: string;
   }): Promise<CutoutsResponse> {
     return this.request<CutoutsResponse>("/api/v1/cutouts", { params });
   }
@@ -2180,6 +2183,21 @@ class ApiClient {
     total_annotations: number;
   }> {
     return this.request(`/api/v1/od/datasets/${datasetId}/stats`);
+  }
+
+  /**
+   * Recalculate image status based on annotation_count.
+   * Fixes status inconsistencies where images have annotations but are still marked as 'pending'.
+   */
+  async recalculateODDatasetStatus(datasetId: string): Promise<{
+    success: boolean;
+    dataset_id: string;
+    dataset_name: string;
+    fixed_to_annotated: number;
+    fixed_to_pending: number;
+    total_fixed: number;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/recalculate-status`, { method: "POST" });
   }
 
   /**

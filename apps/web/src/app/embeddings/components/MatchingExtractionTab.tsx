@@ -51,6 +51,7 @@ import {
   X,
 } from "lucide-react";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import type {
   EmbeddingModel,
   Dataset,
@@ -61,6 +62,7 @@ import type {
   CollectionMode,
   TrainedModel,
   EmbeddingJob,
+  Merchant,
 } from "@/types";
 
 interface MatchingExtractionTabProps {
@@ -103,6 +105,7 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
   // Include cutouts
   const [includeCutouts, setIncludeCutouts] = useState(true);
   const [cutoutFilterHasUpc, setCutoutFilterHasUpc] = useState(false);
+  const [selectedMerchantIds, setSelectedMerchantIds] = useState<number[]>([]);
 
   // Collection config
   const [collectionMode, setCollectionMode] = useState<CollectionMode>("create");
@@ -124,6 +127,12 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
   const { data: datasets } = useQuery({
     queryKey: ["datasets"],
     queryFn: () => apiClient.getDatasets(),
+  });
+
+  // Fetch merchants for cutout filtering
+  const { data: merchants } = useQuery({
+    queryKey: ["merchants"],
+    queryFn: () => apiClient.getMerchants(),
   });
 
   // Fetch existing collections for append mode
@@ -222,6 +231,7 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
       product_dataset_id: productSource === "dataset" ? selectedDatasetId : undefined,
       include_cutouts: includeCutouts,
       cutout_filter_has_upc: cutoutFilterHasUpc,
+      cutout_merchant_ids: selectedMerchantIds.length > 0 ? selectedMerchantIds : undefined,
       collection_mode: collectionMode,
       product_collection_name: productCollection,
       cutout_collection_name: cutoutCollection,
@@ -591,30 +601,117 @@ export function MatchingExtractionTab({ activeModel, models, trainedModels }: Ma
               </div>
 
               {includeCutouts && (
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1 flex items-center gap-2">
-                    <div>
-                      <Label>Filter: Has UPC</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Only cutouts with predicted UPC
-                      </p>
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1 flex items-center gap-2">
+                      <div>
+                        <Label>Filter: Has UPC</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Only cutouts with predicted UPC
+                        </p>
+                      </div>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">Filter to only include cutouts where OCR has detected a UPC barcode. These cutouts can be validated against known product barcodes for higher confidence matching.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     </div>
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger>
-                          <Info className="h-3 w-3 text-muted-foreground" />
-                        </TooltipTrigger>
-                        <TooltipContent side="right" className="max-w-xs">
-                          <p className="text-xs">Filter to only include cutouts where OCR has detected a UPC barcode. These cutouts can be validated against known product barcodes for higher confidence matching.</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
+                    <Switch
+                      checked={cutoutFilterHasUpc}
+                      onCheckedChange={setCutoutFilterHasUpc}
+                    />
                   </div>
-                  <Switch
-                    checked={cutoutFilterHasUpc}
-                    onCheckedChange={setCutoutFilterHasUpc}
-                  />
-                </div>
+
+                  {/* Merchant Filter */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Label>Filter by Merchants</Label>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-3 w-3 text-muted-foreground" />
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-xs">
+                            <p className="text-xs">Select specific merchants to extract cutout embeddings from. Leave empty to include all merchants.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                    {selectedMerchantIds.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {selectedMerchantIds.map((id) => {
+                          const merchant = merchants?.find((m) => m.id === id);
+                          return (
+                            <Badge
+                              key={id}
+                              variant="secondary"
+                              className="cursor-pointer"
+                              onClick={() =>
+                                setSelectedMerchantIds((prev) =>
+                                  prev.filter((mid) => mid !== id)
+                                )
+                              }
+                            >
+                              {merchant?.name || `ID: ${id}`}
+                              <X className="h-3 w-3 ml-1" />
+                            </Badge>
+                          );
+                        })}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => setSelectedMerchantIds([])}
+                        >
+                          Clear all
+                        </Button>
+                      </div>
+                    )}
+                    <div className="max-h-48 overflow-y-auto border rounded-md p-2 space-y-1">
+                      {merchants?.map((merchant) => (
+                        <div
+                          key={merchant.id}
+                          className="flex items-center space-x-2 py-1 hover:bg-muted rounded px-1"
+                        >
+                          <Checkbox
+                            id={`merchant-${merchant.id}`}
+                            checked={selectedMerchantIds.includes(merchant.id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setSelectedMerchantIds((prev) => [...prev, merchant.id]);
+                              } else {
+                                setSelectedMerchantIds((prev) =>
+                                  prev.filter((id) => id !== merchant.id)
+                                );
+                              }
+                            }}
+                          />
+                          <label
+                            htmlFor={`merchant-${merchant.id}`}
+                            className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer flex-1"
+                          >
+                            {merchant.name}
+                          </label>
+                        </div>
+                      ))}
+                      {!merchants?.length && (
+                        <p className="text-xs text-muted-foreground py-2 text-center">
+                          No merchants available
+                        </p>
+                      )}
+                    </div>
+                    {selectedMerchantIds.length === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        All merchants will be included
+                      </p>
+                    )}
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

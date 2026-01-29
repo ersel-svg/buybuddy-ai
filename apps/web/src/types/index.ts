@@ -510,6 +510,17 @@ export interface ResourceLock {
 }
 
 // ===========================================
+// Merchant Types
+// ===========================================
+
+export interface Merchant {
+  id: number;
+  name: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// ===========================================
 // Cutout Image Types (Matching System)
 // ===========================================
 
@@ -740,6 +751,7 @@ export interface MatchingExtractionRequest {
   product_filter?: Record<string, unknown>;
   include_cutouts: boolean;
   cutout_filter_has_upc?: boolean;
+  cutout_merchant_ids?: number[];  // Filter cutouts by merchant IDs (multiple selection)
   collection_mode: CollectionMode;
   product_collection_name?: string;
   cutout_collection_name?: string;

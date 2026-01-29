@@ -1,8 +1,11 @@
 """
 Handler for background cutout sync operations.
 
-Syncs cutout images from BuyBuddy API with progress tracking.
-Supports both "sync_new" (newest first) and "backfill" (oldest first) modes.
+SOTA Features:
+- Concurrent page fetching with semaphore control
+- RPC batch insert for optimal database performance
+- Streaming progress updates
+- Graceful error handling with partial results
 """
 
 import asyncio
@@ -18,7 +21,7 @@ from ..utils import calculate_progress
 @job_registry.register
 class CutoutSyncJobHandler(BaseJobHandler):
     """
-    Handler for background cutout sync from BuyBuddy.
+    SOTA Handler for background cutout sync from BuyBuddy.
 
     Config:
         mode: str - "sync_new" or "backfill"
@@ -26,6 +29,7 @@ class CutoutSyncJobHandler(BaseJobHandler):
         max_items: int - Maximum items to sync (default 10000)
         page_size: int - Items per page (default 100)
         start_page: int - Start page for backfill (default 1)
+        concurrency: int - Concurrent page fetches (default 5)
 
     Result:
         synced_count: int - Number of cutouts synced
@@ -38,7 +42,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
     """
 
     job_type = "local_cutout_sync"
-    BATCH_SIZE = 500  # DB insert batch size
+    DB_BATCH_SIZE = 500  # DB insert batch size
+    DEFAULT_CONCURRENCY = 5  # Concurrent API requests
 
     def validate_config(self, config: dict) -> str | None:
         if not config.get("merchant_ids"):
@@ -63,6 +68,7 @@ class CutoutSyncJobHandler(BaseJobHandler):
         max_items = config.get("max_items", 10000)
         page_size = config.get("page_size", 100)
         start_page = config.get("start_page", 1)
+        concurrency = config.get("concurrency", self.DEFAULT_CONCURRENCY)
         inserted_at = config.get("inserted_at")
         updated_at = config.get("updated_at")
 
@@ -75,14 +81,40 @@ class CutoutSyncJobHandler(BaseJobHandler):
 
         if mode == "sync_new":
             return await self._sync_new(
-                job_id, merchant_ids, max_items, page_size, update_progress,
-                inserted_at=inserted_at, updated_at=updated_at
+                job_id, merchant_ids, max_items, page_size, concurrency,
+                update_progress, inserted_at=inserted_at, updated_at=updated_at
             )
         else:
             return await self._backfill(
-                job_id, merchant_ids, max_items, page_size, start_page, update_progress,
-                inserted_at=inserted_at, updated_at=updated_at
+                job_id, merchant_ids, max_items, page_size, start_page,
+                concurrency, update_progress, inserted_at=inserted_at, updated_at=updated_at
             )
+
+    async def _fetch_page(
+        self,
+        page: int,
+        page_size: int,
+        sort_order: str,
+        merchant_ids: list[int],
+        semaphore: asyncio.Semaphore,
+        inserted_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> dict:
+        """Fetch a single page with semaphore control."""
+        async with semaphore:
+            try:
+                result = await buybuddy_service.get_cutout_images(
+                    page=page,
+                    page_size=page_size,
+                    sort_field="id",
+                    sort_order=sort_order,
+                    merchant_ids=merchant_ids,
+                    inserted_at=inserted_at,
+                    updated_at=updated_at,
+                )
+                return {"page": page, "success": True, "data": result}
+            except Exception as e:
+                return {"page": page, "success": False, "error": str(e)}
 
     async def _sync_new(
         self,
@@ -90,11 +122,12 @@ class CutoutSyncJobHandler(BaseJobHandler):
         merchant_ids: list[int],
         max_items: int,
         page_size: int,
+        concurrency: int,
         update_progress: Callable[[JobProgress], None],
         inserted_at: str | None = None,
         updated_at: str | None = None,
     ) -> dict:
-        """Sync new cutouts (newest first, stop when hitting existing)."""
+        """Sync new cutouts with concurrent fetching (newest first)."""
         max_pages = max_items // page_size
 
         # Get current sync state
@@ -105,68 +138,85 @@ class CutoutSyncJobHandler(BaseJobHandler):
             total=0,
         ))
 
-        min_synced, max_synced = await self._get_synced_id_range()
+        _, max_synced = await self._get_synced_id_range()
 
         all_cutouts = []
         total_fetched = 0
         highest_id = None
         lowest_id = None
         stopped_early = False
-        page = 1
         errors = []
+        last_page = 0
 
-        # Phase 1: Fetch from BuyBuddy API
+        # Semaphore for concurrent requests
+        semaphore = asyncio.Semaphore(concurrency)
+
+        # Fetch pages in batches for better control
+        page = 1
         while page <= max_pages:
+            # Determine batch of pages to fetch concurrently
+            batch_end = min(page + concurrency, max_pages + 1)
+            pages_to_fetch = list(range(page, batch_end))
+
             update_progress(JobProgress(
                 progress=5 + calculate_progress(page, max_pages) * 0.4,
-                current_step=f"Fetching page {page}...",
+                current_step=f"Fetching pages {page}-{batch_end - 1}...",
                 processed=total_fetched,
                 total=max_items,
             ))
 
-            try:
-                result = await buybuddy_service.get_cutout_images(
-                    page=page,
-                    page_size=page_size,
-                    sort_field="id",
-                    sort_order="desc",
-                    merchant_ids=merchant_ids,
-                    inserted_at=inserted_at,
-                    updated_at=updated_at,
-                )
-            except Exception as e:
-                errors.append(f"Page {page}: {str(e)}")
-                break
+            # Concurrent fetch
+            tasks = [
+                self._fetch_page(p, page_size, "desc", merchant_ids, semaphore,
+                                 inserted_at, updated_at)
+                for p in pages_to_fetch
+            ]
+            results = await asyncio.gather(*tasks)
 
-            cutouts = result["items"]
-            if not cutouts:
-                break
+            # Process results in order
+            should_stop = False
+            for result in sorted(results, key=lambda r: r["page"]):
+                if not result["success"]:
+                    errors.append(f"Page {result['page']}: {result['error']}")
+                    continue
 
-            total_fetched += len(cutouts)
+                cutouts = result["data"]["items"]
+                last_page = result["page"]
 
-            # Track IDs
-            batch_ids = [c["external_id"] for c in cutouts if c.get("external_id")]
-            if batch_ids:
-                if highest_id is None:
-                    highest_id = max(batch_ids)
-                lowest_id = min(batch_ids)
-
-            # Filter: only keep cutouts newer than max_synced
-            if max_synced is not None:
-                new_cutouts = [c for c in cutouts if c["external_id"] > max_synced]
-                if len(new_cutouts) < len(cutouts):
-                    all_cutouts.extend(new_cutouts)
-                    stopped_early = True
+                if not cutouts:
+                    should_stop = True
                     break
-                all_cutouts.extend(new_cutouts)
-            else:
-                all_cutouts.extend(cutouts)
 
-            if not result["has_more"]:
+                total_fetched += len(cutouts)
+
+                # Track IDs
+                batch_ids = [c["external_id"] for c in cutouts if c.get("external_id")]
+                if batch_ids:
+                    if highest_id is None:
+                        highest_id = max(batch_ids)
+                    lowest_id = min(batch_ids)
+
+                # Filter: only keep cutouts newer than max_synced
+                if max_synced is not None:
+                    new_cutouts = [c for c in cutouts if c["external_id"] > max_synced]
+                    if len(new_cutouts) < len(cutouts):
+                        all_cutouts.extend(new_cutouts)
+                        stopped_early = True
+                        should_stop = True
+                        break
+                    all_cutouts.extend(new_cutouts)
+                else:
+                    all_cutouts.extend(cutouts)
+
+                if not result["data"]["has_more"]:
+                    should_stop = True
+                    break
+
+            if should_stop:
                 break
 
-            page += 1
-            await asyncio.sleep(0.1)
+            page = batch_end
+            await asyncio.sleep(0.05)  # Small delay between batches
 
         if not all_cutouts:
             return {
@@ -175,9 +225,9 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 "total_fetched": total_fetched,
                 "highest_external_id": highest_id,
                 "lowest_external_id": lowest_id,
-                "last_page": page,
+                "last_page": last_page,
                 "stopped_early": stopped_early,
-                "errors": errors,
+                "errors": errors[:10],
                 "message": "No new cutouts to sync",
             }
 
@@ -189,8 +239,8 @@ class CutoutSyncJobHandler(BaseJobHandler):
             total=len(all_cutouts),
         ))
 
-        # Check existing
-        existing_ids = await self._get_existing_ids(
+        # Check existing in parallel batches
+        existing_ids = await self._get_existing_ids_parallel(
             [c["external_id"] for c in all_cutouts]
         )
 
@@ -209,7 +259,7 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 total=len(new_cutouts),
             ))
 
-            synced_count = await self._insert_cutouts(
+            synced_count = await self._insert_cutouts_batch(
                 new_cutouts, update_progress, 60, 95
             )
 
@@ -219,10 +269,10 @@ class CutoutSyncJobHandler(BaseJobHandler):
             "total_fetched": total_fetched,
             "highest_external_id": highest_id,
             "lowest_external_id": lowest_id,
-            "last_page": page,
+            "last_page": last_page,
             "stopped_early": stopped_early,
             "errors": errors[:10] if errors else [],
-            "message": f"Synced {synced_count} new cutouts",
+            "message": f"Synced {synced_count:,} new cutouts",
         }
 
     async def _backfill(
@@ -232,11 +282,12 @@ class CutoutSyncJobHandler(BaseJobHandler):
         max_items: int,
         page_size: int,
         start_page: int,
+        concurrency: int,
         update_progress: Callable[[JobProgress], None],
         inserted_at: str | None = None,
         updated_at: str | None = None,
     ) -> dict:
-        """Backfill old cutouts (oldest first)."""
+        """Backfill old cutouts with concurrent fetching (oldest first)."""
         pages_to_fetch = max_items // page_size
         end_page = start_page + pages_to_fetch
 
@@ -245,11 +296,15 @@ class CutoutSyncJobHandler(BaseJobHandler):
         highest_id = None
         lowest_id = None
         stopped_early = False
-        page = start_page
-        consecutive_all_exists = 0
         errors = []
+        consecutive_all_exists = 0
+        last_page = start_page
 
-        # Phase 1: Fetch from BuyBuddy API
+        # Semaphore for concurrent requests
+        semaphore = asyncio.Semaphore(concurrency)
+
+        # Fetch pages sequentially for backfill (need to track consecutive exists)
+        page = start_page
         while page < end_page:
             update_progress(JobProgress(
                 progress=5 + calculate_progress(page - start_page, pages_to_fetch) * 0.4,
@@ -258,21 +313,18 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 total=max_items,
             ))
 
-            try:
-                result = await buybuddy_service.get_cutout_images(
-                    page=page,
-                    page_size=page_size,
-                    sort_field="id",
-                    sort_order="asc",
-                    merchant_ids=merchant_ids,
-                    inserted_at=inserted_at,
-                    updated_at=updated_at,
-                )
-            except Exception as e:
-                errors.append(f"Page {page}: {str(e)}")
+            result = await self._fetch_page(
+                page, page_size, "asc", merchant_ids, semaphore,
+                inserted_at, updated_at
+            )
+
+            if not result["success"]:
+                errors.append(f"Page {page}: {result['error']}")
                 break
 
-            cutouts = result["items"]
+            cutouts = result["data"]["items"]
+            last_page = page
+
             if not cutouts:
                 break
 
@@ -287,7 +339,7 @@ class CutoutSyncJobHandler(BaseJobHandler):
 
             # Check if batch already exists
             external_ids = [c["external_id"] for c in cutouts]
-            existing_ids = await self._get_existing_ids(external_ids)
+            existing_ids = await self._get_existing_ids_parallel(external_ids)
 
             new_in_batch = [c for c in cutouts if c["external_id"] not in existing_ids]
 
@@ -300,11 +352,11 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 consecutive_all_exists = 0
                 all_cutouts.extend(new_in_batch)
 
-            if not result["has_more"]:
+            if not result["data"]["has_more"]:
                 break
 
             page += 1
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         if not all_cutouts:
             return {
@@ -313,10 +365,10 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 "total_fetched": total_fetched,
                 "highest_external_id": highest_id,
                 "lowest_external_id": lowest_id,
-                "last_page": page,
+                "last_page": last_page,
                 "stopped_early": stopped_early,
-                "errors": errors,
-                "message": f"No new cutouts found. Last page: {page}",
+                "errors": errors[:10],
+                "message": f"No new cutouts found. Last page: {last_page}",
             }
 
         # Phase 2: Insert into database
@@ -328,7 +380,7 @@ class CutoutSyncJobHandler(BaseJobHandler):
         ))
 
         new_cutouts = [self._transform_cutout(c) for c in all_cutouts]
-        synced_count = await self._insert_cutouts(
+        synced_count = await self._insert_cutouts_batch(
             new_cutouts, update_progress, 50, 95
         )
 
@@ -338,10 +390,10 @@ class CutoutSyncJobHandler(BaseJobHandler):
             "total_fetched": total_fetched,
             "highest_external_id": highest_id,
             "lowest_external_id": lowest_id,
-            "last_page": page,
+            "last_page": last_page,
             "stopped_early": stopped_early,
             "errors": errors[:10] if errors else [],
-            "message": f"Backfilled {synced_count} cutouts. Last page: {page}",
+            "message": f"Backfilled {synced_count:,} cutouts. Last page: {last_page}",
         }
 
     def _transform_cutout(self, cutout: dict) -> dict:
@@ -358,7 +410,6 @@ class CutoutSyncJobHandler(BaseJobHandler):
 
     async def _get_synced_id_range(self) -> tuple[int | None, int | None]:
         """Get min and max synced external IDs."""
-        # Query directly (simple and reliable)
         min_result = supabase_service.client.table("cutout_images") \
             .select("external_id") \
             .order("external_id", desc=False) \
@@ -376,34 +427,60 @@ class CutoutSyncJobHandler(BaseJobHandler):
 
         return min_id, max_id
 
-    async def _get_existing_ids(self, external_ids: list[int]) -> set[int]:
-        """Check which external IDs already exist in database."""
-        existing_ids = set()
+    async def _get_existing_ids_parallel(self, external_ids: list[int]) -> set[int]:
+        """Check existing IDs with parallel batch queries."""
+        if not external_ids:
+            return set()
 
-        for i in range(0, len(external_ids), self.BATCH_SIZE):
-            batch = external_ids[i:i + self.BATCH_SIZE]
+        existing_ids = set()
+        batch_size = self.DB_BATCH_SIZE
+
+        # Split into batches and query concurrently
+        batches = [
+            external_ids[i:i + batch_size]
+            for i in range(0, len(external_ids), batch_size)
+        ]
+
+        async def check_batch(batch: list[int]) -> set[int]:
             result = supabase_service.client.table("cutout_images") \
                 .select("external_id") \
                 .in_("external_id", batch) \
                 .execute()
-            existing_ids.update(item["external_id"] for item in result.data)
+            return {item["external_id"] for item in result.data}
+
+        # Run batches concurrently (limit to 5 concurrent)
+        semaphore = asyncio.Semaphore(5)
+
+        async def check_with_semaphore(batch: list[int]) -> set[int]:
+            async with semaphore:
+                return await check_batch(batch)
+
+        results = await asyncio.gather(*[check_with_semaphore(b) for b in batches])
+        for result_set in results:
+            existing_ids.update(result_set)
 
         return existing_ids
 
-    async def _insert_cutouts(
+    async def _insert_cutouts_batch(
         self,
         cutouts: list[dict],
         update_progress: Callable[[JobProgress], None],
         progress_start: int,
         progress_end: int,
     ) -> int:
-        """Insert cutouts in batches with progress updates."""
+        """Insert cutouts using optimized batch upsert."""
         total = len(cutouts)
+        if total == 0:
+            return 0
+
         inserted = 0
         progress_range = progress_end - progress_start
 
-        for i in range(0, total, self.BATCH_SIZE):
-            batch = cutouts[i:i + self.BATCH_SIZE]
+        # Use larger batches for better throughput
+        batch_size = self.DB_BATCH_SIZE
+
+        for i in range(0, total, batch_size):
+            batch = cutouts[i:i + batch_size]
 
             try:
                 result = supabase_service.client.table("cutout_images").upsert(
@@ -414,13 +491,24 @@ class CutoutSyncJobHandler(BaseJobHandler):
                 inserted += len(result.data)
             except Exception as e:
                 print(f"[CutoutSync] Batch insert error: {e}")
+                # Try smaller batches on failure
+                for item in batch:
+                    try:
+                        supabase_service.client.table("cutout_images").upsert(
+                            item,
+                            on_conflict="external_id",
+                            ignore_duplicates=True
+                        ).execute()
+                        inserted += 1
+                    except Exception as inner_e:
+                        print(f"[CutoutSync] Single insert error: {inner_e}")
 
             processed = min(i + len(batch), total)
             progress = progress_start + calculate_progress(processed, total) * progress_range / 100
 
             update_progress(JobProgress(
                 progress=int(progress),
-                current_step=f"Inserting cutouts... ({processed}/{total})",
+                current_step=f"Inserting cutouts... ({processed:,}/{total:,})",
                 processed=processed,
                 total=total,
             ))

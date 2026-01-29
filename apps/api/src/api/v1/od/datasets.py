@@ -851,6 +851,60 @@ async def recalculate_dataset_counts_endpoint(dataset_id: str):
     }
 
 
+@router.post("/{dataset_id}/recalculate-status")
+async def recalculate_image_status(dataset_id: str):
+    """
+    Recalculate image status based on annotation_count.
+
+    This fixes status inconsistencies where images have annotations
+    but are still marked as 'pending'.
+
+    Logic:
+    - If annotation_count > 0 and status is 'pending' → set to 'annotated'
+    - If annotation_count == 0 and status is 'annotated' → set to 'pending'
+    - 'completed' and 'skipped' statuses are preserved (manual user actions)
+
+    Returns count of fixed images.
+    """
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select("id, name").eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Fix images that have annotations but are marked as pending
+    # Single bulk UPDATE query - very efficient
+    result_to_annotated = supabase_service.client.table("od_dataset_images").update({
+        "status": "annotated"
+    }).eq("dataset_id", dataset_id).eq("status", "pending").gt("annotation_count", 0).execute()
+
+    fixed_to_annotated = len(result_to_annotated.data) if result_to_annotated.data else 0
+
+    # Fix images that have no annotations but are marked as annotated
+    result_to_pending = supabase_service.client.table("od_dataset_images").update({
+        "status": "pending"
+    }).eq("dataset_id", dataset_id).eq("status", "annotated").eq("annotation_count", 0).execute()
+
+    fixed_to_pending = len(result_to_pending.data) if result_to_pending.data else 0
+
+    # Update dataset's annotated_image_count
+    annotated_count = supabase_service.client.table("od_dataset_images").select(
+        "id", count="exact"
+    ).eq("dataset_id", dataset_id).in_("status", ["annotated", "completed"]).execute()
+
+    supabase_service.client.table("od_datasets").update({
+        "annotated_image_count": annotated_count.count or 0
+    }).eq("id", dataset_id).execute()
+
+    return {
+        "success": True,
+        "dataset_id": dataset_id,
+        "dataset_name": dataset.data.get("name"),
+        "fixed_to_annotated": fixed_to_annotated,
+        "fixed_to_pending": fixed_to_pending,
+        "total_fixed": fixed_to_annotated + fixed_to_pending,
+    }
+
+
 # ===========================================
 # Export Endpoints
 # ===========================================

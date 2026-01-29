@@ -89,13 +89,21 @@ class HFRTDETRResult:
         probs = torch.softmax(logits, dim=-1)
         scores, labels = probs.max(-1)
 
+        # Log pre-filter statistics
+        logger.info(f"[DEBUG] HF RT-DETR: Total queries before filtering: {len(scores)}")
+        logger.info(f"[DEBUG] HF RT-DETR: Max confidence score: {scores.max().item():.4f}")
+        logger.info(f"[DEBUG] HF RT-DETR: Scores > {conf_threshold}: {(scores > conf_threshold).sum().item()}")
+
         # Filter by confidence
         mask = scores > conf_threshold
         scores = scores[mask]
         labels = labels[mask]
         boxes = boxes[mask]
 
+        logger.info(f"[DEBUG] HF RT-DETR: Detections after filtering: {len(boxes)}")
+
         if len(boxes) == 0:
+            logger.info(f"[DEBUG] HF RT-DETR: No detections above threshold {conf_threshold}")
             return
 
         # Convert boxes from cxcywh to xyxy and scale to image size
@@ -207,6 +215,8 @@ class RoboflowModel(BaseModel):
         weights_path = self._download_weights()
 
         logger.info(f"Loading {self.architecture} model from {weights_path}...")
+        logger.info(f"[DEBUG] Configured classes from DB: {self.classes}")
+        logger.info(f"[DEBUG] Number of classes: {len(self.classes)}")
 
         if self.architecture.startswith("yolov8") or self.architecture.startswith("yolov"):
             return self._load_yolo(weights_path)
@@ -222,6 +232,11 @@ class RoboflowModel(BaseModel):
         from ultralytics import YOLO
 
         model = YOLO(weights_path)
+
+        # Log the model's built-in class names for debugging
+        if hasattr(model, 'names'):
+            logger.info(f"[DEBUG] YOLO model's built-in class names: {model.names}")
+            logger.info(f"[DEBUG] YOLO model's num_classes: {len(model.names)}")
 
         # Move to device if CUDA available
         if self.device == "cuda":
@@ -331,6 +346,7 @@ class RoboflowModel(BaseModel):
             logger.info("RF-DETR model loaded on CPU (HuggingFace)")
 
         # Wrap in a compatible interface
+        logger.info(f"[DEBUG] HF RT-DETR wrapper created with {len(self.classes)} classes: {self.classes}")
         return HFRTDETRWrapper(model, processor, self.classes, self.device)
 
     def predict(
@@ -359,6 +375,7 @@ class RoboflowModel(BaseModel):
         img_width, img_height = image.size
 
         logger.debug(f"Running {self.architecture} inference on {img_width}x{img_height} image")
+        logger.info(f"[DEBUG] Using box_threshold={box_threshold}")
 
         # Run inference
         results = self.model(
@@ -370,11 +387,27 @@ class RoboflowModel(BaseModel):
         # Process results
         predictions = []
 
+        logger.info(f"[DEBUG] Number of results from model: {len(results)}")
+
         for result in results:
             boxes = result.boxes
 
-            if boxes is None or len(boxes) == 0:
+            if boxes is None:
+                logger.info(f"[DEBUG] boxes is None for this result")
                 continue
+
+            logger.info(f"[DEBUG] boxes object has {len(boxes)} detections")
+
+            if len(boxes) == 0:
+                logger.info(f"[DEBUG] Zero detections (boxes is empty)")
+                continue
+
+            # Log raw class indices and confidences for first few detections
+            if len(boxes) > 0:
+                raw_classes = boxes.cls.cpu().numpy()
+                raw_confs = boxes.conf.cpu().numpy()
+                logger.info(f"[DEBUG] Raw class indices (first 5): {raw_classes[:5].tolist()}")
+                logger.info(f"[DEBUG] Raw confidences (first 5): {raw_confs[:5].tolist()}")
 
             for i in range(len(boxes)):
                 # Get box coordinates (xyxy format)
@@ -390,6 +423,10 @@ class RoboflowModel(BaseModel):
                     label = self.model.names[class_idx]
                 else:
                     label = f"class_{class_idx}"
+
+                # Log label mapping for debugging
+                if i < 3:  # Only log first 3
+                    logger.debug(f"[DEBUG] Detection {i}: class_idx={class_idx} -> label='{label}', conf={confidence:.3f}")
 
                 # Convert to normalized format (same as Grounding DINO)
                 predictions.append({

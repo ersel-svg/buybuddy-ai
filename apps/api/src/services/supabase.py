@@ -157,11 +157,14 @@ class SupabaseService:
         frame_count_max: Optional[int] = None,
         visibility_score_min: Optional[int] = None,
         visibility_score_max: Optional[int] = None,
-        # Exclusion filters
+        # Exclusion/Inclusion filters
         exclude_dataset_id: Optional[str] = None,
+        include_dataset_id: Optional[str] = None,
         include_frame_counts: bool = False,
     ) -> dict[str, Any]:
         """Get products with pagination and comprehensive filters."""
+        MAX_IN_QUERY = 200  # Supabase limit for .in_() queries
+
         # If excluding products from a dataset, first get those product IDs
         excluded_product_ids: set[str] = set()
         if exclude_dataset_id:
@@ -172,6 +175,39 @@ class SupabaseService:
                 .execute()
             )
             excluded_product_ids = {row["product_id"] for row in dp_response.data}
+
+        # If including only products from a dataset, get those product IDs
+        included_product_ids: Optional[list[str]] = None
+        if include_dataset_id:
+            # Fetch ALL product IDs with pagination (Supabase default limit is 1000)
+            included_product_ids = []
+            offset = 0
+            batch_size = 1000
+
+            while True:
+                dp_response = (
+                    self.client.table("dataset_products")
+                    .select("product_id")
+                    .eq("dataset_id", include_dataset_id)
+                    .range(offset, offset + batch_size - 1)
+                    .execute()
+                )
+                if not dp_response.data:
+                    break
+                included_product_ids.extend(row["product_id"] for row in dp_response.data)
+                if len(dp_response.data) < batch_size:
+                    break
+                offset += batch_size
+
+            # If no products in dataset, return empty
+            if not included_product_ids:
+                return {
+                    "products": [],
+                    "total": 0,
+                    "page": page,
+                    "limit": limit,
+                    "pages": 0,
+                }
 
         query = self.client.table("products").select("*", count="exact")
 
@@ -191,6 +227,14 @@ class SupabaseService:
         if excluded_product_ids:
             # PostgREST supports not_.in_ for negation
             query = query.not_.in_("id", list(excluded_product_ids))
+
+        # Include only products from dataset (if specified)
+        # For large datasets (>MAX_IN_QUERY), we need to batch the query
+        if included_product_ids:
+            if len(included_product_ids) <= MAX_IN_QUERY:
+                # Small dataset - use direct .in_() query
+                query = query.in_("id", included_product_ids)
+            # else: Large dataset - handled via chunked approach below
 
         # List filters (comma-separated -> in_ query)
         status_list = parse_csv(status)
@@ -305,6 +349,125 @@ class SupabaseService:
         sort_column = sort_by if sort_by in valid_sort_columns else "created_at"
         sort_desc = sort_order != "asc"  # Default to desc
 
+        # Handle large dataset inclusion (>MAX_IN_QUERY products)
+        if included_product_ids and len(included_product_ids) > MAX_IN_QUERY:
+            # For large datasets, we need a different approach:
+            # 1. Query products in batches using chunked IDs
+            # 2. Apply all filters to each batch
+            # 3. Combine and paginate results manually
+
+            all_items = []
+            included_set = set(included_product_ids)
+
+            # Process in chunks of MAX_IN_QUERY
+            for i in range(0, len(included_product_ids), MAX_IN_QUERY):
+                chunk_ids = included_product_ids[i:i + MAX_IN_QUERY]
+
+                # Clone the query base and add the chunk filter
+                chunk_query = self.client.table("products").select("*", count="exact")
+
+                # Re-apply all filters to the chunk query
+                if search:
+                    chunk_query = chunk_query.or_(
+                        f"barcode.ilike.%{search}%,product_name.ilike.%{search}%,brand_name.ilike.%{search}%"
+                    )
+                if status_list:
+                    chunk_query = chunk_query.in_("status", status_list)
+                if category_list:
+                    chunk_query = chunk_query.in_("category", category_list)
+                if brand_list:
+                    chunk_query = chunk_query.in_("brand_name", brand_list)
+                if sub_brand_list:
+                    chunk_query = chunk_query.in_("sub_brand", sub_brand_list)
+                if product_name_list:
+                    chunk_query = chunk_query.in_("product_name", product_name_list)
+                if variant_list:
+                    chunk_query = chunk_query.in_("variant_flavor", variant_list)
+                if container_list:
+                    chunk_query = chunk_query.in_("container_type", container_list)
+                if net_quantity_list:
+                    chunk_query = chunk_query.in_("net_quantity", net_quantity_list)
+                if country_list:
+                    chunk_query = chunk_query.in_("manufacturer_country", country_list)
+                if pack_type_list:
+                    if len(pack_type_list) == 1:
+                        chunk_query = chunk_query.eq("pack_configuration->>type", pack_type_list[0])
+                    else:
+                        conditions = ",".join([f"pack_configuration->>type.eq.{pt}" for pt in pack_type_list])
+                        chunk_query = chunk_query.or_(conditions)
+                if has_video is True:
+                    chunk_query = chunk_query.not_.is_("video_url", "null")
+                elif has_video is False:
+                    chunk_query = chunk_query.is_("video_url", "null")
+                if has_image is True:
+                    chunk_query = chunk_query.not_.is_("primary_image_url", "null")
+                elif has_image is False:
+                    chunk_query = chunk_query.is_("primary_image_url", "null")
+                if has_description is True:
+                    chunk_query = chunk_query.not_.is_("marketing_description", "null")
+                elif has_description is False:
+                    chunk_query = chunk_query.is_("marketing_description", "null")
+                if has_prompt is True:
+                    chunk_query = chunk_query.not_.is_("grounding_prompt", "null")
+                elif has_prompt is False:
+                    chunk_query = chunk_query.is_("grounding_prompt", "null")
+                if claims_list:
+                    chunk_query = chunk_query.overlaps("claims", claims_list)
+                if has_nutrition is True:
+                    chunk_query = chunk_query.not_.is_("nutrition_facts", "null")
+                    chunk_query = chunk_query.neq("nutrition_facts", "{}")
+                elif has_nutrition is False:
+                    chunk_query = chunk_query.or_("nutrition_facts.is.null,nutrition_facts.eq.{}")
+                if has_issues is True:
+                    chunk_query = chunk_query.not_.is_("issues_detected", "null")
+                    chunk_query = chunk_query.neq("issues_detected", "[]")
+                elif has_issues is False:
+                    chunk_query = chunk_query.or_("issues_detected.is.null,issues_detected.eq.[]")
+                if frame_count_min is not None:
+                    chunk_query = chunk_query.gte("frame_count", frame_count_min)
+                if frame_count_max is not None:
+                    chunk_query = chunk_query.lte("frame_count", frame_count_max)
+                if visibility_score_min is not None:
+                    chunk_query = chunk_query.gte("visibility_score", visibility_score_min)
+                if visibility_score_max is not None:
+                    chunk_query = chunk_query.lte("visibility_score", visibility_score_max)
+
+                # Add the chunk ID filter
+                chunk_query = chunk_query.in_("id", chunk_ids)
+
+                # Fetch all matching from this chunk (no pagination yet)
+                chunk_response = chunk_query.order(sort_column, desc=sort_desc).execute()
+                all_items.extend(chunk_response.data or [])
+
+            # Now apply manual pagination to combined results
+            total = len(all_items)
+            start = (page - 1) * limit
+            end = start + limit
+            items = all_items[start:end]
+
+            # Optionally include frame counts
+            if include_frame_counts and items:
+                product_ids = [p["id"] for p in items]
+                legacy_counts = {p["id"]: p.get("frame_count", 0) for p in items}
+                frame_counts_map = await self.get_batch_frame_counts(
+                    product_ids,
+                    check_storage=False,
+                    legacy_frame_counts=legacy_counts
+                )
+                for product in items:
+                    product["frame_counts"] = frame_counts_map.get(
+                        product["id"],
+                        {"synthetic": 0, "real": 0, "augmented": 0}
+                    )
+
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "limit": limit,
+            }
+
+        # Standard query path (no large dataset inclusion)
         # Pagination - applied AFTER all filters for correct total count
         start = (page - 1) * limit
         end = start + limit - 1
@@ -1646,16 +1809,18 @@ class SupabaseService:
                 return []
             return [v.strip() for v in value.split(",") if v.strip()]
 
-        # First, get all product IDs in this dataset
-        product_ids_response = (
+        # First, get product IDs in this dataset (paginated to avoid large queries)
+        # Get total count first
+        count_response = (
             self.client.table("dataset_products")
-            .select("product_id")
+            .select("product_id", count="exact")
             .eq("dataset_id", dataset_id)
+            .limit(1)
             .execute()
         )
-        dataset_product_ids = [item["product_id"] for item in product_ids_response.data]
+        total_in_dataset = count_response.count or 0
 
-        if not dataset_product_ids:
+        if total_in_dataset == 0:
             dataset["products"] = []
             dataset["products_total"] = 0
             dataset["total_synthetic"] = 0
@@ -1663,11 +1828,49 @@ class SupabaseService:
             dataset["total_augmented"] = 0
             return dataset
 
-        # Build query for products with filters
+        # For large datasets, we need to use a different approach
+        # Get product IDs for current page from dataset_products, then fetch products
+        MAX_IN_QUERY = 200  # Supabase limit for .in_() queries
+
+        # Calculate offset for dataset_products based on requested page
+        offset = (page - 1) * limit
+
+        # Get product_ids for the current page from dataset_products
+        product_ids_response = (
+            self.client.table("dataset_products")
+            .select("product_id")
+            .eq("dataset_id", dataset_id)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        page_product_ids = [item["product_id"] for item in product_ids_response.data]
+
+        # Also get all product IDs for frame count calculations (in batches if needed)
+        if total_in_dataset <= MAX_IN_QUERY:
+            all_ids_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", dataset_id)
+                .execute()
+            )
+            dataset_product_ids = [item["product_id"] for item in all_ids_response.data]
+        else:
+            # For large datasets, we'll calculate frame totals differently
+            dataset_product_ids = page_product_ids
+
+        if not page_product_ids:
+            dataset["products"] = []
+            dataset["products_total"] = total_in_dataset
+            dataset["total_synthetic"] = 0
+            dataset["total_real"] = 0
+            dataset["total_augmented"] = 0
+            return dataset
+
+        # Build query for products - only query the current page's product IDs
         query = self.client.table("products").select("*", count="exact")
 
-        # Filter by products in this dataset
-        query = query.in_("id", dataset_product_ids)
+        # Filter by products in this page
+        query = query.in_("id", page_product_ids)
 
         # Search filter
         if search:
@@ -1767,15 +1970,15 @@ class SupabaseService:
         else:
             query = query.order("created_at", desc=True)
 
-        # Pagination
-        offset = (page - 1) * limit
-        query = query.range(offset, offset + limit - 1)
+        # Note: Pagination is already handled at dataset_products level
+        # We don't apply range here since we already got the right product IDs
 
         # Execute query
         products_response = query.execute()
 
         products = products_response.data or []
-        products_total = products_response.count or 0
+        # Use total from dataset_products count, not from this query
+        products_total = total_in_dataset
 
         # Add frame counts if requested - use batch query for efficiency
         if include_frame_counts and products:
@@ -1844,6 +2047,83 @@ class SupabaseService:
         except Exception:
             return {"synthetic": 0, "real": 0, "augmented": 0}
 
+    async def get_dataset_frame_totals(self, dataset_id: str) -> dict[str, int]:
+        """Get total frame counts for all products in a dataset."""
+        # Fetch all product IDs and their legacy frame_count (with pagination)
+        product_ids = []
+        legacy_frame_counts = {}
+        offset = 0
+        batch_size = 1000
+
+        while True:
+            dp_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", dataset_id)
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            if not dp_response.data:
+                break
+            product_ids.extend(item["product_id"] for item in dp_response.data)
+            if len(dp_response.data) < batch_size:
+                break
+            offset += batch_size
+
+        if not product_ids:
+            return {"synthetic": 0, "real": 0, "augmented": 0}
+
+        # Fetch legacy frame_count from products table for fallback
+        MAX_IN_QUERY = 200
+        for i in range(0, len(product_ids), MAX_IN_QUERY):
+            chunk_ids = product_ids[i:i + MAX_IN_QUERY]
+            products_response = (
+                self.client.table("products")
+                .select("id, frame_count")
+                .in_("id", chunk_ids)
+                .execute()
+            )
+            for p in products_response.data or []:
+                legacy_frame_counts[p["id"]] = p.get("frame_count", 0) or 0
+
+        # Get frame counts from product_images table
+        total_synthetic = 0
+        total_real = 0
+        total_augmented = 0
+        products_with_images = set()
+
+        for i in range(0, len(product_ids), MAX_IN_QUERY):
+            chunk_ids = product_ids[i:i + MAX_IN_QUERY]
+            frames_response = (
+                self.client.table("product_images")
+                .select("product_id, image_type")
+                .in_("product_id", chunk_ids)
+                .execute()
+            )
+
+            for frame in frames_response.data or []:
+                pid = frame.get("product_id")
+                image_type = frame.get("image_type", "")
+                products_with_images.add(pid)
+
+                if image_type == "synthetic":
+                    total_synthetic += 1
+                elif image_type == "real":
+                    total_real += 1
+                elif image_type == "augmented":
+                    total_augmented += 1
+
+        # Fallback: use legacy frame_count for products without product_images entries
+        for pid in product_ids:
+            if pid not in products_with_images:
+                total_synthetic += legacy_frame_counts.get(pid, 0)
+
+        return {
+            "synthetic": total_synthetic,
+            "real": total_real,
+            "augmented": total_augmented,
+        }
+
     async def get_dataset_filter_options(self, dataset_id: str) -> Optional[dict[str, Any]]:
         """Get available filter options for products in a dataset."""
         # Check if dataset exists - Note: Using limit(1) instead of single() due to supabase-py bug
@@ -1858,39 +2138,51 @@ class SupabaseService:
         if not dataset_response.data:
             return None
 
-        # Get all product IDs in this dataset
-        product_ids_response = (
-            self.client.table("dataset_products")
-            .select("product_id")
-            .eq("dataset_id", dataset_id)
-            .execute()
-        )
-        dataset_product_ids = [item["product_id"] for item in product_ids_response.data]
+        # Get all product IDs in this dataset (with pagination for large datasets)
+        dataset_product_ids = []
+        offset = 0
+        batch_size = 1000
+
+        while True:
+            product_ids_response = (
+                self.client.table("dataset_products")
+                .select("product_id")
+                .eq("dataset_id", dataset_id)
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            if not product_ids_response.data:
+                break
+            dataset_product_ids.extend(item["product_id"] for item in product_ids_response.data)
+            if len(product_ids_response.data) < batch_size:
+                break
+            offset += batch_size
+
+        empty_options = {
+            "status": [],
+            "category": [],
+            "brand": [],
+            "subBrand": [],
+            "productName": [],
+            "flavor": [],
+            "container": [],
+            "netQuantity": [],
+            "packType": [],
+            "country": [],
+            "claims": [],
+            "issueTypes": [],
+            "frameCount": {"min": 0, "max": 0},
+            "visibilityScore": {"min": 0, "max": 100},
+            "hasVideo": {"trueCount": 0, "falseCount": 0},
+            "hasImage": {"trueCount": 0, "falseCount": 0},
+            "hasNutrition": {"trueCount": 0, "falseCount": 0},
+            "hasDescription": {"trueCount": 0, "falseCount": 0},
+            "hasPrompt": {"trueCount": 0, "falseCount": 0},
+            "hasIssues": {"trueCount": 0, "falseCount": 0},
+        }
 
         if not dataset_product_ids:
-            # Return empty options
-            return {
-                "status": [],
-                "category": [],
-                "brand": [],
-                "subBrand": [],
-                "productName": [],
-                "flavor": [],
-                "container": [],
-                "netQuantity": [],
-                "packType": [],
-                "country": [],
-                "claims": [],
-                "issueTypes": [],
-                "frameCount": {"min": 0, "max": 0},
-                "visibilityScore": {"min": 0, "max": 100},
-                "hasVideo": {"trueCount": 0, "falseCount": 0},
-                "hasImage": {"trueCount": 0, "falseCount": 0},
-                "hasNutrition": {"trueCount": 0, "falseCount": 0},
-                "hasDescription": {"trueCount": 0, "falseCount": 0},
-                "hasPrompt": {"trueCount": 0, "falseCount": 0},
-                "hasIssues": {"trueCount": 0, "falseCount": 0},
-            }
+            return empty_options
 
         # Get only the fields needed for filter options (not SELECT *)
         filter_fields = (
@@ -1899,13 +2191,20 @@ class SupabaseService:
             "claims,issues_detected,frame_count,visibility_score,"
             "video_url,primary_image_url,nutrition_facts,marketing_description,grounding_prompt"
         )
-        products_response = (
-            self.client.table("products")
-            .select(filter_fields)
-            .in_("id", dataset_product_ids)
-            .execute()
-        )
-        products = products_response.data or []
+
+        # Fetch products in batches to avoid .in_() query limits
+        MAX_IN_QUERY = 200
+        products = []
+
+        for i in range(0, len(dataset_product_ids), MAX_IN_QUERY):
+            chunk_ids = dataset_product_ids[i:i + MAX_IN_QUERY]
+            products_response = (
+                self.client.table("products")
+                .select(filter_fields)
+                .in_("id", chunk_ids)
+                .execute()
+            )
+            products.extend(products_response.data or [])
 
         # Helper to count values
         def count_values(field: str) -> list[dict]:
@@ -2815,8 +3114,11 @@ class SupabaseService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         search: Optional[str] = None,
-        # Merchant filter
+        # Merchant filters
         merchant_id: Optional[int] = None,
+        merchant: Optional[str] = None,
+        # Annotated UPC filter
+        annotated_upc: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get cutout images with pagination and filters."""
         # Determine if we need to JOIN with products table
@@ -2836,9 +3138,13 @@ class SupabaseService:
         elif is_matched is False:
             query = query.is_("matched_product_id", "null")
         if predicted_upc:
-            query = query.eq("predicted_upc", predicted_upc)
+            query = query.ilike("predicted_upc", f"%{predicted_upc}%")
         if merchant_id is not None:
             query = query.eq("merchant_id", merchant_id)
+        if merchant:
+            query = query.eq("merchant", merchant)
+        if annotated_upc:
+            query = query.ilike("annotated_upc", f"%{annotated_upc}%")
         
         # Date range filters
         if date_from:

@@ -56,6 +56,8 @@ import {
   ArrowDownCircle,
   Clock,
   Database,
+  Store,
+  X,
 } from "lucide-react";
 import type { CutoutImage, Job } from "@/types";
 import Image from "next/image";
@@ -67,8 +69,10 @@ export default function CutoutsPage() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [searchUPC, setSearchUPC] = useState("");
+  const [searchAnnotatedUPC, setSearchAnnotatedUPC] = useState("");
   const [filterEmbedding, setFilterEmbedding] = useState<string>("all");
   const [filterMatched, setFilterMatched] = useState<string>("all");
+  const [filterMerchant, setFilterMerchant] = useState<string>("all");
 
   // Sync dialog state
   const [isSyncNewDialogOpen, setIsSyncNewDialogOpen] = useState(false);
@@ -143,7 +147,7 @@ export default function CutoutsPage() {
     isLoading: cutoutsLoading,
     isFetching,
   } = useQuery({
-    queryKey: ["cutouts", page, filterEmbedding, filterMatched, searchUPC],
+    queryKey: ["cutouts", page, filterEmbedding, filterMatched, filterMerchant, searchUPC, searchAnnotatedUPC],
     queryFn: () =>
       apiClient.getCutouts({
         page,
@@ -155,6 +159,8 @@ export default function CutoutsPage() {
         is_matched:
           filterMatched === "all" ? undefined : filterMatched === "matched",
         predicted_upc: searchUPC || undefined,
+        annotated_upc: searchAnnotatedUPC || undefined,
+        merchant: filterMerchant === "all" ? undefined : filterMerchant,
       }),
   });
 
@@ -471,13 +477,14 @@ export default function CutoutsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Filter Row */}
+          {/* Filter Row 1: Search inputs */}
           <div className="flex gap-4">
             <div className="flex-1">
+              <Label className="text-xs text-muted-foreground mb-1 block">Predicted UPC</Label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by UPC..."
+                  placeholder="Search predicted UPC..."
                   value={searchUPC}
                   onChange={(e) => {
                     setSearchUPC(e.target.value);
@@ -487,6 +494,44 @@ export default function CutoutsPage() {
                 />
               </div>
             </div>
+            <div className="flex-1">
+              <Label className="text-xs text-muted-foreground mb-1 block">Annotated UPC (Ground Truth)</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search annotated UPC..."
+                  value={searchAnnotatedUPC}
+                  onChange={(e) => {
+                    setSearchAnnotatedUPC(e.target.value);
+                    setPage(1);
+                  }}
+                  className="pl-10"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Filter Row 2: Dropdowns */}
+          <div className="flex gap-4">
+            <Select
+              value={filterMerchant}
+              onValueChange={(v) => {
+                setFilterMerchant(v);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="Select merchant" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Merchants</SelectItem>
+                {merchants?.map((m) => (
+                  <SelectItem key={m.id} value={m.name}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select
               value={filterEmbedding}
               onValueChange={(v) => {
@@ -519,6 +564,23 @@ export default function CutoutsPage() {
                 <SelectItem value="unmatched">Unmatched</SelectItem>
               </SelectContent>
             </Select>
+            {/* Clear filters button */}
+            {(searchUPC || searchAnnotatedUPC || filterMerchant !== "all" || filterEmbedding !== "all" || filterMatched !== "all") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSearchUPC("");
+                  setSearchAnnotatedUPC("");
+                  setFilterMerchant("all");
+                  setFilterEmbedding("all");
+                  setFilterMatched("all");
+                  setPage(1);
+                }}
+              >
+                Clear filters
+              </Button>
+            )}
           </div>
 
           {/* Table */}
