@@ -2205,6 +2205,27 @@ async def start_matching_extraction(
     product_collection = request.product_collection_name or f"products_{model_name}"
     cutout_collection = request.cutout_collection_name or f"cutouts_{model_name}"
 
+    # Append mode: validate existing collections and vector dimensions
+    if request.collection_mode == "append":
+        if not request.product_collection_name:
+            raise HTTPException(status_code=400, detail="product_collection_name is required for append mode")
+        if request.include_cutouts and not request.cutout_collection_name:
+            raise HTTPException(status_code=400, detail="cutout_collection_name is required for append mode when include_cutouts is true")
+
+        collections_to_check = [product_collection]
+        if request.include_cutouts:
+            collections_to_check.append(cutout_collection)
+
+        for coll in collections_to_check:
+            info = await qdrant_service.get_collection_info(coll)
+            if not info:
+                raise HTTPException(status_code=400, detail=f"Collection not found: {coll}")
+            if info.get("vector_size") and info["vector_size"] != embedding_dim:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Collection dimension mismatch for {coll}: expected {embedding_dim}, got {info['vector_size']}",
+                )
+
     # Get products based on source
     products = await db.get_products_for_extraction(
         source_type=request.product_source,
@@ -2339,12 +2360,12 @@ async def start_matching_extraction(
             except Exception:
                 pass
 
-    for coll in collections:
-        await qdrant_service.create_collection(
-            collection_name=coll,
-            vector_size=embedding_dim,
-            distance="Cosine",
-        )
+        for coll in collections:
+            await qdrant_service.create_collection(
+                collection_name=coll,
+                vector_size=embedding_dim,
+                distance="Cosine",
+            )
 
     # SOTA ARCHITECTURE (Phase 3):
     # Send source_config instead of images - worker fetches from DB
@@ -2369,7 +2390,9 @@ async def start_matching_extraction(
                     "product_dataset_id": request.product_dataset_id,  # For "dataset" source
                     "product_filter": request.product_filter,  # For "filter" source
                     "cutout_filter_has_upc": request.cutout_filter_has_upc,
+                    "cutout_merchant_ids": request.cutout_merchant_ids,  # For merchant filtering
                 },
+                "append_only_new": request.collection_mode == "append",
                 "frame_selection": request.frame_selection,
                 "frame_interval": request.frame_interval,
                 "max_frames": request.max_frames,

@@ -123,6 +123,8 @@ def fetch_cutout_images(
             db_filters["has_embedding"] = filters["has_embedding"]
         if filters.get("cutout_filter_has_upc"):
             db_filters["predicted_upc_not_null"] = True
+        if filters.get("cutout_merchant_ids"):
+            db_filters["merchant_id"] = filters["cutout_merchant_ids"]
 
     cutouts = fetch_with_pagination(
         client=client,
