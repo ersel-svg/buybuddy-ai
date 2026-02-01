@@ -337,6 +337,7 @@ def build_extraction_data(
             filters={
                 "has_embedding": filters.get("has_embedding"),
                 "cutout_filter_has_upc": filters.get("cutout_filter_has_upc"),
+                "cutout_merchant_ids": filters.get("cutout_merchant_ids"),
             },
         )
 
