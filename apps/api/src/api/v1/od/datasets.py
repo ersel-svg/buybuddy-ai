@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from services.supabase import supabase_service
+from services.od_sync import update_dataset_annotated_image_count
 from schemas.od import (
     ODDatasetCreate,
     ODDatasetUpdate,
@@ -592,10 +593,8 @@ async def update_image_status(dataset_id: str, image_id: str, status: str):
     if not result.data:
         raise HTTPException(status_code=404, detail="Image not in dataset")
 
-    # Update dataset annotated_image_count if completed
-    if status == "completed":
-        count = supabase_service.client.table("od_dataset_images").select("id", count="exact").eq("dataset_id", dataset_id).eq("status", "completed").execute()
-        supabase_service.client.table("od_datasets").update({"annotated_image_count": count.count or 0}).eq("id", dataset_id).execute()
+    # Update dataset annotated_image_count based on status
+    update_dataset_annotated_image_count(dataset_id)
 
     return result.data[0]
 
@@ -641,13 +640,8 @@ async def update_images_status_bulk(dataset_id: str, image_ids: list[str], statu
         ).eq("dataset_id", dataset_id).in_("image_id", batch).execute()
         updated_count += len(result.data) if result.data else 0
 
-    # Update dataset annotated_image_count
-    count = supabase_service.client.table("od_dataset_images").select(
-        "id", count="exact"
-    ).eq("dataset_id", dataset_id).eq("status", "completed").execute()
-    supabase_service.client.table("od_datasets").update({
-        "annotated_image_count": count.count or 0
-    }).eq("id", dataset_id).execute()
+    # Update dataset annotated_image_count based on status
+    update_dataset_annotated_image_count(dataset_id)
 
     return {
         "updated": updated_count,
@@ -728,13 +722,8 @@ async def update_images_status_by_filter(
         ).eq("dataset_id", dataset_id).in_("image_id", batch).execute()
         total_updated += len(batch)
 
-    # Update dataset annotated_image_count
-    count = supabase_service.client.table("od_dataset_images").select(
-        "id", count="exact"
-    ).eq("dataset_id", dataset_id).eq("status", "completed").execute()
-    supabase_service.client.table("od_datasets").update({
-        "annotated_image_count": count.count or 0
-    }).eq("id", dataset_id).execute()
+    # Update dataset annotated_image_count based on status
+    update_dataset_annotated_image_count(dataset_id)
 
     return {
         "updated": total_updated,
@@ -902,6 +891,38 @@ async def recalculate_image_status(dataset_id: str):
         "fixed_to_annotated": fixed_to_annotated,
         "fixed_to_pending": fixed_to_pending,
         "total_fixed": fixed_to_annotated + fixed_to_pending,
+    }
+
+
+@router.post("/{dataset_id}/resync")
+async def resync_dataset_annotations(dataset_id: str):
+    """
+    Full resync for annotation counts and statuses.
+
+    Runs as a local background job to recalculate:
+    - per-image annotation_count
+    - per-class annotation_count
+    - dataset annotation_count / annotated_image_count
+    - image statuses (pending/annotated) based on counts
+    """
+    # Verify dataset exists
+    dataset = supabase_service.client.table("od_datasets").select(
+        "id, name"
+    ).eq("id", dataset_id).single().execute()
+    if not dataset.data:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    from services.local_jobs import create_local_job
+
+    job = await create_local_job(
+        job_type="local_od_sync_counts",
+        config={"dataset_id": dataset_id},
+    )
+
+    return {
+        "job_id": job.get("id"),
+        "status": job.get("status"),
+        "message": "Resync started",
     }
 
 

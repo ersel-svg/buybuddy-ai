@@ -221,6 +221,7 @@ class LocalJobWorker:
         """Update job progress in database."""
         try:
             supabase_service.client.table("jobs").update({
+                "status": "running",
                 "progress": min(max(progress.progress, 0), 100),
                 "current_step": progress.current_step,
                 "result": {

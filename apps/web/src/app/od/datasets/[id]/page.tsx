@@ -120,6 +120,7 @@ import {
   GitBranch,
   Settings2,
   SplitSquareVertical,
+  RotateCcw,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -229,6 +230,7 @@ export default function ODDatasetDetailPage({
   const [activeRemoveJobId, setActiveRemoveJobId] = useState<string | null>(null);
   const [activeStatusJobId, setActiveStatusJobId] = useState<string | null>(null);
   const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+  const [activeResyncJobId, setActiveResyncJobId] = useState<string | null>(null);
 
   // Classes tab state
   const [classSearch, setClassSearch] = useState("");
@@ -544,6 +546,20 @@ export default function ODDatasetDetailPage({
     },
     onError: (error) => {
       toast.error(`Failed to update status: ${error.message}`);
+    },
+  });
+
+  // Resync annotations/counts/statuses (local job)
+  const resyncMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.resyncODDataset(datasetId);
+    },
+    onSuccess: (data) => {
+      setActiveResyncJobId(data.job_id);
+      toast.info("Resync started");
+    },
+    onError: (error) => {
+      toast.error(`Failed to start resync: ${error.message}`);
     },
   });
 
@@ -1065,6 +1081,18 @@ export default function ODDatasetDetailPage({
           >
             <RefreshCw className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`} />
             Refresh
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => resyncMutation.mutate()}
+            disabled={resyncMutation.isPending || !!activeResyncJobId}
+          >
+            {resyncMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <RotateCcw className="h-4 w-4 mr-2" />
+            )}
+            Resync
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2968,6 +2996,22 @@ export default function ODDatasetDetailPage({
           setSelectedImages(new Set());
         }}
         invalidateOnComplete={[["od-dataset", datasetId], ["od-dataset-images", datasetId]]}
+      />
+
+      {/* Resync Progress Modal */}
+      <JobProgressModal
+        jobId={activeResyncJobId}
+        title="Resyncing annotations"
+        onClose={() => setActiveResyncJobId(null)}
+        onComplete={(result) => {
+          toast.success(result?.message || "Resync completed");
+        }}
+        invalidateOnComplete={[
+          ["od-dataset", datasetId],
+          ["od-dataset-images", datasetId],
+          ["od-dataset-stats", datasetId],
+          ["od-classes", datasetId],
+        ]}
       />
 
       {/* Export Progress Modal */}

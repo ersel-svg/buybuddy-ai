@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from services.supabase import supabase_service
+from services.od_sync import update_dataset_annotated_image_count
 from ..base import BaseJobHandler, JobProgress
 from ..registry import job_registry
 from ..utils import chunks, calculate_progress
@@ -138,15 +139,7 @@ class BulkUpdateStatusHandler(BaseJobHandler):
             total=total,
         ))
 
-        count = supabase_service.client.table("od_dataset_images")\
-            .select("id", count="exact")\
-            .eq("dataset_id", dataset_id)\
-            .eq("status", "completed")\
-            .execute()
-
-        supabase_service.client.table("od_datasets").update({
-            "annotated_image_count": count.count or 0
-        }).eq("id", dataset_id).execute()
+        update_dataset_annotated_image_count(dataset_id)
 
         return {
             "updated": updated,

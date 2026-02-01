@@ -63,6 +63,8 @@ from pathlib import Path
 
 import runpod
 
+from qdrant_client.http import models as qmodels
+
 
 # ===========================================
 # Graceful Shutdown Handling
@@ -160,6 +162,68 @@ def get_qdrant_client(url: str, api_key: str):
     from qdrant_client import QdrantClient
     return QdrantClient(url=url, api_key=api_key)
 
+
+# ===========================================
+# Qdrant Helpers
+# ===========================================
+def _chunked(items, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _get_existing_cutout_ids(qdrant, collection_name: str, cutout_ids: list[str], batch_size: int = 256) -> set[str]:
+    existing = set()
+    for batch in _chunked(cutout_ids, batch_size):
+        try:
+            points = qdrant.retrieve(
+                collection_name=collection_name,
+                ids=batch,
+                with_payload=False,
+                with_vectors=False,
+            )
+            for p in points:
+                existing.add(str(p.id))
+        except Exception as e:
+            print(f"[WARNING] Failed to retrieve cutout IDs from Qdrant ({collection_name}): {e}")
+    return existing
+
+
+def _get_existing_product_ids(
+    qdrant,
+    collection_name: str,
+    product_ids: list[str],
+    batch_size: int = 200,
+    scroll_limit: int = 1000,
+) -> set[str]:
+    existing = set()
+    for batch in _chunked(product_ids, batch_size):
+        scroll_filter = qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="product_id",
+                    match=qmodels.MatchAny(any=batch),
+                )
+            ]
+        )
+        offset = None
+        while True:
+            points, next_offset = qdrant.scroll(
+                collection_name=collection_name,
+                scroll_filter=scroll_filter,
+                limit=scroll_limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for p in points:
+                payload = p.payload or {}
+                pid = payload.get("product_id")
+                if pid:
+                    existing.add(str(pid))
+            if next_offset is None or len(points) < scroll_limit:
+                break
+            offset = next_offset
+    return existing
 
 # ===========================================
 # Update Embedding Job
@@ -383,6 +447,63 @@ def handler_stateful(job_input: Dict[str, Any]) -> Dict[str, Any]:
 
         if not qdrant:
             raise ValueError("Failed to initialize Qdrant client")
+
+        # Append mode: skip images that already exist in the target collection(s)
+        append_only_new = source_config.get("append_only_new") if source_config else False
+        if append_only_new:
+            product_collection = source_config.get("product_collection") if source_config else None
+            cutout_collection = source_config.get("cutout_collection") if source_config else None
+
+            existing_cutout_ids = set()
+            existing_product_ids = set()
+
+            if cutout_collection:
+                cutout_ids = [img["id"] for img in images if img.get("type") == "cutout"]
+                if cutout_ids:
+                    existing_cutout_ids = _get_existing_cutout_ids(qdrant, cutout_collection, cutout_ids)
+
+            if product_collection:
+                product_ids = list({
+                    img.get("metadata", {}).get("product_id")
+                    for img in images
+                    if img.get("type") == "product"
+                })
+                product_ids = [pid for pid in product_ids if pid]
+                if product_ids:
+                    existing_product_ids = _get_existing_product_ids(qdrant, product_collection, product_ids)
+
+            if existing_cutout_ids or existing_product_ids:
+                before_count = len(images)
+                images = [
+                    img for img in images
+                    if not (
+                        (img.get("type") == "cutout" and img["id"] in existing_cutout_ids)
+                        or (img.get("type") == "product" and img.get("metadata", {}).get("product_id") in existing_product_ids)
+                    )
+                ]
+                after_count = len(images)
+                print(f"[APPEND] Skipped {before_count - after_count} existing images")
+
+                if supabase:
+                    try:
+                        supabase.table("embedding_jobs").update({
+                            "total_images": after_count,
+                        }).eq("id", job_id).execute()
+                    except Exception as e:
+                        print(f"[WARNING] Failed to update total_images for job {job_id}: {e}")
+
+                total_images = after_count
+
+            if total_images == 0:
+                if supabase:
+                    update_embedding_job(supabase, job_id, status="completed", processed_images=0)
+                return {
+                    "status": "success",
+                    "processed_count": 0,
+                    "failed_count": 0,
+                    "total_images": 0,
+                    "embedding_dim": embedding_dim,
+                }
 
         # Update job status to running
         update_embedding_job(supabase, job_id, status="running")

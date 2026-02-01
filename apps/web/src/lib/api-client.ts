@@ -2201,6 +2201,18 @@ class ApiClient {
   }
 
   /**
+   * Full resync of per-image counts, dataset totals, and statuses.
+   * Runs as a local background job.
+   */
+  async resyncODDataset(datasetId: string): Promise<{
+    job_id: string;
+    status: string;
+    message: string;
+  }> {
+    return this.request(`/api/v1/od/datasets/${datasetId}/resync`, { method: "POST" });
+  }
+
+  /**
    * Get detailed dataset stats for training wizard
    * Returns class info, image sizes, annotation stats etc.
    */

@@ -241,6 +241,60 @@ export default function ODAnnotationEditorPage({
     },
   });
 
+  // Track pending create requests to prevent duplicate submissions
+  const pendingCreateRef = useRef<Set<string>>(new Set());
+
+  // Helper to generate a unique key for a bbox
+  const getBboxKey = (bbox: { x: number; y: number; width: number; height: number }, classId: string) => {
+    // Round to 4 decimal places to handle floating point precision
+    return `${classId}:${bbox.x.toFixed(4)}:${bbox.y.toFixed(4)}:${bbox.width.toFixed(4)}:${bbox.height.toFixed(4)}`;
+  };
+
+  // Check if a new bbox would be a duplicate of existing annotations
+  const isDuplicateBbox = useCallback((
+    newBbox: { x: number; y: number; width: number; height: number },
+    classId: string
+  ): boolean => {
+    const IOU_THRESHOLD = 0.95;
+
+    // Compute IoU between two bboxes
+    const computeIoU = (
+      box1: { x: number; y: number; width: number; height: number },
+      box2: { x: number; y: number; width: number; height: number }
+    ): number => {
+      const x1_1 = box1.x, y1_1 = box1.y;
+      const x2_1 = box1.x + box1.width, y2_1 = box1.y + box1.height;
+      const x1_2 = box2.x, y1_2 = box2.y;
+      const x2_2 = box2.x + box2.width, y2_2 = box2.y + box2.height;
+
+      const xi1 = Math.max(x1_1, x1_2);
+      const yi1 = Math.max(y1_1, y1_2);
+      const xi2 = Math.min(x2_1, x2_2);
+      const yi2 = Math.min(y2_1, y2_2);
+
+      if (xi2 <= xi1 || yi2 <= yi1) return 0;
+
+      const intersection = (xi2 - xi1) * (yi2 - yi1);
+      const area1 = box1.width * box1.height;
+      const area2 = box2.width * box2.height;
+      const union = area1 + area2 - intersection;
+
+      return union > 0 ? intersection / union : 0;
+    };
+
+    // Check against existing annotations with the same class
+    for (const ann of annotations) {
+      if (ann.class_id === classId) {
+        const iou = computeIoU(newBbox, ann.bbox);
+        if (iou >= IOU_THRESHOLD) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }, [annotations]);
+
   const createMutation = useMutation({
     mutationFn: async (data: {
       class_id: string;
@@ -248,7 +302,31 @@ export default function ODAnnotationEditorPage({
       is_ai_generated?: boolean;
       confidence?: number;
     }) => {
-      return apiClient.createODAnnotation(datasetId, imageId, data);
+      // Generate a unique key for this request
+      const bboxKey = getBboxKey(data.bbox, data.class_id);
+
+      // Check if this exact request is already in flight
+      if (pendingCreateRef.current.has(bboxKey)) {
+        console.log("[Annotation] Skipping duplicate request:", bboxKey);
+        throw new Error("DUPLICATE_REQUEST");
+      }
+
+      // Check if this would create a duplicate annotation
+      if (isDuplicateBbox(data.bbox, data.class_id)) {
+        console.log("[Annotation] Skipping duplicate annotation:", bboxKey);
+        throw new Error("DUPLICATE_ANNOTATION");
+      }
+
+      // Mark this request as pending
+      pendingCreateRef.current.add(bboxKey);
+
+      try {
+        const result = await apiClient.createODAnnotation(datasetId, imageId, data);
+        return result;
+      } finally {
+        // Always remove from pending set
+        pendingCreateRef.current.delete(bboxKey);
+      }
     },
     onSuccess: (newAnnotation) => {
       queryClient.invalidateQueries({ queryKey: ["od-annotations", datasetId, imageId] });
@@ -260,6 +338,15 @@ export default function ODAnnotationEditorPage({
       setLastUsedClassId(newAnnotation.class_id);
     },
     onError: (error) => {
+      // Silently ignore duplicate errors - they're expected and handled
+      if (error.message === "DUPLICATE_REQUEST" || error.message === "DUPLICATE_ANNOTATION") {
+        return;
+      }
+      // Also handle 409 Conflict from backend duplicate check
+      if (error.message?.includes("409") || error.message?.includes("Duplicate")) {
+        console.log("[Annotation] Backend rejected duplicate annotation");
+        return;
+      }
       toast.error(`Failed to create annotation: ${error.message}`);
     },
   });

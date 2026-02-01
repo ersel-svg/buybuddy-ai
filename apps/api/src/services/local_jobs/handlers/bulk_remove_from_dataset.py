@@ -8,6 +8,7 @@ handling deletion of annotations, dataset links, and optionally images.
 from typing import Callable
 
 from services.supabase import supabase_service
+from services.od_sync import update_dataset_annotated_image_count
 from ..base import BaseJobHandler, JobProgress
 from ..registry import job_registry
 from ..utils import chunks, calculate_progress
@@ -267,15 +268,9 @@ class BulkRemoveFromDatasetHandler(BaseJobHandler):
             .eq("dataset_id", dataset_id)\
             .execute()
 
-        # Annotated image count
-        annotated_count = supabase_service.client.table("od_dataset_images")\
-            .select("id", count="exact")\
-            .eq("dataset_id", dataset_id)\
-            .eq("status", "completed")\
-            .execute()
-
         supabase_service.client.table("od_datasets").update({
             "image_count": img_count.count or 0,
             "annotation_count": ann_count.count or 0,
-            "annotated_image_count": annotated_count.count or 0,
         }).eq("id", dataset_id).execute()
+
+        update_dataset_annotated_image_count(dataset_id)

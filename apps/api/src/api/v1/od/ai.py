@@ -31,6 +31,7 @@ from schemas.od import (
 )
 from services.runpod import runpod_service, EndpointType
 from services.supabase import supabase_service
+from services.od_sync import sync_annotation_counts_after_write
 
 router = APIRouter()
 
@@ -148,6 +149,232 @@ def _apply_class_agnostic_nms(
                 suppressed.add(j)
 
     return kept
+
+
+def _coerce_predictions_list(raw) -> list:
+    """Normalize various prediction container formats into a list."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        # Common wrapper shapes
+        for key in ("predictions", "detections", "objects", "boxes", "results"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return value
+        # Mapping: label -> list[prediction]
+        if raw and all(isinstance(v, list) for v in raw.values()):
+            flattened = []
+            for label, items in raw.items():
+                for item in items:
+                    if isinstance(item, dict):
+                        if not any(k in item for k in ("label", "class", "class_name", "name")):
+                            item = {**item, "label": str(label)}
+                    flattened.append(item)
+            return flattened
+    return []
+
+
+def _get_result_image_id(result: dict) -> Optional[str]:
+    for key in ("id", "image_id", "imageId"):
+        value = result.get(key)
+        if value:
+            return str(value)
+    image_info = result.get("image")
+    if isinstance(image_info, dict):
+        for key in ("id", "image_id", "imageId"):
+            value = image_info.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _extract_predictions_from_output(output: dict) -> tuple[dict[str, list], int]:
+    """
+    Normalize RunPod output into {image_id: predictions} and total prediction count.
+    Supports multiple output shapes to be resilient to worker changes.
+    """
+    if not output:
+        return {}, 0
+
+    results = None
+    if isinstance(output, dict):
+        results = output.get("results")
+        # Some workers return mapping directly in output.predictions
+        if results is None and isinstance(output.get("predictions"), dict):
+            results = [
+                {"id": key, "predictions": value}
+                for key, value in (output.get("predictions") or {}).items()
+            ]
+        # Some workers return a single result payload
+        if results is None and (output.get("id") or output.get("image_id") or output.get("imageId")):
+            results = [output]
+    elif isinstance(output, list):
+        results = output
+
+    if isinstance(results, dict):
+        results = [{"id": key, "predictions": value} for key, value in results.items()]
+    if not isinstance(results, list):
+        results = []
+
+    predictions_by_image: dict[str, list] = {}
+    total_predictions = 0
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        raw_predictions = (
+            result.get("predictions")
+            or result.get("detections")
+            or result.get("objects")
+            or result.get("boxes")
+        )
+        predictions = _coerce_predictions_list(raw_predictions)
+        total_predictions += len(predictions)
+
+        image_id = _get_result_image_id(result)
+        if image_id:
+            predictions_by_image[image_id] = predictions
+
+    return predictions_by_image, total_predictions
+
+
+def _normalize_label(raw_label, model_classes: Optional[list[str]] = None) -> Optional[str]:
+    if raw_label is None:
+        return None
+    if isinstance(raw_label, dict):
+        for key in ("label", "class", "class_name", "name", "category"):
+            value = raw_label.get(key)
+            if value is not None:
+                raw_label = value
+                break
+    # Map numeric labels to class names if available
+    if isinstance(raw_label, (int, float)) or (isinstance(raw_label, str) and raw_label.isdigit()):
+        try:
+            idx = int(float(raw_label))
+            if model_classes and 0 <= idx < len(model_classes):
+                return model_classes[idx]
+        except Exception:
+            pass
+    if raw_label is None:
+        return None
+    label_str = str(raw_label).strip()
+    return label_str or None
+
+
+def _normalize_bbox(raw_bbox, pred: Optional[dict] = None) -> Optional[dict]:
+    bbox = raw_bbox
+    if bbox is None and isinstance(pred, dict):
+        # Some outputs put bbox fields at top-level
+        if all(k in pred for k in ("x", "y", "width", "height")):
+            bbox = {k: pred.get(k) for k in ("x", "y", "width", "height")}
+        elif all(k in pred for k in ("x1", "y1", "x2", "y2")):
+            bbox = {k: pred.get(k) for k in ("x1", "y1", "x2", "y2")}
+        elif all(k in pred for k in ("xmin", "ymin", "xmax", "ymax")):
+            bbox = {k: pred.get(k) for k in ("xmin", "ymin", "xmax", "ymax")}
+        elif all(k in pred for k in ("left", "top", "right", "bottom")):
+            bbox = {k: pred.get(k) for k in ("left", "top", "right", "bottom")}
+
+    if isinstance(bbox, dict):
+        if all(k in bbox for k in ("x", "y", "width", "height")):
+            return {
+                "x": float(bbox.get("x", 0)),
+                "y": float(bbox.get("y", 0)),
+                "width": max(0.0, float(bbox.get("width", 0))),
+                "height": max(0.0, float(bbox.get("height", 0))),
+            }
+        if all(k in bbox for k in ("x1", "y1", "x2", "y2")):
+            x1 = float(bbox.get("x1", 0))
+            y1 = float(bbox.get("y1", 0))
+            x2 = float(bbox.get("x2", 0))
+            y2 = float(bbox.get("y2", 0))
+            return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
+        if all(k in bbox for k in ("xmin", "ymin", "xmax", "ymax")):
+            x1 = float(bbox.get("xmin", 0))
+            y1 = float(bbox.get("ymin", 0))
+            x2 = float(bbox.get("xmax", 0))
+            y2 = float(bbox.get("ymax", 0))
+            return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
+        if all(k in bbox for k in ("left", "top", "right", "bottom")):
+            x1 = float(bbox.get("left", 0))
+            y1 = float(bbox.get("top", 0))
+            x2 = float(bbox.get("right", 0))
+            y2 = float(bbox.get("bottom", 0))
+            return {"x": x1, "y": y1, "width": max(0.0, x2 - x1), "height": max(0.0, y2 - y1)}
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        x1 = float(bbox[0])
+        y1 = float(bbox[1])
+        x2 = float(bbox[2])
+        y2 = float(bbox[3])
+        if x2 >= x1 and y2 >= y1:
+            return {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+        # Assume xywh
+        return {"x": x1, "y": y1, "width": max(0.0, x2), "height": max(0.0, y2)}
+
+    return None
+
+
+def _normalize_prediction(raw_pred, model_classes: Optional[list[str]] = None) -> Optional[dict]:
+    if raw_pred is None:
+        return None
+    pred = raw_pred
+    if isinstance(raw_pred, (list, tuple)):
+        # Common format: [x1, y1, x2, y2, score, label]
+        if len(raw_pred) >= 6:
+            pred = {
+                "bbox": list(raw_pred[:4]),
+                "confidence": raw_pred[4],
+                "label": raw_pred[5],
+            }
+        else:
+            return None
+
+    if not isinstance(pred, dict):
+        return None
+
+    label = _normalize_label(
+        pred.get("label")
+        if "label" in pred
+        else pred.get("class")
+        if "class" in pred
+        else pred.get("class_name")
+        if "class_name" in pred
+        else pred.get("name")
+        if "name" in pred
+        else pred.get("category"),
+        model_classes=model_classes,
+    )
+    if not label:
+        return None
+
+    bbox = _normalize_bbox(pred.get("bbox") or pred.get("box") or pred.get("bounding_box") or pred.get("bounds"), pred=pred)
+    if not bbox:
+        return None
+
+    confidence = (
+        pred.get("confidence")
+        if pred.get("confidence") is not None
+        else pred.get("score")
+        if pred.get("score") is not None
+        else pred.get("probability")
+        if pred.get("probability") is not None
+        else pred.get("conf")
+        if pred.get("conf") is not None
+        else 0
+    )
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.0
+
+    return {
+        "bbox": bbox,
+        "label": label,
+        "confidence": confidence,
+        "mask": pred.get("mask"),
+    }
 
 
 @router.post("/predict", response_model=AIPredictResponse)
@@ -618,6 +845,23 @@ async def batch_annotate(
     if request.limit and request.limit < len(images):
         images = images[:request.limit]
 
+    # Resolve model classes for closed-vocab models (used for robust label mapping)
+    model_classes: Optional[list[str]] = None
+    trained_class_mapping = None
+    if is_rf_model and rf_model_data:
+        model_classes = rf_model_data.get("classes") or None
+    elif is_trained_model and trained_model_data:
+        trained_class_mapping = trained_model_data.get("class_mapping", {})
+        if trained_class_mapping:
+            sorted_classes = sorted(trained_class_mapping.items(), key=lambda x: x[1])
+            class_ids = [class_id for class_id, _ in sorted_classes]
+            if class_ids:
+                classes_result = supabase_service.client.table("od_classes").select(
+                    "id, name"
+                ).in_("id", class_ids).execute()
+                class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
+                model_classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+
     # Create job record
     job_id = str(uuid.uuid4())
 
@@ -636,6 +880,7 @@ async def batch_annotate(
             "filter_classes": request.filter_classes,  # For Roboflow models
             "total_images": len(images),
             "image_ids": [img["image_id"] for img in images],
+            "model_classes": model_classes,
         },
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -674,22 +919,8 @@ async def batch_annotate(
     elif is_trained_model and trained_model_data:
         # Trained model - send model_config similar to Roboflow
         # class_mapping format: {class_id: index}
-        class_mapping = trained_model_data.get("class_mapping", {})
-
-        # Get class names from od_classes table
-        classes = []
-        if class_mapping:
-            # Sort by index
-            sorted_classes = sorted(class_mapping.items(), key=lambda x: x[1])  # x[1] is the index
-            class_ids = [class_id for class_id, _ in sorted_classes]
-
-            if class_ids:
-                classes_result = supabase_service.client.table("od_classes").select(
-                    "id, name"
-                ).in_("id", class_ids).execute()
-
-                class_names_map = {c["id"]: c["name"] for c in classes_result.data or []}
-                classes = [class_names_map.get(class_id, f"class_{idx}") for class_id, idx in sorted_classes]
+        class_mapping = trained_class_mapping or trained_model_data.get("class_mapping", {})
+        classes = model_classes or []
 
         runpod_input = {
             "task": "batch",
@@ -792,19 +1023,11 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
             if runpod_status.get("status") == "COMPLETED":
                 output = runpod_status.get("output", {})
 
-                # Count total predictions from results array
-                results = output.get("results", [])
-                predictions_count = sum(
-                    len(r.get("predictions", [])) for r in results
-                )
+                predictions_by_image, predictions_count = _extract_predictions_from_output(output)
 
                 # Always save predictions as annotations (user can review/delete later)
                 annotations_created = 0
-                if results:
-                    predictions_by_image = {
-                        r["id"]: r.get("predictions", [])
-                        for r in results if r.get("id")
-                    }
+                if predictions_by_image:
                     try:
                         annotations_created = await _save_predictions_as_annotations(
                             dataset_id=config["dataset_id"],
@@ -812,10 +1035,13 @@ async def get_job_status(job_id: str) -> AIJobStatusResponse:
                             class_mapping=config.get("class_mapping"),
                             model=config.get("model"),
                             filter_classes=config.get("filter_classes"),
+                            model_classes=config.get("model_classes"),
                         )
                         print(f"[AI Job Status] Created {annotations_created} annotations for job {job_id[:8]}...")
                     except Exception as e:
                         print(f"[AI Job Status] Failed to save annotations: {e}")
+                elif predictions_count > 0:
+                    print(f"[AI Job Status] Warning: {predictions_count} predictions but no image IDs to map for job {job_id[:8]}...")
 
                 # Store predictions count in result for status response
                 result_data = {
@@ -909,16 +1135,7 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
         output = payload.output
 
         # Worker returns results array: [{"id": ..., "predictions": [...]}]
-        results = output.get("results", [])
-        total_predictions = sum(
-            len(r.get("predictions", [])) for r in results
-        )
-
-        # Convert results array to dict for processing
-        predictions_by_image = {
-            r["id"]: r.get("predictions", [])
-            for r in results if r.get("id")
-        }
+        predictions_by_image, total_predictions = _extract_predictions_from_output(output)
 
         # Always save predictions as annotations (user can review/delete later)
         # This ensures no predictions are lost even if user closed the modal
@@ -931,10 +1148,13 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
                     class_mapping=config.get("class_mapping"),
                     model=config.get("model"),
                     filter_classes=config.get("filter_classes"),
+                    model_classes=config.get("model_classes"),
                 )
                 print(f"[AI Webhook] Created {annotations_created} annotations for job {job_id[:8]}...")
             except Exception as e:
                 print(f"[AI Webhook] Failed to save annotations: {e}")
+        elif total_predictions > 0:
+            print(f"[AI Webhook] Warning: {total_predictions} predictions but no image IDs to map for job {job_id[:8]}...")
 
         # Update job status
         supabase_service.client.table("jobs").update({
@@ -942,7 +1162,7 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
             "completed_at": datetime.utcnow().isoformat(),
             "result": {
                 "total_predictions": total_predictions,
-                "images_processed": len(results),
+                "images_processed": len(predictions_by_image),
                 "annotations_created": annotations_created,
                 "completed_by": "webhook",
             },
@@ -970,11 +1190,15 @@ async def _save_predictions_as_annotations(
     class_mapping: Optional[dict],
     model: str,
     filter_classes: Optional[list[str]] = None,
+    model_classes: Optional[list[str]] = None,
 ) -> int:
     """
     Save AI predictions as annotations in the database.
     Auto-creates classes for labels that don't exist.
     Uses batch insert for performance.
+
+    IMPORTANT: This function includes duplicate detection to prevent
+    creating multiple annotations with the same coordinates.
 
     Args:
         dataset_id: Target dataset ID
@@ -987,18 +1211,73 @@ async def _save_predictions_as_annotations(
     """
     import random
 
+    # Duplicate detection threshold
+    DUPLICATE_IOU_THRESHOLD = 0.95
+
+    def compute_iou(box1: dict, box2: dict) -> float:
+        """Compute IoU between two bboxes."""
+        x1_1, y1_1 = box1["x"], box1["y"]
+        x2_1, y2_1 = box1["x"] + box1["width"], box1["y"] + box1["height"]
+        x1_2, y1_2 = box2["x"], box2["y"]
+        x2_2, y2_2 = box2["x"] + box2["width"], box2["y"] + box2["height"]
+
+        xi1, yi1 = max(x1_1, x1_2), max(y1_1, y1_2)
+        xi2, yi2 = min(x2_1, x2_2), min(y2_1, y2_2)
+
+        if xi2 <= xi1 or yi2 <= yi1:
+            return 0.0
+
+        intersection = (xi2 - xi1) * (yi2 - yi1)
+        area1 = box1["width"] * box1["height"]
+        area2 = box2["width"] * box2["height"]
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
+
+    # Fetch existing annotations for all images to check for duplicates
+    image_ids = list(predictions_by_image.keys())
+    existing_by_image_class: dict[str, dict[str, list]] = {}
+
+    # Fetch in batches to avoid query limits
+    for batch_start in range(0, len(image_ids), 50):
+        batch_ids = image_ids[batch_start:batch_start + 50]
+        existing_result = supabase_service.client.table("od_annotations").select(
+            "image_id, class_id, bbox_x, bbox_y, bbox_width, bbox_height"
+        ).eq("dataset_id", dataset_id).in_("image_id", batch_ids).execute()
+
+        for existing in existing_result.data or []:
+            img_id = existing["image_id"]
+            cls_id = existing["class_id"]
+            key = f"{img_id}:{cls_id}"
+            if key not in existing_by_image_class:
+                existing_by_image_class[key] = []
+            existing_by_image_class[key].append({
+                "x": existing["bbox_x"],
+                "y": existing["bbox_y"],
+                "width": existing["bbox_width"],
+                "height": existing["bbox_height"],
+            })
+
     # Cache for class IDs to avoid repeated lookups
     class_cache: dict[str, str] = {}
 
     # Collect all annotations for batch insert
     annotations_batch: list[dict] = []
     now = datetime.utcnow().isoformat()
+    skipped_duplicates = 0
+
+    # Track new annotations per image/class to avoid intra-batch duplicates
+    new_by_image_class: dict[str, list] = {}
 
     for image_id, predictions in predictions_by_image.items():
-        for pred in predictions:
-            bbox = pred.get("bbox", {})
-            label = pred.get("label", "")
-            confidence = pred.get("confidence", 0)
+        normalized_predictions = _coerce_predictions_list(predictions)
+        for raw_pred in normalized_predictions:
+            normalized = _normalize_prediction(raw_pred, model_classes=model_classes)
+            if not normalized:
+                continue
+            bbox = normalized["bbox"]
+            label = normalized["label"]
+            confidence = normalized["confidence"]
 
             if not label:
                 continue
@@ -1056,6 +1335,36 @@ async def _save_predictions_as_annotations(
                 # Cache the class_id
                 class_cache[label] = class_id
 
+            # Check for duplicate against existing annotations
+            key = f"{image_id}:{class_id}"
+            existing_boxes = existing_by_image_class.get(key, [])
+            is_duplicate = False
+
+            for existing_bbox in existing_boxes:
+                if compute_iou(bbox, existing_bbox) >= DUPLICATE_IOU_THRESHOLD:
+                    is_duplicate = True
+                    break
+
+            if is_duplicate:
+                skipped_duplicates += 1
+                continue
+
+            # Check for duplicate within the current batch
+            new_boxes = new_by_image_class.get(key, [])
+            for new_bbox in new_boxes:
+                if compute_iou(bbox, new_bbox) >= DUPLICATE_IOU_THRESHOLD:
+                    is_duplicate = True
+                    break
+
+            if is_duplicate:
+                skipped_duplicates += 1
+                continue
+
+            # Track this bbox for intra-batch duplicate checking
+            if key not in new_by_image_class:
+                new_by_image_class[key] = []
+            new_by_image_class[key].append(bbox)
+
             # Add to batch instead of inserting one by one
             annotations_batch.append({
                 "id": str(uuid.uuid4()),
@@ -1074,102 +1383,61 @@ async def _save_predictions_as_annotations(
                 "updated_at": now,
             })
 
+    if skipped_duplicates > 0:
+        print(f"[AI Annotation] Skipped {skipped_duplicates} duplicate annotations")
+
     # Batch insert all annotations (in chunks of 500 to avoid payload limits)
     annotations_created = 0
     BATCH_SIZE = 500
 
     for i in range(0, len(annotations_batch), BATCH_SIZE):
         chunk = annotations_batch[i:i + BATCH_SIZE]
+        chunk_ids = [ann["id"] for ann in chunk]  # Track IDs for fallback
+
         try:
             supabase_service.client.table("od_annotations").insert(chunk).execute()
             annotations_created += len(chunk)
             print(f"[AI Annotation] Inserted batch {i // BATCH_SIZE + 1}: {len(chunk)} annotations")
         except Exception as e:
             print(f"[AI Annotation] Failed to insert batch: {e}")
-            # Fallback to one-by-one for this chunk
+
+            # Fallback: Check which ones were actually inserted before retrying
+            # This prevents duplicate inserts when batch partially succeeds
+            inserted_result = supabase_service.client.table("od_annotations").select(
+                "id"
+            ).in_("id", chunk_ids).execute()
+            inserted_ids = {row["id"] for row in inserted_result.data or []}
+
+            # Count already inserted
+            already_inserted = len(inserted_ids)
+            if already_inserted > 0:
+                annotations_created += already_inserted
+                print(f"[AI Annotation] {already_inserted} annotations were already inserted in failed batch")
+
+            # Only retry the ones that weren't inserted
             for annotation in chunk:
+                if annotation["id"] in inserted_ids:
+                    continue  # Already inserted, skip
+
                 try:
                     supabase_service.client.table("od_annotations").insert(annotation).execute()
                     annotations_created += 1
                 except Exception as inner_e:
-                    print(f"[AI Annotation] Failed single insert: {inner_e}")
+                    # Could be a duplicate or other error
+                    error_str = str(inner_e).lower()
+                    if "duplicate" not in error_str and "unique" not in error_str:
+                        print(f"[AI Annotation] Failed single insert: {inner_e}")
 
-    # Update annotation counts using batch RPC (prevents system lockup with large batches)
+    # Sync annotation counts and statuses
     if annotations_created > 0:
         image_ids = list(predictions_by_image.keys())
         class_ids = list(set(class_cache.values()))
-
-        # Try RPC first (most efficient - single query for all counts)
-        rpc_success = False
-        try:
-            result = supabase_service.client.rpc(
-                "update_annotation_counts_batch",
-                {
-                    "p_dataset_id": dataset_id,
-                    "p_image_ids": image_ids,
-                    "p_class_ids": class_ids,
-                }
-            ).execute()
-
-            if result.data:
-                print(f"[AI Annotation] Batch count update: {result.data}")
-                rpc_success = True
-            else:
-                print(f"[AI Annotation] Batch count update completed")
-                rpc_success = True
-
-        except Exception as e:
-            print(f"[AI Annotation] RPC not available, using legacy method: {e}")
-
-        # Fallback to legacy method if RPC failed
-        if not rpc_success:
-            try:
-                # 1. Dataset total count (single query)
-                count_result = supabase_service.client.table("od_annotations").select(
-                    "id", count="exact"
-                ).eq("dataset_id", dataset_id).execute()
-                total_count = count_result.count or 0
-                supabase_service.client.table("od_datasets").update({
-                    "annotation_count": total_count
-                }).eq("id", dataset_id).execute()
-
-                # 2. Class counts (one query per class - usually just 1-2 classes)
-                for class_id in class_ids:
-                    class_count_result = supabase_service.client.table("od_annotations").select(
-                        "id", count="exact"
-                    ).eq("dataset_id", dataset_id).eq("class_id", class_id).execute()
-                    class_count = class_count_result.count or 0
-                    supabase_service.client.table("od_classes").update({
-                        "annotation_count": class_count
-                    }).eq("id", class_id).execute()
-
-                # 3. Image counts - SKIP for large batches to prevent lockup
-                # User can trigger manual recount if needed
-                if len(image_ids) <= 1000:
-                    for image_id in image_ids:
-                        img_count_result = supabase_service.client.table("od_annotations").select(
-                            "id", count="exact"
-                        ).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
-                        img_count = img_count_result.count or 0
-                        supabase_service.client.table("od_dataset_images").update({
-                            "annotation_count": img_count,
-                            "status": "annotated" if img_count > 0 else "pending",
-                            "last_annotated_at": now,
-                        }).eq("dataset_id", dataset_id).eq("image_id", image_id).execute()
-
-                    # Update annotated_image_count
-                    annotated_images_result = supabase_service.client.table("od_dataset_images").select(
-                        "id", count="exact"
-                    ).eq("dataset_id", dataset_id).gt("annotation_count", 0).execute()
-                    supabase_service.client.table("od_datasets").update({
-                        "annotated_image_count": annotated_images_result.count or 0
-                    }).eq("id", dataset_id).execute()
-                else:
-                    print(f"[AI Annotation] Skipping image count updates for {len(image_ids)} images (too large, use RPC)")
-                    print(f"[AI Annotation] Run migration 071 to enable batch count updates")
-
-            except Exception as fallback_e:
-                print(f"[AI Annotation] Legacy fallback failed: {fallback_e}")
+        await sync_annotation_counts_after_write(
+            dataset_id,
+            image_ids,
+            class_ids,
+            source="ai_annotation",
+        )
 
     return annotations_created
 

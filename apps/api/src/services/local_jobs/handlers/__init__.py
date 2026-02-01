@@ -12,6 +12,7 @@ from .bulk_remove_from_dataset import BulkRemoveFromDatasetHandler
 from .bulk_update_status import BulkUpdateStatusHandler
 from .bulk_delete_images import BulkDeleteImagesHandler
 from .export_dataset import ExportDatasetHandler
+from .od_sync_counts import ODSyncCountsHandler
 
 # Classification Handlers
 from .cls_bulk_delete_images import BulkDeleteCLSImagesHandler
@@ -40,6 +41,7 @@ __all__ = [
     "BulkUpdateStatusHandler",
     "BulkDeleteImagesHandler",
     "ExportDatasetHandler",
+    "ODSyncCountsHandler",
     # Classification Handlers
     "BulkDeleteCLSImagesHandler",
     "BulkAddToCLSDatasetHandler",

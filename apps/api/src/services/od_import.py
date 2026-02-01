@@ -38,6 +38,7 @@ except ImportError:
     IMAGEHASH_AVAILABLE = False
 
 from services.supabase import supabase_service
+from services.od_sync import sync_annotation_counts_after_write
 
 
 # ===========================================
@@ -1520,6 +1521,16 @@ async def import_annotated_dataset(
                 # Count update failure is not critical, don't rollback
                 pass
 
+            # Sync per-image annotation counts and statuses
+            affected_image_ids = inserted_image_ids + [img_id for img_id, _ in existing_images_for_merge]
+            affected_class_ids = list({cid for cid in class_map.values() if cid} | set(created_class_ids))
+            await sync_annotation_counts_after_write(
+                dataset_id,
+                affected_image_ids,
+                affected_class_ids,
+                source="od_import_zip",
+            )
+
     except Exception as e:
         await rollback()
         result.success = False
@@ -2083,6 +2094,16 @@ async def import_annotated_dataset_from_file(
             except Exception:
                 # Count update failure is not critical, don't rollback
                 pass
+
+            # Sync per-image annotation counts and statuses
+            affected_image_ids = inserted_image_ids + [img_id for img_id, _ in existing_images_for_merge]
+            affected_class_ids = list({cid for cid in class_map.values() if cid} | set(created_class_ids))
+            await sync_annotation_counts_after_write(
+                dataset_id,
+                affected_image_ids,
+                affected_class_ids,
+                source="od_import_file",
+            )
 
     except zipfile.BadZipFile:
         result.success = False

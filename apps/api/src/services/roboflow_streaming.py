@@ -20,6 +20,7 @@ from typing import Optional, Callable, Any
 
 from services.roboflow import roboflow_service
 from services.supabase import supabase_service
+from services.od_sync import update_dataset_annotated_image_count
 from services.import_checkpoint import checkpoint_service, StreamingCheckpoint
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,6 @@ def recalculate_dataset_counts(dataset_id: str) -> dict:
         logger.info(f"Recalculating counts for {len(all_image_ids)} images in dataset {dataset_id}")
 
         # 4. Update each image's annotation_count and status
-        annotated_image_count = 0
         for img_id in all_image_ids:
             # Count annotations for this image
             img_ann_count = (
@@ -92,7 +92,6 @@ def recalculate_dataset_counts(dataset_id: str) -> dict:
             ).count or 0
 
             if img_ann_count > 0:
-                annotated_image_count += 1
                 # Update annotation_count AND status to 'completed'
                 supabase_service.client.table("od_dataset_images").update({
                     "annotation_count": img_ann_count,
@@ -131,8 +130,9 @@ def recalculate_dataset_counts(dataset_id: str) -> dict:
         supabase_service.client.table("od_datasets").update({
             "image_count": image_count,
             "annotation_count": annotation_count,
-            "annotated_image_count": annotated_image_count,
         }).eq("id", dataset_id).execute()
+
+        annotated_image_count = update_dataset_annotated_image_count(dataset_id)
 
         logger.info(
             f"Updated dataset {dataset_id} counts: "

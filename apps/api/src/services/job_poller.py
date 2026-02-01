@@ -131,20 +131,14 @@ class JobPollerService:
 
     async def _complete_job(self, job_id: str, config: dict, output: dict):
         """Mark job as completed and save predictions as annotations."""
-        from api.v1.od.ai import _save_predictions_as_annotations
+        from api.v1.od.ai import _save_predictions_as_annotations, _extract_predictions_from_output
 
         # Extract predictions from output
-        results = output.get("results", [])
-        predictions_count = sum(len(r.get("predictions", [])) for r in results)
+        predictions_by_image, predictions_count = _extract_predictions_from_output(output)
 
         # Save predictions as annotations
         annotations_created = 0
-        if results:
-            predictions_by_image = {
-                r["id"]: r.get("predictions", [])
-                for r in results if r.get("id")
-            }
-
+        if predictions_by_image:
             try:
                 annotations_created = await _save_predictions_as_annotations(
                     dataset_id=config.get("dataset_id"),
@@ -152,10 +146,13 @@ class JobPollerService:
                     class_mapping=config.get("class_mapping"),
                     model=config.get("model"),
                     filter_classes=config.get("filter_classes"),
+                    model_classes=config.get("model_classes"),
                 )
                 print(f"[JobPoller] Created {annotations_created} annotations for job {job_id[:8]}...")
             except Exception as e:
                 print(f"[JobPoller] Failed to save annotations for job {job_id[:8]}...: {e}")
+        elif predictions_count > 0:
+            print(f"[JobPoller] Warning: {predictions_count} predictions but no image IDs to map for job {job_id[:8]}...")
 
         # Update job status
         result_data = {

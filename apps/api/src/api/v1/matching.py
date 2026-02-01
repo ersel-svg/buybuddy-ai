@@ -269,7 +269,7 @@ async def get_product_candidates(
     Get candidate cutouts for a product.
 
     Returns cutouts that match by:
-    1. Identifier match: cutout.predicted_upc matches ANY product identifier
+    1. Identifier match: cutout.predicted_upc OR cutout.annotated_upc matches ANY product identifier
        (barcode, upc, ean, short_code, sku from product_identifiers table)
     2. Similarity match: embedding similarity >= min_similarity (if embeddings exist)
 
@@ -296,29 +296,41 @@ async def get_product_candidates(
     all_identifiers = await db.get_all_product_identifier_values(product_id)
 
     if all_identifiers:
-        # Query cutouts where predicted_upc matches ANY of the identifiers
-        cutouts_query = db.client.table("cutout_images").select(
-            "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
-        ).in_("predicted_upc", all_identifiers)
+        # Query cutouts where predicted_upc OR annotated_upc matches ANY of the identifiers
+        def _escape_identifier(value: str) -> str:
+            return value.replace("\\", "\\\\").replace("\"", "\\\"")
 
-        if not include_matched:
-            cutouts_query = cutouts_query.is_("matched_product_id", "null")
+        identifiers = [f"\"{_escape_identifier(str(v))}\"" for v in all_identifiers if v]
+        if identifiers:
+            identifiers_csv = ",".join(identifiers)
+            cutouts_query = db.client.table("cutout_images").select(
+                "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
+            ).or_(
+                f"predicted_upc.in.({identifiers_csv}),"
+                f"annotated_upc.in.({identifiers_csv})"
+            )
+        else:
+            cutouts_query = None
 
-        cutouts_query = cutouts_query.limit(limit)
-        barcode_cutouts_response = cutouts_query.execute()
+        if cutouts_query is not None:
+            if not include_matched:
+                cutouts_query = cutouts_query.is_("matched_product_id", "null")
 
-        for cutout in barcode_cutouts_response.data or []:
-            barcode_match_ids.add(cutout["id"])
-            candidates.append(CutoutCandidate(
-                id=cutout["id"],
-                external_id=cutout["external_id"],
-                image_url=cutout["image_url"],
-                predicted_upc=cutout.get("predicted_upc"),
-                similarity=1.0,  # Barcode/identifier match = perfect match
-                match_type="barcode",
-                has_embedding=cutout.get("has_embedding", False),
-                is_matched=cutout.get("matched_product_id") is not None,
-            ))
+            cutouts_query = cutouts_query.limit(limit)
+            barcode_cutouts_response = cutouts_query.execute()
+
+            for cutout in barcode_cutouts_response.data or []:
+                barcode_match_ids.add(cutout["id"])
+                candidates.append(CutoutCandidate(
+                    id=cutout["id"],
+                    external_id=cutout["external_id"],
+                    image_url=cutout["image_url"],
+                    predicted_upc=cutout.get("predicted_upc"),
+                    similarity=1.0,  # Barcode/identifier match = perfect match
+                    match_type="barcode",
+                    has_embedding=cutout.get("has_embedding", False),
+                    is_matched=cutout.get("matched_product_id") is not None,
+                ))
 
     # 2. Get similarity matches from Qdrant (if configured)
     if qdrant_service.is_configured():
@@ -430,13 +442,17 @@ async def get_product_candidates(
                         if cid not in barcode_match_ids
                     ]
 
-                    # BATCH FETCH: Single query for all cutouts
+                    # BATCH FETCH: Chunk IDs to avoid overly long IN() queries
                     if cutout_ids_to_fetch:
-                        cutouts_result = db.client.table("cutout_images").select(
-                            "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
-                        ).in_("id", cutout_ids_to_fetch).execute()
-
-                        cutouts_map = {c["id"]: c for c in (cutouts_result.data or [])}
+                        cutouts_map: dict[str, dict] = {}
+                        batch_size = 200
+                        for i in range(0, len(cutout_ids_to_fetch), batch_size):
+                            batch = cutout_ids_to_fetch[i:i + batch_size]
+                            batch_result = db.client.table("cutout_images").select(
+                                "id, external_id, image_url, predicted_upc, has_embedding, matched_product_id"
+                            ).in_("id", batch).execute()
+                            for c in (batch_result.data or []):
+                                cutouts_map[c["id"]] = c
 
                         for cutout_id in cutout_ids_to_fetch:
                             cutout = cutouts_map.get(cutout_id)
