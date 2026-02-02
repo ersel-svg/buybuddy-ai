@@ -2292,9 +2292,21 @@ async def start_matching_extraction(
         if request.cutout_filter_has_upc:
             filters["not_null"] = ["predicted_upc"]
 
-        # Add merchant filter if specified
+        # Add merchant filter if specified - use merchant NAME (merchant_id is NULL in DB)
         if request.cutout_merchant_ids:
-            filters["in"] = {"merchant_id": request.cutout_merchant_ids}
+            # Convert merchant IDs to names for filtering
+            try:
+                merchants = await buybuddy_service.get_merchants(all_merchant=True)
+                merchant_id_to_name = {m["id"]: m["name"] for m in merchants}
+                merchant_names = [
+                    merchant_id_to_name[mid]
+                    for mid in request.cutout_merchant_ids
+                    if mid in merchant_id_to_name
+                ]
+                if merchant_names:
+                    filters["in"] = {"merchant": merchant_names}
+            except Exception as e:
+                print(f"[Embeddings] Failed to convert merchant IDs to names: {e}")
 
         cutouts = await db.paginated_query(
             table_name="cutout_images",
