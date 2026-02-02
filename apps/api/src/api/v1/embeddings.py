@@ -2415,7 +2415,9 @@ async def start_matching_extraction(
             "source_config": {
                 "type": "both" if request.include_cutouts else "products",
                 "filters": {
-                    "has_embedding": False if request.collection_mode == "create" else None,
+                    # For "create" mode, don't filter by has_embedding - fetch all images
+                    # For "append" mode, only fetch images without embeddings
+                    "has_embedding": False if request.collection_mode == "append" else None,
                     "product_source": request.product_source,
                     "product_ids": request.product_ids,  # For "selected" source
                     "product_dataset_id": request.product_dataset_id,  # For "dataset" source
