@@ -2340,6 +2340,8 @@ async def start_matching_extraction(
         "purpose": "matching",
         "source_config": {
             "product_source": request.product_source,
+            "product_dataset_id": request.product_dataset_id,
+            "product_ids": request.product_ids,
             "include_cutouts": request.include_cutouts,
             "cutout_merchant_ids": request.cutout_merchant_ids,
             "frame_selection": request.frame_selection,
