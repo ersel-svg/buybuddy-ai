@@ -647,6 +647,17 @@ class AIWebhookPayload(BaseModel):
     error: Optional[str] = None
 
 
+class AIChunkWebhookPayload(BaseModel):
+    """Webhook payload for chunked batch results from worker."""
+    job_id: str
+    chunk_index: int
+    total_chunks: int
+    is_final: bool
+    results: list[dict]  # List of {"id": str, "predictions": [...], "status": str}
+    errors: list[dict]  # List of {"id": str, "error": str}
+    chunk_stats: dict  # {"successful": int, "failed": int, "predictions": int}
+
+
 # ===========================================
 # Export Schemas (Phase 7)
 # ===========================================

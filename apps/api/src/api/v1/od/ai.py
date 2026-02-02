@@ -20,6 +20,7 @@ from config import settings
 from schemas.od import (
     AIPredictRequest,
     AIPredictResponse,
+    AIChunkWebhookPayload,
     AIPrediction,
     AISegmentRequest,
     AISegmentResponse,
@@ -952,11 +953,21 @@ async def batch_annotate(
 
     # Webhook URL for RunPod callback (primary completion mechanism)
     webhook_url = None
+    chunk_webhook_url = None
     if settings.api_url:
         webhook_url = f"{settings.api_url.rstrip('/')}/api/v1/od/ai/webhook"
+        chunk_webhook_url = f"{settings.api_url.rstrip('/')}/api/v1/od/ai/webhook/chunk"
         print(f"[AI Batch] Webhook URL configured: {webhook_url}")
+        print(f"[AI Batch] Chunk webhook URL configured: {chunk_webhook_url}")
     else:
         print("[AI Batch] Warning: api_url not configured, webhook disabled. Job completion relies on polling.")
+
+    # Enable chunked mode for large batches (>500 images) to avoid payload limits
+    use_chunked_mode = len(images) > 500 and chunk_webhook_url is not None
+    if use_chunked_mode:
+        runpod_input["chunk_webhook_url"] = chunk_webhook_url
+        runpod_input["chunk_size"] = 500  # Process 500 images per chunk
+        print(f"[AI Batch] Chunked mode enabled: {len(images)} images will be processed in chunks of 500")
 
     try:
         # Submit async job to RunPod
@@ -1182,6 +1193,87 @@ async def runpod_webhook(payload: AIWebhookPayload) -> dict:
         return {"status": "failed", "job_id": job_id, "error": payload.error}
 
     return {"status": "ignored", "reason": f"unhandled_status_{payload.status}"}
+
+
+@router.post("/webhook/chunk")
+async def chunk_webhook(payload: AIChunkWebhookPayload) -> dict:
+    """
+    Handle chunked batch results from worker.
+
+    Worker sends results in chunks to avoid RunPod payload size limits.
+    Each chunk contains up to 500 images' predictions.
+    """
+    print(f"[AI Chunk] Received: job_id={payload.job_id}, chunk={payload.chunk_index + 1}/{payload.total_chunks}, is_final={payload.is_final}")
+
+    # Find job by ID
+    job_result = supabase_service.client.table("jobs").select(
+        "*"
+    ).eq("id", payload.job_id).eq("type", "od_annotation").single().execute()
+
+    if not job_result.data:
+        print(f"[AI Chunk] Job not found: {payload.job_id}")
+        return {"status": "ignored", "reason": "job_not_found"}
+
+    job = job_result.data
+    config = job.get("config", {})
+    current_result = job.get("result", {}) or {}
+
+    # Extract predictions from chunk results
+    predictions_by_image = {}
+    for result in payload.results:
+        image_id = result.get("id")
+        predictions = result.get("predictions", [])
+        if image_id:
+            predictions_by_image[image_id] = predictions
+
+    # Save chunk predictions as annotations
+    chunk_annotations = 0
+    if predictions_by_image:
+        try:
+            chunk_annotations = await _save_predictions_as_annotations(
+                dataset_id=config["dataset_id"],
+                predictions_by_image=predictions_by_image,
+                class_mapping=config.get("class_mapping"),
+                model=config.get("model"),
+                filter_classes=config.get("filter_classes"),
+                model_classes=config.get("model_classes"),
+            )
+            print(f"[AI Chunk] Saved {chunk_annotations} annotations from chunk {payload.chunk_index + 1}")
+        except Exception as e:
+            print(f"[AI Chunk] Failed to save chunk annotations: {e}")
+
+    # Update job with cumulative progress
+    cumulative_predictions = current_result.get("total_predictions", 0) + payload.chunk_stats.get("predictions", 0)
+    cumulative_images = current_result.get("images_processed", 0) + payload.chunk_stats.get("successful", 0)
+    cumulative_annotations = current_result.get("annotations_created", 0) + chunk_annotations
+    cumulative_errors = current_result.get("errors", 0) + payload.chunk_stats.get("failed", 0)
+
+    update_data = {
+        "result": {
+            "total_predictions": cumulative_predictions,
+            "images_processed": cumulative_images,
+            "annotations_created": cumulative_annotations,
+            "errors": cumulative_errors,
+            "chunks_received": payload.chunk_index + 1,
+            "total_chunks": payload.total_chunks,
+            "completed_by": "chunk_webhook",
+        },
+    }
+
+    # Mark as completed if this is the final chunk
+    if payload.is_final:
+        update_data["status"] = "completed"
+        update_data["completed_at"] = datetime.utcnow().isoformat()
+        print(f"[AI Chunk] Job {payload.job_id[:8]}... completed ({cumulative_predictions} predictions, {cumulative_annotations} annotations)")
+
+    supabase_service.client.table("jobs").update(update_data).eq("id", payload.job_id).execute()
+
+    return {
+        "status": "success",
+        "chunk_index": payload.chunk_index,
+        "annotations_created": chunk_annotations,
+        "is_final": payload.is_final,
+    }
 
 
 async def _save_predictions_as_annotations(
