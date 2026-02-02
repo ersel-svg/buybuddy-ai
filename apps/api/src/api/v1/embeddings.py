@@ -12,6 +12,7 @@ from services.qdrant import qdrant_service
 from services.runpod import runpod_service, EndpointType
 from services.job_manager import job_manager, JobMode
 from services.export import export_service
+from services.buybuddy import buybuddy_service
 from auth.dependencies import get_current_user
 from auth.service import UserInfo
 from config import settings
@@ -2370,6 +2371,22 @@ async def start_matching_extraction(
     # SOTA ARCHITECTURE (Phase 3):
     # Send source_config instead of images - worker fetches from DB
     # This avoids 22.5 MB payload issue (60K images * 370 bytes = 22.5 MB)
+
+    # Convert merchant IDs to names for filtering (merchant_id field is NULL in DB)
+    cutout_merchant_names = None
+    if request.cutout_merchant_ids and buybuddy_service.is_configured():
+        try:
+            merchants = await buybuddy_service.get_merchants(all_merchant=True)
+            merchant_id_to_name = {m["id"]: m["name"] for m in merchants}
+            cutout_merchant_names = [
+                merchant_id_to_name[mid]
+                for mid in request.cutout_merchant_ids
+                if mid in merchant_id_to_name
+            ]
+            print(f"[Embeddings] Converted merchant IDs to names: {cutout_merchant_names}")
+        except Exception as e:
+            print(f"[Embeddings] Failed to get merchant names, falling back to IDs: {e}")
+
     try:
         # Prepare job input for worker - SOTA pattern (~1 KB payload)
         job_input = {
@@ -2390,7 +2407,8 @@ async def start_matching_extraction(
                     "product_dataset_id": request.product_dataset_id,  # For "dataset" source
                     "product_filter": request.product_filter,  # For "filter" source
                     "cutout_filter_has_upc": request.cutout_filter_has_upc,
-                    "cutout_merchant_ids": request.cutout_merchant_ids,  # For merchant filtering
+                    "cutout_merchant_ids": request.cutout_merchant_ids,  # For merchant filtering (legacy)
+                    "cutout_merchant_names": cutout_merchant_names,  # For merchant filtering by name
                 },
                 "append_only_new": request.collection_mode == "append",
                 "frame_selection": request.frame_selection,

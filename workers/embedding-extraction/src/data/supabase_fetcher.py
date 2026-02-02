@@ -123,7 +123,10 @@ def fetch_cutout_images(
             db_filters["has_embedding"] = filters["has_embedding"]
         if filters.get("cutout_filter_has_upc"):
             db_filters["predicted_upc_not_null"] = True
-        if filters.get("cutout_merchant_ids"):
+        # Prefer merchant names over IDs (merchant_id is often NULL in DB)
+        if filters.get("cutout_merchant_names"):
+            db_filters["merchant"] = filters["cutout_merchant_names"]
+        elif filters.get("cutout_merchant_ids"):
             db_filters["merchant_id"] = filters["cutout_merchant_ids"]
 
     cutouts = fetch_with_pagination(
@@ -338,6 +341,7 @@ def build_extraction_data(
                 "has_embedding": filters.get("has_embedding"),
                 "cutout_filter_has_upc": filters.get("cutout_filter_has_upc"),
                 "cutout_merchant_ids": filters.get("cutout_merchant_ids"),
+                "cutout_merchant_names": filters.get("cutout_merchant_names"),
             },
         )
 
