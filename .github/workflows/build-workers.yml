@@ -1,4 +1,5 @@
 name: Build and Push Worker Images
+# Chunked webhook support added - 2024-02
 
 on:
   push:
