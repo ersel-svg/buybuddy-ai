@@ -1069,8 +1069,8 @@ export function CLSImportModal({
                   </div>
 
                   {/* Product Grid */}
-                  <ScrollArea className="flex-1">
-                    <div className="p-3">
+                  <ScrollArea className="flex-1 min-h-0">
+                    <div className="p-3 pb-0">
                       {productsLoading ? (
                         <div className="flex items-center justify-center py-12">
                           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -1134,24 +1134,24 @@ export function CLSImportModal({
                           })}
                         </div>
                       )}
-                      
-                      {/* Pagination - Always show if there's data */}
-                      {productsData && productsData.items?.length > 0 && (
-                        <div className="mt-4">
-                          <div className="text-center text-sm text-muted-foreground mb-2">
-                            Showing {productsData.items.length} of {productsData.total} products
-                          </div>
-                          {productsData.total > 30 && (
-                            <PaginationControl
-                              currentPage={productsPage}
-                              totalPages={Math.ceil(productsData.total / 30)}
-                              onPageChange={setProductsPage}
-                            />
-                          )}
-                        </div>
-                      )}
                     </div>
                   </ScrollArea>
+
+                  {/* Pagination - Outside ScrollArea for better visibility */}
+                  {productsData && productsData.items?.length > 0 && (
+                    <div className="flex-shrink-0 px-3 py-3 border-t bg-background">
+                      <div className="text-center text-sm text-muted-foreground mb-2">
+                        Showing {productsData.items.length} of {productsData.total} products
+                      </div>
+                      {productsData.total > 30 && (
+                        <PaginationControl
+                          currentPage={productsPage}
+                          totalPages={Math.ceil(productsData.total / 30)}
+                          onPageChange={setProductsPage}
+                        />
+                      )}
+                    </div>
+                  )}
                 </>
               )}
 
@@ -1202,8 +1202,8 @@ export function CLSImportModal({
                     </div>
                   </div>
 
-                  <ScrollArea className="flex-1">
-                    <div className="p-3">
+                  <ScrollArea className="flex-1 min-h-0">
+                    <div className="p-3 pb-0">
                       {cutoutsLoading ? (
                         <div className="flex items-center justify-center py-12">
                           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -1250,23 +1250,24 @@ export function CLSImportModal({
                           })}
                         </div>
                       )}
-
-                      {cutoutsData && cutoutsData.items?.length > 0 && (
-                        <div className="mt-4">
-                          <div className="text-center text-sm text-muted-foreground mb-2">
-                            Showing {cutoutsData.items.length} of {cutoutsData.total} cutouts
-                          </div>
-                          {cutoutsData.total > 30 && (
-                            <PaginationControl
-                              currentPage={cutoutsPage}
-                              totalPages={Math.ceil(cutoutsData.total / 30)}
-                              onPageChange={setCutoutsPage}
-                            />
-                          )}
-                        </div>
-                      )}
                     </div>
                   </ScrollArea>
+
+                  {/* Pagination - Outside ScrollArea */}
+                  {cutoutsData && cutoutsData.items?.length > 0 && (
+                    <div className="flex-shrink-0 px-3 py-3 border-t bg-background">
+                      <div className="text-center text-sm text-muted-foreground mb-2">
+                        Showing {cutoutsData.items.length} of {cutoutsData.total} cutouts
+                      </div>
+                      {cutoutsData.total > 30 && (
+                        <PaginationControl
+                          currentPage={cutoutsPage}
+                          totalPages={Math.ceil(cutoutsData.total / 30)}
+                          onPageChange={setCutoutsPage}
+                        />
+                      )}
+                    </div>
+                  )}
                 </>
               )}
 
@@ -1310,8 +1311,8 @@ export function CLSImportModal({
                     </div>
                   </div>
 
-                  <ScrollArea className="flex-1">
-                    <div className="p-3">
+                  <ScrollArea className="flex-1 min-h-0">
+                    <div className="p-3 pb-0">
                       {odLoading ? (
                         <div className="flex items-center justify-center py-12">
                           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -1353,23 +1354,24 @@ export function CLSImportModal({
                           })}
                         </div>
                       )}
-
-                      {odData && odData.images?.length > 0 && (
-                        <div className="mt-4">
-                          <div className="text-center text-sm text-muted-foreground mb-2">
-                            Showing {odData.images.length} of {odData.total} OD images
-                          </div>
-                          {odData.total > 30 && (
-                            <PaginationControl
-                              currentPage={odPage}
-                              totalPages={Math.ceil(odData.total / 30)}
-                              onPageChange={setOdPage}
-                            />
-                          )}
-                        </div>
-                      )}
                     </div>
                   </ScrollArea>
+
+                  {/* Pagination - Outside ScrollArea */}
+                  {odData && odData.images?.length > 0 && (
+                    <div className="flex-shrink-0 px-3 py-3 border-t bg-background">
+                      <div className="text-center text-sm text-muted-foreground mb-2">
+                        Showing {odData.images.length} of {odData.total} OD images
+                      </div>
+                      {odData.total > 30 && (
+                        <PaginationControl
+                          currentPage={odPage}
+                          totalPages={Math.ceil(odData.total / 30)}
+                          onPageChange={setOdPage}
+                        />
+                      )}
+                    </div>
+                  )}
                 </>
               )}
 
