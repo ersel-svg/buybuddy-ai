@@ -37,10 +37,37 @@ export function FileUploadStep({ onComplete }: FileUploadStepProps) {
       setUploadedFile({ name: file.name, size: file.size });
 
       try {
-        const result = await apiClient.uploadProductMatcherFile(file);
+        // For small files (<1000 rows), request all rows from backend
+        // For larger files, parse locally (CSV) or use backend async processing
+        const isExcel = file.name.toLowerCase().endsWith('.xlsx') || 
+                        file.name.toLowerCase().endsWith('.xls');
+        
+        // Request all rows from backend for Excel files or small CSV files
+        const includeAllRows = isExcel || file.size < 500 * 1024; // < 500KB
+        
+        const result = await apiClient.uploadProductMatcherFile(file, includeAllRows);
 
-        // Parse the file locally to get all rows (not just preview)
-        const allRows = await parseFileLocally(file);
+        let allRows: Record<string, unknown>[] = [];
+
+        // If backend returned all rows, use them
+        if (result.all_rows && result.all_rows.length > 0) {
+          allRows = result.all_rows;
+        } else {
+          // Otherwise, parse locally (for CSV files)
+          allRows = await parseFileLocally(file);
+          
+          // If local parsing failed and we have no rows, use preview as fallback
+          // This shouldn't happen, but provides a safety net
+          if (allRows.length === 0 && result.preview.length > 0) {
+            console.warn("Local parsing returned no rows, using preview as fallback");
+            allRows = result.preview;
+          }
+        }
+
+        // Validate we have rows
+        if (allRows.length === 0) {
+          throw new Error("No data rows found in file. Please check the file format.");
+        }
 
         onComplete({
           fileName: result.file_name,
@@ -156,12 +183,19 @@ function formatFileSize(bytes: number): string {
 }
 
 async function parseFileLocally(file: File): Promise<Record<string, unknown>[]> {
-  const text = await file.text();
+  // Only parse CSV files locally - Excel files should be parsed by backend
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    // For Excel files, return empty array - backend should have provided all_rows
+    return [];
+  }
 
-  // Simple CSV parsing (for Excel, the backend already parsed it)
-  if (file.name.toLowerCase().endsWith(".csv")) {
+  try {
+    const text = await file.text();
     const lines = text.split("\n").filter((line) => line.trim());
-    if (lines.length < 2) return [];
+    
+    if (lines.length < 2) {
+      return [];
+    }
 
     // Detect delimiter
     const firstLine = lines[0];
@@ -179,17 +213,22 @@ async function parseFileLocally(file: File): Promise<Record<string, unknown>[]> 
       const values = parseCSVLine(lines[i], delimiter);
       const row: Record<string, unknown> = {};
       headers.forEach((header, index) => {
-        row[header] = values[index] || "";
+        // Preserve values as-is (including leading zeros for barcodes)
+        const value = values[index];
+        row[header] = value !== undefined ? value : "";
       });
-      rows.push(row);
+      
+      // Only add non-empty rows
+      if (Object.values(row).some(v => v && String(v).trim())) {
+        rows.push(row);
+      }
     }
 
     return rows;
+  } catch (error) {
+    console.error("Error parsing CSV file locally:", error);
+    return [];
   }
-
-  // For Excel files, we need to use the xlsx library
-  // For now, return empty and rely on backend parsing
-  return [];
 }
 
 function parseCSVLine(line: string, delimiter: string): string[] {

@@ -3212,16 +3212,25 @@ class ApiClient {
   // Product Matcher
   // ===========================================
 
-  async uploadProductMatcherFile(file: File): Promise<{
+  async uploadProductMatcherFile(
+    file: File,
+    includeAllRows: boolean = false
+  ): Promise<{
     file_name: string;
     columns: string[];
     total_rows: number;
     preview: Record<string, unknown>[];
+    all_rows?: Record<string, unknown>[];
   }> {
     const formData = new FormData();
     formData.append("file", file);
+    
+    const url = new URL(`${this.baseUrl}/api/v1/product-matcher/upload`);
+    if (includeAllRows) {
+      url.searchParams.append("include_all_rows", "true");
+    }
 
-    const response = await fetch(`${this.baseUrl}/api/v1/product-matcher/upload`, {
+    const response = await fetch(url.toString(), {
       method: "POST",
       headers: getAuthHeader(),
       body: formData,

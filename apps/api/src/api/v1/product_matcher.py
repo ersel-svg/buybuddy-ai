@@ -8,7 +8,7 @@ import httpx
 from typing import Optional, List, Any
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -33,6 +33,7 @@ class ParsedFileResponse(BaseModel):
     columns: List[str]
     total_rows: int
     preview: List[dict]  # First 5 rows
+    all_rows: Optional[List[dict]] = None  # All rows (optional, for large files)
 
 
 class MatchRule(BaseModel):
@@ -124,8 +125,18 @@ class ExportRequest(BaseModel):
 # ===========================================
 
 
-def parse_csv_file(content: bytes, filename: str) -> ParsedFileResponse:
-    """Parse CSV file content."""
+def parse_csv_file(content: bytes, filename: str, include_all_rows: bool = False) -> ParsedFileResponse:
+    """
+    Parse CSV file content.
+    
+    Args:
+        content: File content as bytes
+        filename: Original filename
+        include_all_rows: If True, include all rows in response (for smaller files)
+    
+    Returns:
+        ParsedFileResponse with columns, preview, and optionally all rows
+    """
     try:
         # Try to detect encoding
         text = content.decode('utf-8-sig')  # Handle BOM
@@ -149,19 +160,76 @@ def parse_csv_file(content: bytes, filename: str) -> ParsedFileResponse:
     if not rows:
         raise HTTPException(status_code=400, detail="CSV file is empty or has no data rows")
 
-    columns = list(rows[0].keys()) if rows else []
-    preview = rows[:5]
+    # Normalize row values (preserve leading zeros)
+    normalized_rows = []
+    for row in rows:
+        normalized_row = {}
+        for key, value in row.items():
+            if value is not None:
+                # Preserve leading zeros by keeping as string
+                normalized_row[key] = str(value).strip()
+            else:
+                normalized_row[key] = ""
+        normalized_rows.append(normalized_row)
+
+    columns = list(normalized_rows[0].keys()) if normalized_rows else []
+    preview = normalized_rows[:5]
 
     return ParsedFileResponse(
         file_name=filename,
         columns=columns,
-        total_rows=len(rows),
-        preview=preview
+        total_rows=len(normalized_rows),
+        preview=preview,
+        all_rows=normalized_rows if include_all_rows and len(normalized_rows) <= 1000 else None
     )
 
 
-def parse_excel_file(content: bytes, filename: str) -> ParsedFileResponse:
-    """Parse Excel file content."""
+def normalize_cell_value(cell_value: Any, preserve_leading_zeros: bool = False) -> str:
+    """
+    Normalize cell value to string, preserving important formatting.
+    
+    Args:
+        cell_value: The cell value from Excel/CSV
+        preserve_leading_zeros: If True, preserve leading zeros (important for barcodes)
+    
+    Returns:
+        Normalized string value
+    """
+    if cell_value is None:
+        return ""
+    
+    # For numeric values, preserve leading zeros if needed
+    if isinstance(cell_value, (int, float)):
+        # Check if it's a whole number that might have leading zeros
+        if isinstance(cell_value, float) and cell_value.is_integer():
+            # Convert to int first to remove .0
+            int_value = int(cell_value)
+            if preserve_leading_zeros:
+                # Return as string to preserve any leading zeros that might be in original
+                return str(int_value)
+            return str(int_value)
+        elif isinstance(cell_value, int):
+            return str(cell_value)
+        else:
+            # Float with decimals
+            return str(cell_value)
+    
+    # Already a string
+    return str(cell_value).strip()
+
+
+def parse_excel_file(content: bytes, filename: str, include_all_rows: bool = False) -> ParsedFileResponse:
+    """
+    Parse Excel file content.
+    
+    Args:
+        content: File content as bytes
+        filename: Original filename
+        include_all_rows: If True, include all rows in response (for smaller files)
+    
+    Returns:
+        ParsedFileResponse with columns, preview, and optionally all rows
+    """
     try:
         import openpyxl
         from io import BytesIO
@@ -174,15 +242,29 @@ def parse_excel_file(content: bytes, filename: str) -> ParsedFileResponse:
 
         for row_idx, row in enumerate(sheet.iter_rows(values_only=True)):
             if row_idx == 0:
-                # Header row
-                headers = [str(cell) if cell is not None else f"Column_{i}" for i, cell in enumerate(row)]
+                # Header row - clean column names
+                headers = []
+                for i, cell in enumerate(row):
+                    if cell is not None:
+                        header = str(cell).strip()
+                        if header:
+                            headers.append(header)
+                        else:
+                            headers.append(f"Column_{i}")
+                    else:
+                        headers.append(f"Column_{i}")
             else:
                 # Data row
                 row_dict = {}
                 for col_idx, cell in enumerate(row):
                     if col_idx < len(headers):
-                        row_dict[headers[col_idx]] = str(cell) if cell is not None else ""
-                if any(row_dict.values()):  # Skip empty rows
+                        # Normalize cell value (preserve leading zeros for potential barcodes)
+                        # We'll preserve leading zeros by default - the matching logic will handle normalization
+                        cell_str = normalize_cell_value(cell, preserve_leading_zeros=True)
+                        row_dict[headers[col_idx]] = cell_str
+                
+                # Only add non-empty rows
+                if any(v for v in row_dict.values() if v):
                     rows_data.append(row_dict)
 
         workbook.close()
@@ -194,11 +276,13 @@ def parse_excel_file(content: bytes, filename: str) -> ParsedFileResponse:
             file_name=filename,
             columns=headers,
             total_rows=len(rows_data),
-            preview=rows_data[:5]
+            preview=rows_data[:5],
+            all_rows=rows_data if include_all_rows and len(rows_data) <= 1000 else None
         )
     except ImportError:
         raise HTTPException(status_code=500, detail="openpyxl library not installed for Excel support")
     except Exception as e:
+        logger.error(f"Excel parsing error: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {str(e)}")
 
 
@@ -313,10 +397,47 @@ async def send_bulk_scan_request_slack_notification(
         return False
 
 
+def normalize_value_for_matching(value: Any, field_type: str) -> Optional[str]:
+    """
+    Normalize a value for matching, preserving important formatting.
+    
+    Args:
+        value: The value to normalize
+        field_type: Type of field ('barcode', 'sku', 'upc', 'ean', 'short_code' for numeric IDs,
+                    or 'text' for text fields)
+    
+    Returns:
+        Normalized string value, or None if empty/invalid
+    """
+    if value is None:
+        return None
+    
+    # Convert to string
+    str_value = str(value).strip()
+    
+    if not str_value:
+        return None
+    
+    # For numeric identifier fields (barcode, sku, upc, ean, short_code)
+    # Preserve leading zeros and exact format
+    numeric_fields = {'barcode', 'sku', 'upc', 'ean', 'short_code'}
+    
+    if field_type in numeric_fields:
+        # For numeric IDs, preserve the exact string representation
+        # Don't convert to lower case to preserve case-sensitive formats
+        # But normalize whitespace
+        return str_value
+    
+    # For text fields, normalize to lowercase for case-insensitive matching
+    return str_value.lower()
+
+
 async def get_all_products_for_matching() -> dict:
     """
     Fetch all products and their identifiers for matching.
     Returns dict with lookup tables for fast matching.
+    
+    Uses lists for values to handle duplicates (multiple products with same value).
     """
     # Get all products with all matchable fields
     products_result = supabase_service.client.table("products").select(
@@ -341,7 +462,7 @@ async def get_all_products_for_matching() -> dict:
         'marketing_description'
     ]
 
-    # Build lookup tables for all fields
+    # Build lookup tables for all fields - use lists to handle duplicates
     lookup = {f'by_{field}': {} for field in product_fields}
     # Add identifier lookups
     lookup.update({
@@ -356,7 +477,13 @@ async def get_all_products_for_matching() -> dict:
         for field in product_fields:
             value = product.get(field)
             if value and isinstance(value, str) and value.strip():
-                lookup[f'by_{field}'][value.strip().lower()] = product
+                # Normalize based on field type
+                normalized = normalize_value_for_matching(value, field)
+                if normalized:
+                    # Use lists to handle multiple products with same value
+                    if normalized not in lookup[f'by_{field}']:
+                        lookup[f'by_{field}'][normalized] = []
+                    lookup[f'by_{field}'][normalized].append(product)
 
     # Index products by identifiers
     products_by_id = {p['id']: p for p in products}
@@ -367,16 +494,18 @@ async def get_all_products_for_matching() -> dict:
             continue
 
         id_type = identifier['identifier_type']
-        id_value = identifier['identifier_value'].strip().lower()
+        id_value = identifier['identifier_value']
+        
+        # Normalize identifier value based on type
+        normalized = normalize_value_for_matching(id_value, id_type)
+        if not normalized:
+            continue
 
-        if id_type == 'sku':
-            lookup['by_sku'][id_value] = product
-        elif id_type == 'upc':
-            lookup['by_upc'][id_value] = product
-        elif id_type == 'ean':
-            lookup['by_ean'][id_value] = product
-        elif id_type == 'short_code':
-            lookup['by_short_code'][id_value] = product
+        # Use lists to handle duplicates
+        lookup_key = f'by_{id_type}'
+        if normalized not in lookup[lookup_key]:
+            lookup[lookup_key][normalized] = []
+        lookup[lookup_key][normalized].append(product)
 
     return lookup
 
@@ -387,10 +516,17 @@ async def get_all_products_for_matching() -> dict:
 
 
 @router.post("/upload", response_model=ParsedFileResponse)
-async def upload_file(file: UploadFile = File(...)) -> ParsedFileResponse:
+async def upload_file(
+    file: UploadFile = File(...),
+    include_all_rows: bool = Query(False, description="Include all rows in response (for files <1000 rows)")
+) -> ParsedFileResponse:
     """
     Upload and parse a CSV or Excel file.
     Returns columns and preview rows for mapping.
+    
+    Args:
+        file: The file to upload
+        include_all_rows: If True and file is small (<1000 rows), include all rows in response
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -411,10 +547,16 @@ async def upload_file(file: UploadFile = File(...)) -> ParsedFileResponse:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB")
 
     # Parse based on file type
-    if filename_lower.endswith('.csv'):
-        return parse_csv_file(content, file.filename)
-    else:
-        return parse_excel_file(content, file.filename)
+    try:
+        if filename_lower.endswith('.csv'):
+            return parse_csv_file(content, file.filename, include_all_rows=include_all_rows)
+        else:
+            return parse_excel_file(content, file.filename, include_all_rows=include_all_rows)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"File parsing error: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
 
 
 @router.post("/match", response_model=MatchResponse)
@@ -480,8 +622,8 @@ async def match_products(request: MatchRequest) -> MatchResponse:
             if not source_value:
                 continue
 
-            # Normalize value for lookup
-            normalized_value = str(source_value).strip().lower()
+            # Normalize value for lookup based on target field type
+            normalized_value = normalize_value_for_matching(source_value, rule.target_field)
             if not normalized_value:
                 continue
 
@@ -492,9 +634,20 @@ async def match_products(request: MatchRequest) -> MatchResponse:
 
             lookup_table = lookup.get(lookup_key, {})
 
-            # Try to find match
+            # Try to find match - handle both single product and list of products
             if normalized_value in lookup_table:
-                found_product = lookup_table[normalized_value]
+                products_list = lookup_table[normalized_value]
+                
+                # If it's a list (duplicates), take the first one
+                # In future, we could add logic to choose the best match
+                if isinstance(products_list, list) and len(products_list) > 0:
+                    found_product = products_list[0]
+                elif isinstance(products_list, dict):
+                    # Legacy format (single product dict)
+                    found_product = products_list
+                else:
+                    found_product = products_list
+                
                 matched_by = rule.target_field
                 break
 

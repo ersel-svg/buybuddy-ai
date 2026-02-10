@@ -5,12 +5,47 @@ This handler processes product matching in batches with progress tracking,
 using pagination to avoid loading all products into memory.
 """
 
-from typing import Callable
+from typing import Callable, Any, Optional
 
 from services.supabase import supabase_service
 from ..base import BaseJobHandler, JobProgress
 from ..registry import job_registry
 from ..utils import calculate_progress
+
+
+def normalize_value_for_matching(value: Any, field_type: str) -> Optional[str]:
+    """
+    Normalize a value for matching, preserving important formatting.
+    
+    Args:
+        value: The value to normalize
+        field_type: Type of field ('barcode', 'sku', 'upc', 'ean', 'short_code' for numeric IDs,
+                    or 'text' for text fields)
+    
+    Returns:
+        Normalized string value, or None if empty/invalid
+    """
+    if value is None:
+        return None
+    
+    # Convert to string
+    str_value = str(value).strip()
+    
+    if not str_value:
+        return None
+    
+    # For numeric identifier fields (barcode, sku, upc, ean, short_code)
+    # Preserve leading zeros and exact format
+    numeric_fields = {'barcode', 'sku', 'upc', 'ean', 'short_code'}
+    
+    if field_type in numeric_fields:
+        # For numeric IDs, preserve the exact string representation
+        # Don't convert to lower case to preserve case-sensitive formats
+        # But normalize whitespace
+        return str_value
+    
+    # For text fields, normalize to lowercase for case-insensitive matching
+    return str_value.lower()
 
 
 @job_registry.register
@@ -116,8 +151,8 @@ class BulkProductMatcherHandler(BaseJobHandler):
                 if not source_value:
                     continue
 
-                # Normalize value for lookup
-                normalized_value = str(source_value).strip().lower()
+                # Normalize value for lookup based on target field type
+                normalized_value = normalize_value_for_matching(source_value, rule["target_field"])
                 if not normalized_value:
                     continue
 
@@ -128,9 +163,19 @@ class BulkProductMatcherHandler(BaseJobHandler):
 
                 lookup_table = lookup.get(lookup_key, {})
 
-                # Try to find match
+                # Try to find match - handle both single product and list of products
                 if normalized_value in lookup_table:
-                    found_product = lookup_table[normalized_value]
+                    products_list = lookup_table[normalized_value]
+                    
+                    # If it's a list (duplicates), take the first one
+                    if isinstance(products_list, list) and len(products_list) > 0:
+                        found_product = products_list[0]
+                    elif isinstance(products_list, dict):
+                        # Legacy format (single product dict)
+                        found_product = products_list
+                    else:
+                        found_product = products_list
+                    
                     matched_by = rule["target_field"]
                     break
 
@@ -214,7 +259,13 @@ class BulkProductMatcherHandler(BaseJobHandler):
                 for field in product_fields:
                     value = product.get(field)
                     if value and isinstance(value, str) and value.strip():
-                        lookup[f'by_{field}'][value.strip().lower()] = product
+                        # Normalize based on field type
+                        normalized = normalize_value_for_matching(value, field)
+                        if normalized:
+                            # Use lists to handle multiple products with same value
+                            if normalized not in lookup[f'by_{field}']:
+                                lookup[f'by_{field}'][normalized] = []
+                            lookup[f'by_{field}'][normalized].append(product)
 
             offset += self.PAGE_SIZE
             if len(products) < self.PAGE_SIZE:
@@ -253,16 +304,18 @@ class BulkProductMatcherHandler(BaseJobHandler):
                     continue
 
                 id_type = identifier['identifier_type']
-                id_value = identifier['identifier_value'].strip().lower()
+                id_value = identifier['identifier_value']
+                
+                # Normalize identifier value based on type
+                normalized = normalize_value_for_matching(id_value, id_type)
+                if not normalized:
+                    continue
 
-                if id_type == 'sku':
-                    lookup['by_sku'][id_value] = product
-                elif id_type == 'upc':
-                    lookup['by_upc'][id_value] = product
-                elif id_type == 'ean':
-                    lookup['by_ean'][id_value] = product
-                elif id_type == 'short_code':
-                    lookup['by_short_code'][id_value] = product
+                # Use lists to handle duplicates
+                lookup_key = f'by_{id_type}'
+                if normalized not in lookup[lookup_key]:
+                    lookup[lookup_key][normalized] = []
+                lookup[lookup_key][normalized].append(product)
 
             offset += self.PAGE_SIZE
             if len(identifiers) < self.PAGE_SIZE:
