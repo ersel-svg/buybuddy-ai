@@ -432,28 +432,56 @@ def normalize_value_for_matching(value: Any, field_type: str) -> Optional[str]:
     return str_value.lower()
 
 
+async def _fetch_all_paginated(table: str, select: str, page_size: int = 1000) -> list:
+    """
+    Fetch ALL rows from a Supabase table using pagination.
+    
+    Supabase returns max 1000 rows by default. This function
+    paginates through all rows to ensure nothing is missed.
+    """
+    all_rows = []
+    offset = 0
+    
+    while True:
+        result = supabase_service.client.table(table).select(
+            select
+        ).range(offset, offset + page_size - 1).execute()
+        
+        batch = result.data or []
+        all_rows.extend(batch)
+        
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    
+    return all_rows
+
+
 async def get_all_products_for_matching() -> dict:
     """
     Fetch all products and their identifiers for matching.
     Returns dict with lookup tables for fast matching.
     
+    Uses pagination to fetch ALL products (Supabase default limit is 1000).
     Uses lists for values to handle duplicates (multiple products with same value).
     """
-    # Get all products with all matchable fields
-    products_result = supabase_service.client.table("products").select(
+    # Get ALL products with pagination (Supabase default limit is 1000!)
+    products = await _fetch_all_paginated(
+        "products",
         "id, barcode, product_name, brand_name, sub_brand, category, "
         "variant_flavor, container_type, net_quantity, manufacturer_country, "
         "marketing_description, status"
-    ).execute()
+    )
 
-    products = products_result.data or []
+    logger.info(f"Product matcher: fetched {len(products)} products for matching")
 
-    # Get all product identifiers
-    identifiers_result = supabase_service.client.table("product_identifiers").select(
+    # Get ALL product identifiers with pagination
+    identifiers = await _fetch_all_paginated(
+        "product_identifiers",
         "product_id, identifier_type, identifier_value"
-    ).execute()
+    )
 
-    identifiers = identifiers_result.data or []
+    logger.info(f"Product matcher: fetched {len(identifiers)} identifiers for matching")
 
     # All product fields that can be matched
     product_fields = [
@@ -506,6 +534,8 @@ async def get_all_products_for_matching() -> dict:
         if normalized not in lookup[lookup_key]:
             lookup[lookup_key][normalized] = []
         lookup[lookup_key][normalized].append(product)
+
+    logger.info(f"Product matcher: lookup table built with {len(lookup['by_barcode'])} unique barcodes")
 
     return lookup
 

@@ -644,6 +644,57 @@ class SupabaseService:
         )
         return response.data or []
 
+    async def _batched_in_query(
+        self,
+        table: str,
+        select: str,
+        column: str,
+        values: list[str],
+        batch_size: int = 500,
+    ) -> list[dict[str, Any]]:
+        """
+        Execute an IN query in batches to avoid Supabase query size limits.
+        
+        Supabase/PostgREST has a ~2000 item limit on IN clauses before failing.
+        Also, each batch result is limited to 1000 rows by default, so we paginate
+        within each batch as well.
+        
+        Args:
+            table: Table name to query
+            select: Select fields
+            column: Column to filter with IN clause
+            values: List of values for the IN clause
+            batch_size: Number of values per IN batch (default 500 for safety)
+        
+        Returns:
+            All matching rows across all batches
+        """
+        all_results = []
+        
+        for i in range(0, len(values), batch_size):
+            batch_values = values[i:i + batch_size]
+            
+            # Paginate results within each batch (Supabase default limit is 1000)
+            offset = 0
+            page_size = 1000
+            while True:
+                response = (
+                    self.client.table(table)
+                    .select(select)
+                    .in_(column, batch_values)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                
+                batch_data = response.data or []
+                all_results.extend(batch_data)
+                
+                if len(batch_data) < page_size:
+                    break
+                offset += page_size
+        
+        return all_results
+
     async def get_products_by_barcodes(
         self,
         barcodes: list[str],
@@ -652,7 +703,8 @@ class SupabaseService:
         Get products by barcode values.
 
         Used for bulk update matching.
-        Uses SQL IN clause for efficient querying.
+        Uses batched IN queries to handle large barcode lists safely.
+        Supabase IN clause fails with ~2000+ items, so we batch at 500.
         """
         if not barcodes:
             return []
@@ -662,14 +714,12 @@ class SupabaseService:
         if not clean_barcodes:
             return []
 
-        # Use IN clause for efficient SQL filtering
-        response = (
-            self.client.table("products")
-            .select("*")
-            .in_("barcode", clean_barcodes)
-            .execute()
+        return await self._batched_in_query(
+            table="products",
+            select="*",
+            column="barcode",
+            values=clean_barcodes,
         )
-        return response.data or []
 
     async def get_identifiers_for_products(
         self,
@@ -679,17 +729,17 @@ class SupabaseService:
         Get all identifiers for multiple products.
 
         Returns list of identifier records with product_id, identifier_type, identifier_value.
+        Uses batched IN queries to handle large product ID lists safely.
         """
         if not product_ids:
             return []
 
-        response = (
-            self.client.table("product_identifiers")
-            .select("product_id, identifier_type, identifier_value")
-            .in_("product_id", product_ids)
-            .execute()
+        return await self._batched_in_query(
+            table="product_identifiers",
+            select="product_id, identifier_type, identifier_value",
+            column="product_id",
+            values=product_ids,
         )
-        return response.data or []
 
     async def update_product_fields(
         self,
