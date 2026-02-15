@@ -12,6 +12,7 @@ class UserInfo(BaseModel):
     """User information from BuyBuddy API."""
     username: str
     token: str
+    user_id: Optional[int] = None
 
 
 class AuthService:
@@ -46,7 +47,9 @@ class AuthService:
                 if login_resp.status_code not in (200, 201):
                     raise InvalidCredentialsError()
 
-                passphrase = login_resp.json().get("passphrase")
+                login_data = login_resp.json()
+                passphrase = login_data.get("passphrase")
+                user_id = login_data.get("user_id")  # Parse user_id from response
                 if not passphrase:
                     raise InvalidCredentialsError("Login failed - no passphrase returned")
 
@@ -72,8 +75,8 @@ class AuthService:
             except httpx.RequestError:
                 raise InvalidCredentialsError("Unable to connect to authentication server")
 
-        # Cache the token
-        user_info = UserInfo(username=username, token=token)
+        # Cache the token with user_id
+        user_info = UserInfo(username=username, token=token, user_id=user_id)
         self._token_cache[token] = user_info
 
         return user_info

@@ -23,6 +23,8 @@ import {
   Image as ImageIconOD,
   PenTool,
   FolderOpen,
+  // Store Maps icons
+  Map,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -132,6 +134,16 @@ const navigationGroups = [
         name: "Training",
         href: "/od/training",
         icon: Brain,
+      },
+    ],
+  },
+  {
+    title: "Store Maps",
+    items: [
+      {
+        name: "Maps",
+        href: "/store-maps",
+        icon: Map,
       },
     ],
   },

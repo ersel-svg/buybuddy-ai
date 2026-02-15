@@ -6,10 +6,12 @@
 
 const TOKEN_KEY = "buybuddy_auth_token";
 const USER_KEY = "buybuddy_auth_user";
+const USER_ID_KEY = "buybuddy_auth_user_id";
 
 export interface AuthUser {
   username: string;
   token: string;
+  user_id?: number;
 }
 
 export interface LoginCredentials {
@@ -20,6 +22,7 @@ export interface LoginCredentials {
 export interface LoginResponse {
   token: string;
   username: string;
+  user_id?: number;
   message: string;
 }
 
@@ -39,21 +42,33 @@ export function getUser(): AuthUser | null {
 
   const token = localStorage.getItem(TOKEN_KEY);
   const username = localStorage.getItem(USER_KEY);
+  const userIdStr = localStorage.getItem(USER_ID_KEY);
 
   if (!token || !username) return null;
 
-  return { token, username };
+  return {
+    token,
+    username,
+    user_id: userIdStr ? parseInt(userIdStr) : undefined,
+  };
 }
 
 /**
  * Store auth credentials after login.
  * Saves to both localStorage (for client) and cookie (for middleware).
  */
-export function setAuth(token: string, username: string): void {
+export function setAuth(
+  token: string,
+  username: string,
+  userId?: number
+): void {
   if (typeof window === "undefined") return;
 
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, username);
+  if (userId) {
+    localStorage.setItem(USER_ID_KEY, String(userId));
+  }
 
   // Set cookie for middleware (httpOnly not possible from client, but still useful for SSR)
   document.cookie = `buybuddy_auth_token=${token}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
@@ -67,6 +82,7 @@ export function clearAuth(): void {
 
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(USER_ID_KEY);
 
   // Clear cookie
   document.cookie = "buybuddy_auth_token=; path=/; max-age=0";
@@ -102,11 +118,12 @@ export async function login(credentials: LoginCredentials): Promise<AuthUser> {
   const data: LoginResponse = await response.json();
 
   // Store credentials
-  setAuth(data.token, data.username);
+  setAuth(data.token, data.username, data.user_id);
 
   return {
     token: data.token,
     username: data.username,
+    user_id: data.user_id,
   };
 }
 

@@ -22,7 +22,7 @@ from middleware.rate_limit import (
 )
 
 # Import routers
-from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts, scan_requests, product_matcher, product_bulk_update
+from api.v1 import products, videos, datasets, jobs, training, triplets, matching, embeddings, webhooks, auth, locks, cutouts, scan_requests, product_matcher, product_bulk_update, map
 from api.v1.od import router as od_router
 from api.v1.classification import router as cls_router
 from api.v1.workflows import router as workflows_router
@@ -207,7 +207,11 @@ app.add_middleware(
     allow_origins=[
         "https://buybuddy-ai-web.vercel.app",
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:4000",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:4000",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
@@ -336,6 +340,13 @@ app.include_router(
     workflows_router,
     prefix=f"{settings.api_prefix}/workflows",
     tags=["Workflows"],
+)
+
+# Store Map module
+app.include_router(
+    map.router,
+    prefix=f"{settings.api_prefix}/map",
+    tags=["Store Maps"],
 )
 
 

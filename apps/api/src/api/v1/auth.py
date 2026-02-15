@@ -1,10 +1,12 @@
 """Authentication API endpoints."""
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.service import auth_service, UserInfo
 from auth.dependencies import get_current_user
+from services.buybuddy import buybuddy_service
 
 
 router = APIRouter()
@@ -20,6 +22,7 @@ class LoginResponse(BaseModel):
     """Login response with token."""
     token: str
     username: str
+    user_id: Optional[int] = None
     message: str = "Login successful"
 
 
@@ -31,6 +34,7 @@ class LogoutResponse(BaseModel):
 class UserResponse(BaseModel):
     """Current user response."""
     username: str
+    user_id: Optional[int] = None
     authenticated: bool = True
 
 
@@ -50,6 +54,7 @@ async def login(request: LoginRequest) -> LoginResponse:
     return LoginResponse(
         token=user_info.token,
         username=user_info.username,
+        user_id=user_info.user_id,
     )
 
 
@@ -71,4 +76,27 @@ async def get_current_user_info(user: UserInfo = Depends(get_current_user)) -> U
 
     Use this endpoint to verify that a token is valid.
     """
-    return UserResponse(username=user.username)
+    return UserResponse(username=user.username, user_id=user.user_id)
+
+
+@router.get("/stores")
+async def get_user_stores(user: UserInfo = Depends(get_current_user)):
+    """
+    Get stores assigned to the current authenticated user.
+
+    Returns a list of stores the user has access to.
+    """
+    if not user.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="User ID not available. Please log in again.",
+        )
+
+    try:
+        stores = await buybuddy_service.get_user_stores(user.user_id)
+        return stores
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch user stores: {str(e)}",
+        )

@@ -81,6 +81,55 @@ import { getAuthHeader, clearAuth } from "./auth";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// --- Store Map API types (used at bottom of file) ---
+
+interface StoreMapResponse {
+  id: number;
+  store_id: number;
+  name: string;
+  base_ratio: number;
+  grid: number;
+  area_count?: number;
+  zone_count?: number;
+  floor_count?: number;
+  scanner_count?: number;
+  store_name?: string;
+  floor_plan_url?: string;
+}
+
+interface MapFloorResponse {
+  id: number;
+  map_id: number;
+  floor: number;
+  floor_plan: string;
+  area_count?: number;
+  zone_count?: number;
+  scanner_count?: number;
+}
+
+interface MapAreaResponse {
+  id: number;
+  name: string;
+  floor_id: number;
+  updated_at?: string;
+}
+
+interface AreaCoordinateResponse {
+  id: number;
+  area_id: number;
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+  circle: boolean;
+  updated_at?: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface AreaCoordinateHierarchyResponse extends Record<string, unknown> {
+  // The hierarchy response shape varies - it returns nested Map > Floor > Area > Coordinate
+}
+
 // Export filter options for download/export endpoints
 export interface ExportFilters {
   product_ids?: string[];
@@ -4666,6 +4715,170 @@ class ApiClient {
       output_ports: block.outputs,
       config_schema: block.config_schema,
     }));
+  }
+
+  // =============================================
+  // Store Map API
+  // =============================================
+
+  // --- Map CRUD ---
+
+  async getStoreMaps(): Promise<StoreMapResponse[]> {
+    return this.request<StoreMapResponse[]>("/api/v1/map");
+  }
+
+  async getStoreMap(id: number): Promise<StoreMapResponse> {
+    return this.request<StoreMapResponse>(`/api/v1/map/${id}`);
+  }
+
+  async getStoreMapByStore(storeId: number): Promise<StoreMapResponse> {
+    return this.request<StoreMapResponse>(`/api/v1/map/store/${storeId}/map`);
+  }
+
+  async createStoreMap(data: {
+    store_id: number;
+    name: string;
+    base_ratio?: number;
+    grid?: number;
+  }): Promise<StoreMapResponse> {
+    return this.request<StoreMapResponse>("/api/v1/map", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async updateStoreMap(
+    id: number,
+    data: { name?: string; base_ratio?: number; grid?: number }
+  ): Promise<StoreMapResponse> {
+    return this.request<StoreMapResponse>(`/api/v1/map/${id}`, {
+      method: "PUT",
+      body: data,
+    });
+  }
+
+  async deleteStoreMap(id: number): Promise<void> {
+    return this.request<void>(`/api/v1/map/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // --- Map Floor ---
+
+  async getMapFloors(mapId: number): Promise<MapFloorResponse[]> {
+    return this.request<MapFloorResponse[]>(`/api/v1/map/${mapId}/floor`);
+  }
+
+  async createMapFloor(
+    mapId: number,
+    floor: number,
+    file: File
+  ): Promise<MapFloorResponse> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("floor", String(floor));
+
+    const response = await fetch(`${this.baseUrl}/api/v1/map/${mapId}/floor`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(
+        error.detail || "Floor upload failed",
+        response.status,
+        error
+      );
+    }
+
+    return response.json();
+  }
+
+  // --- Map Area ---
+
+  async createMapArea(data: {
+    name: string;
+    floor_id: number;
+  }): Promise<MapAreaResponse> {
+    return this.request<MapAreaResponse>("/api/v1/map/area", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async updateMapArea(data: {
+    id: number;
+    name?: string;
+  }): Promise<MapAreaResponse> {
+    return this.request<MapAreaResponse>("/api/v1/map/area", {
+      method: "PUT",
+      body: data,
+    });
+  }
+
+  async deleteMapArea(id: number): Promise<void> {
+    return this.request<void>(`/api/v1/map/area/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // --- Area Coordinate ---
+
+  async createAreaCoordinate(data: {
+    area_id: number;
+    x: number;
+    y: number;
+    z?: number;
+    r?: number;
+    circle?: boolean;
+  }): Promise<AreaCoordinateResponse> {
+    return this.request<AreaCoordinateResponse>("/api/v1/map/area/coordinate", {
+      method: "POST",
+      body: data,
+    });
+  }
+
+  async updateAreaCoordinate(data: {
+    id: number;
+    x?: number;
+    y?: number;
+    z?: number;
+    r?: number;
+  }): Promise<AreaCoordinateResponse> {
+    return this.request<AreaCoordinateResponse>("/api/v1/map/area/coordinate", {
+      method: "PUT",
+      body: data,
+    });
+  }
+
+  async getAreaCoordinates(filters: {
+    map_id?: number;
+    store_id?: number;
+    area_id?: number;
+    floor_id?: number;
+  }): Promise<AreaCoordinateHierarchyResponse> {
+    return this.request<AreaCoordinateHierarchyResponse>(
+      "/api/v1/map/area/coordinate",
+      { params: filters as Record<string, string | number | boolean | undefined> }
+    );
+  }
+
+  async deleteAreaCoordinate(id: number): Promise<void> {
+    return this.request<void>(`/api/v1/map/area/coordinate/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // =============================================
+  // User API
+  // =============================================
+
+  async getUserStores(): Promise<Array<{ id: number; name: string }>> {
+    return this.request<Array<{ id: number; name: string }>>(
+      "/api/v1/auth/stores"
+    );
   }
 }
 

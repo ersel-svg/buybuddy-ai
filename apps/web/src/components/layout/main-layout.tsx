@@ -15,7 +15,7 @@ interface MainLayoutProps {
 const AUTH_ROUTES = ["/login"];
 
 // Routes that need full-screen layout (no padding, no scroll)
-const FULLSCREEN_ROUTES = ["/od/annotate"];
+const FULLSCREEN_ROUTES = ["/od/annotate", "/store-maps/editor"];
 
 export function MainLayout({ children }: MainLayoutProps) {
   const pathname = usePathname();

@@ -348,6 +348,32 @@ class BuybuddyService:
     # Merchants
     # ===========================================
 
+    # Stores
+
+    async def get_user_stores(self, user_id: int) -> list[dict[str, Any]]:
+        """
+        Fetch stores assigned to a user.
+
+        Args:
+            user_id: User ID to get store assignments for
+
+        Returns:
+            List of stores assigned to the user
+        """
+        await self._ensure_token()
+        
+        client = await self._get_client()
+        resp = await client.get(
+            f"{self.base_url}/user/store_assignment",
+            headers={"Authorization": f"Bearer {self._token}"},
+            params={"user_id": user_id},
+            timeout=10.0,  # 10 second timeout
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # Merchants
+
     async def get_merchants(
         self,
         all_merchant: bool = True,
@@ -613,6 +639,256 @@ class BuybuddyService:
             await asyncio.sleep(0.1)
 
         return all_items
+
+    # =============================================
+    # Store Map API
+    # =============================================
+
+    async def create_map(
+        self,
+        store_id: int,
+        name: str,
+        base_ratio: float = 1.0,
+        grid: float = 50.0,
+    ) -> dict[str, Any]:
+        """Create a new store map."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "POST",
+            f"{self.base_url}/map",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json={
+                "store_id": store_id,
+                "name": name,
+                "base_ratio": base_ratio,
+                "grid": grid,
+            },
+        )
+        return resp.json()
+
+    async def update_map(
+        self,
+        map_id: int,
+        name: Optional[str] = None,
+        base_ratio: Optional[float] = None,
+        grid: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Update an existing map."""
+        await self._ensure_token()
+        body = {}
+        if name is not None:
+            body["name"] = name
+        if base_ratio is not None:
+            body["base_ratio"] = base_ratio
+        if grid is not None:
+            body["grid"] = grid
+
+        resp = await self._request_with_retry(
+            "PUT",
+            f"{self.base_url}/map/{map_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json=body,
+        )
+        return resp.json()
+
+    async def get_map(self, map_id: int) -> dict[str, Any]:
+        """Retrieve a single map by ID."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/map/{map_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        return resp.json()
+
+    async def get_map_by_store(self, store_id: int) -> dict[str, Any]:
+        """Retrieve a map filtered by store ID."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/store/{store_id}/map",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        return resp.json()
+
+    async def list_maps(self) -> list[dict[str, Any]]:
+        """List all maps for the authenticated merchant."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/map",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        return resp.json()
+
+    async def delete_map(self, map_id: int) -> None:
+        """Delete a map by ID."""
+        await self._ensure_token()
+        await self._request_with_retry(
+            "DELETE",
+            f"{self.base_url}/map/{map_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+
+    async def create_floor(
+        self,
+        map_id: int,
+        floor: int,
+        file_content: bytes,
+        filename: str,
+    ) -> dict[str, Any]:
+        """Create a floor for a map with floor plan image upload."""
+        await self._ensure_token()
+        files = {"file": (filename, file_content, "image/jpeg")}
+        data = {"floor": str(floor)}
+
+        resp = await self._request_with_retry(
+            "POST",
+            f"{self.base_url}/map/{map_id}/floor",
+            headers={"Authorization": f"Bearer {self._token}"},
+            files=files,
+            data=data,
+        )
+        return resp.json()
+
+    async def list_floors(self, map_id: int) -> list[dict[str, Any]]:
+        """List all floors for a given map."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/map/{map_id}/floor",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        return resp.json()
+
+    async def create_area(
+        self,
+        name: str,
+        floor_id: int,
+    ) -> dict[str, Any]:
+        """Create an area within a floor."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "POST",
+            f"{self.base_url}/map/area",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json={"name": name, "floor_id": floor_id},
+        )
+        return resp.json()
+
+    async def update_area(
+        self,
+        area_id: int,
+        name: str,
+    ) -> dict[str, Any]:
+        """Update an area (name)."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "PUT",
+            f"{self.base_url}/map/area",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json={"id": area_id, "name": name},
+        )
+        return resp.json()
+
+    async def delete_area(self, area_id: int) -> None:
+        """Delete an area and all its associated coordinates."""
+        await self._ensure_token()
+        await self._request_with_retry(
+            "DELETE",
+            f"{self.base_url}/map/area/{area_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+
+    async def create_coordinate(
+        self,
+        area_id: int,
+        x: float,
+        y: float,
+        z: float = 0.0,
+        r: float = 0.0,
+        circle: bool = False,
+    ) -> dict[str, Any]:
+        """Create a coordinate point for an area."""
+        await self._ensure_token()
+        resp = await self._request_with_retry(
+            "POST",
+            f"{self.base_url}/map/area/coordinate",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json={
+                "area_id": area_id,
+                "x": x,
+                "y": y,
+                "z": z,
+                "r": r,
+                "circle": circle,
+            },
+        )
+        return resp.json()
+
+    async def update_coordinate(
+        self,
+        coord_id: int,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        z: Optional[float] = None,
+        r: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Update a coordinate."""
+        await self._ensure_token()
+        body = {"id": coord_id}
+        if x is not None:
+            body["x"] = x
+        if y is not None:
+            body["y"] = y
+        if z is not None:
+            body["z"] = z
+        if r is not None:
+            body["r"] = r
+
+        resp = await self._request_with_retry(
+            "PUT",
+            f"{self.base_url}/map/area/coordinate",
+            headers={"Authorization": f"Bearer {self._token}"},
+            json=body,
+        )
+        return resp.json()
+
+    async def list_coordinates(
+        self,
+        map_id: Optional[int] = None,
+        store_id: Optional[int] = None,
+        area_id: Optional[int] = None,
+        floor_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """List coordinates with full hierarchy."""
+        await self._ensure_token()
+        params = {}
+        if map_id is not None:
+            params["map_id"] = map_id
+        if store_id is not None:
+            params["store_id"] = store_id
+        if area_id is not None:
+            params["area_id"] = area_id
+        if floor_id is not None:
+            params["floor_id"] = floor_id
+
+        resp = await self._request_with_retry(
+            "GET",
+            f"{self.base_url}/map/area/coordinate",
+            headers={"Authorization": f"Bearer {self._token}"},
+            params=params,
+        )
+        return resp.json()
+
+    async def delete_coordinate(self, coord_id: int) -> None:
+        """Delete a coordinate by ID."""
+        await self._ensure_token()
+        await self._request_with_retry(
+            "DELETE",
+            f"{self.base_url}/map/area/coordinate/{coord_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
 
 
 # Singleton instance
